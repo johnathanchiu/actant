@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: bash -c 'uv run ruff format actant/ tests/'
+        language: system
+        pass_filenames: false
+        files: ^(actant|tests)/.*\.py$
+      - id: ruff-check
+        name: ruff check
+        entry: bash -c 'uv run ruff check actant/ tests/ --fix'
+        language: system
+        pass_filenames: false
+        files: ^(actant|tests)/.*\.py$
+      - id: pyright
+        name: pyright
+        entry: bash -c 'uv run pyright actant/'
+        language: system
+        pass_filenames: false
+        files: ^actant/.*\.py$
+      - id: pytest
+        name: pytest
+        entry: bash -c 'uv run python -m pytest tests/'
+        language: system
+        pass_filenames: false
+        files: ^(actant|tests)/.*\.py$

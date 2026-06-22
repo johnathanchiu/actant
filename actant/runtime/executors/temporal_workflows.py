@@ -1,0 +1,375 @@
+"""Workflow definitions for the Actant Temporal runtime.
+
+One ``AgentThreadWorkflow`` execution per ``(agent_id, thread_id)``.
+The workflow id encodes the thread, the workflow's lifetime is the
+thread's lifetime, and all interaction with the thread (send a
+message, cancel) flows through this workflow.
+
+The workflow is a thin orchestrator. It:
+
+1. Receives ``inbound`` signals (user messages) into an in-memory inbox.
+2. For each run: drains the inbox, fans out a turn loop until the LLM
+   stops emitting tool_calls or the turn budget is exhausted.
+3. For each turn's tool_calls: kicks off ``admit_tool`` activities,
+   then for each non-blocked tool fires ``execute_tool`` (ALLOW) or
+   ``await_external_resolution`` (WAIT). Drains via ``as_completed``.
+4. Finalizes each tool group via ``finalize_tool_group`` (writes the
+   tool_result messages — the transcript invariant lives there).
+
+Critically, the workflow itself contains no try/except around activity
+execution and no synchronization primitive for deferred tools. All
+exception-to-outcome conversion happens inside activities (each
+activity is infallible at its boundary). Deferred tools use Temporal's
+async-activity-completion: ``await_external_resolution`` raises
+``raise_complete_async`` from inside the activity body, the workflow
+keeps awaiting the activity handle, and an external caller delivers
+the result via ``client.complete_activity_by_id``. The workflow
+suspends durably during the wait — zero compute consumed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import timedelta
+from temporalio import workflow
+from temporalio.common import RetryPolicy
+
+from actant.runtime.executors.temporal_types import (
+    ActivityName,
+    AdmitDecision,
+    AdmitInput,
+    AdmitOutcome,
+    ApplyThreadCancellationInput,
+    AwaitExternalResolutionInput,
+    ExecuteInput,
+    ExecuteOutcome,
+    FinalizeRunInput,
+    InboundMessage,
+    RunOutcome,
+    RunTurnInput,
+    StartRunInput,
+    ThreadInput,
+    ThreadOutcome,
+    ThreadStateView,
+    TurnResult,
+)
+
+_RUN_TURN_TIMEOUT = timedelta(minutes=10)
+_TOOL_TIMEOUT = timedelta(minutes=10)
+_FINALIZE_TIMEOUT = timedelta(seconds=60)
+_PROJECTION_TIMEOUT = timedelta(seconds=30)
+
+
+@workflow.defn
+class AgentThreadWorkflow:
+    """The thread.
+
+    Outer loop = thread lifetime. Each iteration drains the inbox and
+    does one run until the run hits ``COMPLETED``, ``EXHAUSTED``,
+    ``FAILED``, or ``CANCELLED``. After a run finalizes, the workflow
+    parks on ``wait_condition`` until either a new ``inbound`` message
+    arrives or the workflow is cancelled.
+
+    Exhaustion ends the inner run; the outer loop continues. The
+    thread stays alive waiting for the next user message.
+    """
+
+    def __init__(self) -> None:
+        self._inbox: list[InboundMessage] = []
+        self._cancelled = False
+        self._turn_count_total = 0
+        self._current_run_id: str | None = None
+        # Populated by ``run()`` so ``get_state`` can echo the workflow's
+        # logical identity without parsing workflow_id strings.
+        self._agent_id: str = ""
+        self._thread_id: str = ""
+
+    # === Signals ===
+
+    @workflow.signal
+    def inbound(self, msg: InboundMessage) -> None:
+        self._inbox.append(msg)
+
+    @workflow.signal
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    # === Queries ===
+
+    @workflow.query
+    def get_state(self) -> ThreadStateView:
+        return ThreadStateView(
+            agent_id=self._agent_id,
+            thread_id=self._thread_id,
+            inbox_size=len(self._inbox),
+            turn_count_total=self._turn_count_total,
+            current_run_id=self._current_run_id,
+            cancelled=self._cancelled,
+        )
+
+    # === Run ===
+
+    @workflow.run
+    async def run(self, payload: ThreadInput) -> str:
+        self._agent_id = payload.agent_id
+        self._thread_id = payload.thread_id
+        # Carry-forward inbox lands here on continue_as_new.
+        if payload.carry_inbox:
+            self._inbox.extend(payload.carry_inbox)
+
+        try:
+            while not self._cancelled:
+                await workflow.wait_condition(lambda: bool(self._inbox) or self._cancelled)
+                if self._cancelled:
+                    break
+
+                run_id = workflow.uuid4().hex
+                self._current_run_id = run_id
+                msgs = self._drain_inbox()  # Policy B: all queued → one run
+
+                await workflow.execute_activity(
+                    ActivityName.START_RUN,
+                    StartRunInput(
+                        agent_id=payload.agent_id,
+                        thread_id=payload.thread_id,
+                        run_id=run_id,
+                        max_turns=payload.max_turns_per_run,
+                    ),
+                    start_to_close_timeout=_PROJECTION_TIMEOUT,
+                )
+
+                outcome = await self._do_run(payload, run_id, msgs)
+
+                await workflow.execute_activity(
+                    ActivityName.FINALIZE_RUN,
+                    FinalizeRunInput(
+                        agent_id=payload.agent_id,
+                        thread_id=payload.thread_id,
+                        run_id=run_id,
+                        outcome=outcome.value,
+                        turn_count=self._turn_count_total,
+                    ),
+                    start_to_close_timeout=_PROJECTION_TIMEOUT,
+                )
+                self._current_run_id = None
+
+                if workflow.info().get_current_history_length() > _continue_as_new_threshold(
+                    payload
+                ):
+                    workflow.continue_as_new(
+                        ThreadInput(
+                            agent_id=payload.agent_id,
+                            thread_id=payload.thread_id,
+                            max_turns_per_run=payload.max_turns_per_run,
+                            external_resolution_timeout_seconds=(
+                                payload.external_resolution_timeout_seconds
+                            ),
+                            carry_inbox=list(self._inbox),
+                        )
+                    )
+
+            return (
+                ThreadOutcome.STOPPED.value
+                if not self._cancelled
+                else ThreadOutcome.CANCELLED.value
+            )
+        except asyncio.CancelledError:
+            # Workflow cancellation. Best-effort projection cleanup so a
+            # cancelled session is observable in stores even if no run was
+            # active at the moment of cancel.
+            #
+            # ``finalize_run`` only fires when there's an active run —
+            # ``apply_thread_cancellation`` always fires and is idempotent
+            # (covers the cancel-between-runs case where finalize_run
+            # would have nothing to do). Both write the same terminal
+            # state for thread + open tool_calls; calling them in series
+            # is safe because each is idempotent on the same row.
+            if self._current_run_id is not None:
+                await workflow.execute_activity(
+                    ActivityName.FINALIZE_RUN,
+                    FinalizeRunInput(
+                        agent_id=payload.agent_id,
+                        thread_id=payload.thread_id,
+                        run_id=self._current_run_id,
+                        outcome=RunOutcome.CANCELLED.value,
+                        turn_count=self._turn_count_total,
+                    ),
+                    start_to_close_timeout=_PROJECTION_TIMEOUT,
+                )
+            await workflow.execute_activity(
+                ActivityName.APPLY_THREAD_CANCELLATION,
+                ApplyThreadCancellationInput(
+                    agent_id=payload.agent_id,
+                    thread_id=payload.thread_id,
+                ),
+                start_to_close_timeout=_PROJECTION_TIMEOUT,
+            )
+            raise
+
+    async def _do_run(
+        self,
+        payload: ThreadInput,
+        run_id: str,
+        msgs: list[InboundMessage],
+    ) -> RunOutcome:
+        turns_left = payload.max_turns_per_run
+        first_msgs = msgs
+
+        while turns_left > 0 and not self._cancelled:
+            turn_id = workflow.uuid4().hex
+            turn_index = self._turn_count_total + 1
+
+            try:
+                turn = await workflow.execute_activity(
+                    ActivityName.RUN_TURN,
+                    RunTurnInput(
+                        agent_id=payload.agent_id,
+                        thread_id=payload.thread_id,
+                        run_id=run_id,
+                        turn_id=turn_id,
+                        turn_index=turn_index,
+                        new_messages=first_msgs,
+                    ),
+                    result_type=TurnResult,
+                    start_to_close_timeout=_RUN_TURN_TIMEOUT,
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+            except Exception:
+                # RUN_TURN failed (LLM error, cancellation, etc.).
+                # Surface as FAILED and let the outer loop continue —
+                # next user message starts a fresh run. The thread
+                # stays alive.
+                return RunOutcome.FAILED
+
+            first_msgs = []
+            self._turn_count_total += 1
+            turns_left -= 1
+
+            if not turn.tool_calls:
+                return RunOutcome.COMPLETED
+
+            terminal_tool = await self._execute_tool_group(payload, turn)
+            if self._cancelled:
+                return RunOutcome.CANCELLED
+            if terminal_tool:
+                return RunOutcome.COMPLETED
+
+        if self._cancelled:
+            return RunOutcome.CANCELLED
+        return RunOutcome.EXHAUSTED
+
+    async def _execute_tool_group(
+        self,
+        payload: ThreadInput,
+        turn: TurnResult,
+    ) -> bool:
+        """Admit, execute / await-external-resolution, finalize.
+
+        Tool-level failures are absorbed inside activities (each is
+        infallible at its boundary), so this method has no try/except.
+        Every tool_call ends with a terminal status and a persisted
+        result by the time ``finalize_tool_group`` runs — which appends
+        the tool_result messages and closes the transcript invariant.
+        """
+        run_id = turn.tool_calls[0].run_id
+        group_id = turn.tool_calls[0].group_id
+
+        # 1. Classify all tools in parallel.
+        admit_handles = [
+            workflow.execute_activity(
+                ActivityName.ADMIT_TOOL,
+                AdmitInput(
+                    agent_id=payload.agent_id,
+                    thread_id=payload.thread_id,
+                    run_id=run_id,
+                    tool_call_id=spec.id,
+                ),
+                result_type=AdmitOutcome,
+                start_to_close_timeout=_TOOL_TIMEOUT,
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+            for spec in turn.tool_calls
+        ]
+        admits: dict[str, AdmitOutcome] = {}
+        for fut in workflow.as_completed(admit_handles):
+            outcome = await fut
+            admits[outcome.tool_call_id] = outcome
+
+        # 2. For each non-block tool, fan out the right activity.
+        #    ALLOW → execute_tool (runs inline)
+        #    WAIT  → await_external_resolution (async-completion;
+        #            workflow suspends durably until external completion)
+        #    BLOCK → admit already persisted the failed result; nothing more here.
+        exec_handles = []
+        for spec in turn.tool_calls:
+            decision = admits[spec.id].decision
+            if decision == AdmitDecision.ALLOW.value:
+                exec_handles.append(
+                    workflow.execute_activity(
+                        ActivityName.EXECUTE_TOOL,
+                        ExecuteInput(
+                            agent_id=payload.agent_id,
+                            thread_id=payload.thread_id,
+                            run_id=run_id,
+                            tool_call_id=spec.id,
+                        ),
+                        result_type=ExecuteOutcome,
+                        start_to_close_timeout=_TOOL_TIMEOUT,
+                        retry_policy=RetryPolicy(maximum_attempts=1),
+                    )
+                )
+            elif decision == AdmitDecision.WAIT.value:
+                exec_handles.append(
+                    workflow.execute_activity(
+                        ActivityName.AWAIT_EXTERNAL_RESOLUTION,
+                        AwaitExternalResolutionInput(
+                            agent_id=payload.agent_id,
+                            thread_id=payload.thread_id,
+                            run_id=run_id,
+                            tool_call_id=spec.id,
+                        ),
+                        result_type=ExecuteOutcome,
+                        start_to_close_timeout=timedelta(
+                            seconds=payload.external_resolution_timeout_seconds
+                        ),
+                        retry_policy=RetryPolicy(maximum_attempts=1),
+                    )
+                )
+            # else BLOCK — nothing to await
+
+        # 3. Drain — for await_external_resolution handles, the
+        #    workflow effectively suspends durably until the external
+        #    completion lands. Zero compute consumed during the wait.
+        terminal_tool = False
+        for fut in workflow.as_completed(exec_handles):
+            outcome = await fut  # result already persisted by activity body
+            terminal_tool = terminal_tool or outcome.terminal
+
+        if self._cancelled:
+            return terminal_tool
+
+        # 4. Finalize the group — appends tool_result messages in
+        #    sorted-by-id order, closing the transcript invariant.
+        await workflow.execute_activity(
+            ActivityName.FINALIZE_TOOL_GROUP,
+            group_id,
+            start_to_close_timeout=_FINALIZE_TIMEOUT,
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+        return terminal_tool
+
+    def _drain_inbox(self) -> list[InboundMessage]:
+        msgs = list(self._inbox)
+        self._inbox.clear()
+        return msgs
+
+
+def _continue_as_new_threshold(payload: ThreadInput) -> int:
+    # Hardcoded for now; could be made configurable on ThreadInput.
+    del payload
+    return 5_000
+
+
+# Convenience name so callers don't have to know the class location for
+# Worker registration.
+WORKFLOWS: list[type] = [AgentThreadWorkflow]

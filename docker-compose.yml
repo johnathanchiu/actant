@@ -1,0 +1,73 @@
+# Local Temporal stack for Actant development and smoke tests.
+name: actant
+
+services:
+  temporal-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    # No host port mapping — temporal-postgres is only reached via the
+    # internal compose network by the `temporal` service. Add a `ports`
+    # entry if you want to inspect it from the host.
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  temporal:
+    image: temporalio/auto-setup:1.27.2
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: temporal-postgres
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports:
+      # Uncommon host port so the demo doesn't fight other projects'
+      # Temporal clusters. Internally the temporal container still
+      # speaks 7233 — only the host-side mapping is shifted.
+      - "${TEMPORAL_HOST_PORT:-27233}:7233"
+    volumes:
+      - ./infra/temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "${TEMPORAL_UI_HOST_PORT:-28233}:8080"
+
+  # Application database for the demo server (separate from the Temporal
+  # cluster's internal Postgres). Bound to a less-common host port to
+  # avoid colliding with other local Postgres instances.
+  demo-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: actant
+      POSTGRES_PASSWORD: actant
+      POSTGRES_DB: actant_demo
+    ports:
+      - "${DEMO_DB_HOST_PORT:-55435}:5432"
+    volumes:
+      - demo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U actant -d actant_demo"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  temporal-postgres-data:
+  demo-postgres-data:

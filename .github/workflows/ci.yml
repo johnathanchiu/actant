@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install
+        run: uv sync --python 3.11 --extra dev --extra providers
+
+      - name: Lint
+        run: uv run --extra dev --extra providers ruff check actant tests
+
+      - name: Test
+        run: uv run --extra dev --extra providers python -m pytest -q
+
+  required:
+    name: ci / required
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [python]
+    if: always()
+    steps:
+      - name: Check required jobs
+        run: |
+          if [ "${{ needs.python.result }}" != "success" ]; then
+            echo "python job did not succeed"
+            exit 1
+          fi
