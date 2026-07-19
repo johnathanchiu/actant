@@ -45,9 +45,14 @@ test *args="":
 lint:
     uv run --extra dev --extra providers ruff check .
 
-# Type-check the Temporal executor files touched by the spike.
-typecheck-temporal:
-    uv run --extra dev --extra providers pyright actant/runtime/executors/temporal.py actant/runtime/runtime.py tests/test_runtime_executors.py
+# Type-check the package and tests.
+typecheck:
+    uv run --extra dev --extra providers pyright actant tests
+
+# Build and validate the distributions without publishing them.
+package:
+    uv build
+    uvx twine check dist/*
 
 # Start Temporal and run the executor smoke test.
 temporal-smoke:

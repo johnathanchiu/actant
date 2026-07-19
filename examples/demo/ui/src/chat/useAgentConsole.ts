@@ -62,6 +62,7 @@ export function useAgentConsole({
 }: UseAgentConsoleOptions): UseAgentConsoleReturn {
   const [entries, setEntries] = useState<ConsoleEntry[]>([])
   const [subThreads, setSubThreads] = useState<SubThreadMap>({})
+  const subThreadsRef = useRef<SubThreadMap>({})
   const [streamState, setStreamState] = useState<StreamState>('connecting')
   const [sending, setSending] = useState(false)
   const [isLoadingHistory, setIsLoadingHistory] = useState(true)
@@ -81,6 +82,7 @@ export function useAgentConsole({
     // Reset state for the new thread.
     setEntries([])
     setSubThreads({})
+    subThreadsRef.current = {}
     setIsLoadingHistory(true)
     setHistoryError(null)
     setStreamState('connecting')
@@ -117,9 +119,8 @@ export function useAgentConsole({
         //    otherwise a refresh while a sub-agent is paused in
         //    ask_user / request_approval loses the deferred panel
         //    (the wait lives on the sub-thread, not main).
-        await Promise.all(
-          subLinks.map(async (link) => {
-            try {
+        for (const link of subLinks) {
+          try {
               const [subMessages, subWaiting] = await Promise.all([
                 api.fetchMessages(link.sub_thread_id),
                 api.fetchWaitingToolCalls(link.sub_thread_id).catch(() => []),
@@ -133,13 +134,13 @@ export function useAgentConsole({
                 (e): e is TurnEntry => e.kind === 'turn',
               )
               subMap = backfillSubThread(subMap, link, subTurns, null)
+              subThreadsRef.current = subMap
               setSubThreads(subMap)
-            } catch {
-              // Sub-thread backfill is best-effort — a single failure
-              // shouldn't fail the whole load.
-            }
-          }),
-        )
+          } catch {
+            // Sub-thread backfill is best-effort — a single failure
+            // shouldn't fail the whole load.
+          }
+        }
       } catch (err) {
         if (gen !== generationRef.current) return
         if ((err as { name?: string }).name === 'AbortError') return
@@ -156,22 +157,46 @@ export function useAgentConsole({
         const url = `${api.baseUrl}/api/threads/${encodeURIComponent(threadId)}/events`
         for await (const event of openActantStream(url, signal)) {
           if (gen !== generationRef.current) return
-          if (event.parent_thread_id === threadId) {
+          if (
+            event.parent_thread_id === threadId ||
+            (event.parent_thread_id && subThreadsRef.current[event.parent_thread_id])
+          ) {
             // Sub-thread event.
-            setSubThreads((prev) => reduceSubThread(prev, event, threadId))
+            setSubThreads((prev) => {
+              const next = reduceSubThread(prev, event, threadId)
+              subThreadsRef.current = next
+              return next
+            })
             // Also annotate the parent's tool call with the sub_thread_id
             // (so the renderer knows where to find the nested transcript).
-            setEntries((prev) =>
-              annotateSubThreadOnToolCall(
-                prev,
-                event.parent_tool_call_id ?? null,
-                event.thread_id,
-                event.subagent ?? null,
-              ),
-            )
+            if (event.parent_thread_id === threadId) {
+              setEntries((prev) =>
+                annotateSubThreadOnToolCall(
+                  prev,
+                  event.parent_tool_call_id ?? null,
+                  event.thread_id,
+                  event.subagent ?? null,
+                ),
+              )
+            }
           } else if (!event.parent_thread_id) {
             // Top-level event.
-            setEntries((prev) => reduce(prev, event))
+            setEntries((prev) => {
+              let next = reduce(prev, event)
+              // A very fast sub-agent can emit and finish before the
+              // parent's persisted tool_call event reaches the UI. Reapply
+              // known links whenever top-level state advances so the nested
+              // transcript cannot be lost to event ordering.
+              for (const activity of Object.values(subThreadsRef.current)) {
+                next = annotateSubThreadOnToolCall(
+                  next,
+                  activity.parentToolCallId,
+                  activity.subThreadId,
+                  activity.subagent,
+                )
+              }
+              return next
+            })
           }
           // Sub-thread events not for our parent are ignored.
         }

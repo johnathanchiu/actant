@@ -47,7 +47,12 @@ export function reduceSubThread(
   parentThreadId: string,
 ): SubThreadMap {
   if (!event.parent_thread_id) return map
-  if (event.parent_thread_id !== parentThreadId) return map
+  // Accept direct children of the root and descendants whose immediate
+  // parent is already known. Grandchild events retain their immediate
+  // parent id so nested task() transcripts can be attached recursively.
+  if (event.parent_thread_id !== parentThreadId && !map[event.parent_thread_id]) {
+    return map
+  }
 
   const subThreadId = event.thread_id
   const existing = map[subThreadId]
@@ -62,8 +67,35 @@ export function reduceSubThread(
     }
 
   const nextActivity = applyEventToActivity(activity, event)
-  if (nextActivity === activity && existing) return map
-  return { ...map, [subThreadId]: nextActivity }
+  let nextMap =
+    nextActivity === activity && existing ? map : { ...map, [subThreadId]: nextActivity }
+
+  // Attach this child to the task() call in its immediate parent's turns.
+  // This is the nested counterpart of useAgentConsole's top-level annotation.
+  const parent = nextMap[event.parent_thread_id]
+  if (parent && event.parent_tool_call_id) {
+    let changed = false
+    const turns = parent.turns.map((turn) => {
+      if (!turn.toolCalls.some((call) => call.id === event.parent_tool_call_id)) return turn
+      changed = true
+      return {
+        ...turn,
+        toolCalls: turn.toolCalls.map((call) =>
+          call.id === event.parent_tool_call_id
+            ? {
+                ...call,
+                subThreadId,
+                subagent: event.subagent ?? call.subagent,
+              }
+            : call,
+        ),
+      }
+    })
+    if (changed) {
+      nextMap = { ...nextMap, [parent.subThreadId]: { ...parent, turns } }
+    }
+  }
+  return nextMap
 }
 
 function applyEventToActivity(
@@ -192,7 +224,7 @@ export function backfillSubThread(
     ...t,
     threadId: link.sub_thread_id,
   }))
-  return {
+  const nextMap: SubThreadMap = {
     ...map,
     [link.sub_thread_id]: {
       subThreadId: link.sub_thread_id,
@@ -201,6 +233,22 @@ export function backfillSubThread(
       subagent,
       turns,
       isStreaming: false,
+    },
+  }
+  const parent = nextMap[link.parent_thread_id]
+  if (!parent) return nextMap
+  return {
+    ...nextMap,
+    [parent.subThreadId]: {
+      ...parent,
+      turns: parent.turns.map((turn) => ({
+        ...turn,
+        toolCalls: turn.toolCalls.map((call) =>
+          call.id === link.parent_tool_call_id
+            ? { ...call, subThreadId: link.sub_thread_id, subagent: subagent ?? call.subagent }
+            : call,
+        ),
+      })),
     },
   }
 }

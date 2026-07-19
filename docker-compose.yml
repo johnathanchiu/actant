@@ -30,15 +30,11 @@ services:
       POSTGRES_SEEDS: temporal-postgres
       POSTGRES_USER: temporal
       POSTGRES_PWD: temporal
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
     ports:
       # Uncommon host port so the demo doesn't fight other projects'
       # Temporal clusters. Internally the temporal container still
       # speaks 7233 — only the host-side mapping is shifted.
       - "${TEMPORAL_HOST_PORT:-27233}:7233"
-    volumes:
-      - ./infra/temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
-
   temporal-ui:
     image: temporalio/ui:2.34.0
     depends_on:

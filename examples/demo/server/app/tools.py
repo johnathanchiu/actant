@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
-from actant.core import JSONObject
+from actant.core import JSONObject, JSONValue
 from actant.tools.admission import (
     ToolDecision,
     ToolResolution,
@@ -223,7 +223,10 @@ class AskUserTool(BaseDeclarativeTool):
             ToolWaitRequest(
                 kind="multiple_choice",
                 prompt=question,
-                payload={"question": question, "options": options},
+                payload={
+                    "question": question,
+                    "options": cast(list[JSONValue], options),
+                },
             )
         )
 

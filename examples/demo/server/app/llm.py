@@ -1,21 +1,134 @@
 from __future__ import annotations
 
+import json
 import os
+import uuid
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from actant.llm.base import LLMClient
+from actant.llm.messages import Message, ToolCall, ToolCallFunction
+
+if TYPE_CHECKING:
+    from actant.runtime.hooks import StreamListener
+
+
+class DemoLLM:
+    """Deterministic local model for exercising the complete demo without API keys."""
+
+    model_id = "demo/deterministic"
+
+    async def complete(
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: list[dict],
+        listener: "StreamListener | None" = None,
+    ) -> Message:
+        del tools
+        latest = messages[-1] if messages else Message(role="user", content="")
+        text = latest.content if isinstance(latest.content, str) else ""
+        lowered = text.lower()
+
+        if latest.role == "tool":
+            return await self._text(
+                "The durable tool call completed successfully. This response resumed from "
+                "the persisted thread state.",
+                listener,
+            )
+
+        if "leaf summarizer" in system:
+            return await self._text(
+                "Durable delegation verified\n\n- The nested subagent completed.\n"
+                "- Its result returned through the parent tool call.\n"
+                "- The parent can now resume exactly once.",
+                listener,
+            )
+
+        if "focused research subagent" in system:
+            return await self._tool_call(
+                "task",
+                {
+                    "subagent": "summarizer",
+                    "message": "Summarize why durable nested agent delegation is useful.",
+                },
+                listener,
+            )
+
+        if "approval" in lowered:
+            return await self._tool_call(
+                "request_approval",
+                {"action": "run the deterministic release-readiness check"},
+                listener,
+            )
+        if "choose" in lowered or "question" in lowered:
+            return await self._tool_call(
+                "ask_user",
+                {
+                    "question": "Which behavior should the demo verify?",
+                    "options": ["Durable approval", "Nested subagent", "Streaming response"],
+                },
+                listener,
+            )
+        if any(word in lowered for word in ("delegate", "subagent", "research")):
+            return await self._tool_call(
+                "task",
+                {
+                    "subagent": "researcher",
+                    "message": "Demonstrate nested durable delegation and return a concise result.",
+                },
+                listener,
+            )
+        return await self._text(
+            "Actant is running in deterministic demo mode. Ask for an approval, a choice, "
+            "or a subagent delegation to exercise durable runtime behavior.",
+            listener,
+        )
+
+    async def _text(self, text: str, listener: "StreamListener | None") -> Message:
+        if listener is not None:
+            midpoint = max(1, len(text) // 2)
+            await listener.on_text_delta(text[:midpoint])
+            await listener.on_text_delta(text[midpoint:])
+        return Message(role="assistant", content=text)
+
+    async def _tool_call(
+        self,
+        name: str,
+        arguments: dict[str, object],
+        listener: "StreamListener | None",
+    ) -> Message:
+        call_id = f"demo_{uuid.uuid4().hex[:12]}"
+        encoded = json.dumps(arguments)
+        if listener is not None:
+            await listener.on_tool_call_start(call_id, name)
+            await listener.on_tool_call_args_delta(call_id, encoded)
+            await listener.on_tool_call_args_complete(call_id)
+        return Message(
+            role="assistant",
+            tool_calls=[
+                ToolCall(
+                    id=call_id,
+                    function=ToolCallFunction(name=name, arguments=encoded),
+                )
+            ],
+        )
 
 
 def build_llm() -> tuple[LLMClient, str]:
     """Pick the LLM provider + model.
 
     If ``ACTANT_PROVIDER`` is set, it pins the provider explicitly
-    (one of: ``anthropic``, ``openai``, ``gemini``). Otherwise, falls
+    (one of: ``fake``, ``anthropic``, ``openai``, ``gemini``). Otherwise, falls
     back to whichever API key is set first in the env, in order:
-    anthropic → openai → gemini.
+    anthropic → openai → gemini. With no key, it uses ``DemoLLM``.
 
     Returns ``(client, model_id)`` for display.
     """
     forced = (os.getenv("ACTANT_PROVIDER") or "").strip().lower()
+
+    if forced == "fake":
+        return DemoLLM(), DemoLLM.model_id
 
     if forced == "openai" or (not forced and not os.getenv("ANTHROPIC_API_KEY") and os.getenv("OPENAI_API_KEY")):
         from actant.llm.providers.openai import OpenAIProvider
@@ -35,7 +148,4 @@ def build_llm() -> tuple[LLMClient, str]:
         model = os.getenv("ACTANT_MODEL", "gemini-2.5-pro")
         return GeminiProvider(model_id=model), model
 
-    raise RuntimeError(
-        "No LLM API key found. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-        "or GEMINI_API_KEY before starting the demo server."
-    )
+    return DemoLLM(), DemoLLM.model_id

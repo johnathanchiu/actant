@@ -4,12 +4,44 @@
 
 import { expect, test } from 'bun:test'
 import { backfillSubThread, reduceSubThread, type SubThreadMap } from '../subThreads'
-import type { TurnEntry } from '../state'
+import type { ToolCallEntry, TurnEntry } from '../state'
 import type { ActantEvent } from '../wire'
 
 const PARENT = 't_parent'
 const SUB = 'sub_1'
 const PARENT_TC = 'tc_task_1'
+
+function taskCall(id: string): ToolCallEntry {
+  return {
+    id,
+    name: 'task',
+    argsText: '',
+    args: null,
+    state: 'running',
+    result: null,
+    error: null,
+    waitPrompt: null,
+    waitKind: null,
+    waitOptions: null,
+    subThreadId: null,
+    subagent: null,
+    startedAt: 0,
+  }
+}
+
+function turn(threadId: string, toolCalls: ToolCallEntry[] = []): TurnEntry {
+  return {
+    kind: 'turn',
+    id: `turn_${threadId}`,
+    turnUid: `uid_${threadId}`,
+    threadId,
+    text: '',
+    thinking: '',
+    toolCalls,
+    isStreaming: false,
+    timestamp: 0,
+  }
+}
 
 const subTs = (turn_uid = 'sub_tu_1'): ActantEvent => ({
   type: 'turn_start',
@@ -120,6 +152,35 @@ test('multiple sub-threads with different sub_thread_ids coexist', () => {
   expect(map['sub_b'].parentToolCallId).toBe('tc_sub_b')
 })
 
+test('a live grandchild attaches to its immediate parent task call', () => {
+  const child = 'sub_child'
+  const grandchild = 'sub_grandchild'
+  const nestedCall = 'tc_nested_task'
+  const initial: SubThreadMap = {
+    [child]: {
+      subThreadId: child,
+      parentThreadId: PARENT,
+      parentToolCallId: PARENT_TC,
+      subagent: 'researcher',
+      turns: [turn(child, [taskCall(nestedCall)])],
+      isStreaming: true,
+    },
+  }
+  const event: ActantEvent = {
+    type: 'turn_start',
+    thread_id: grandchild,
+    parent_thread_id: child,
+    parent_tool_call_id: nestedCall,
+    subagent: 'summarizer',
+    data: { turn: 1, turn_uid: 'uid_grandchild' },
+  }
+
+  const map = reduceSubThread(initial, event, PARENT)
+  expect(map[grandchild].parentThreadId).toBe(child)
+  expect(map[child].turns[0].toolCalls[0].subThreadId).toBe(grandchild)
+  expect(map[child].turns[0].toolCalls[0].subagent).toBe('summarizer')
+})
+
 // ─── backfillSubThread ──────────────────────────────────────────────
 
 test('backfillSubThread populates an activity from history turns', () => {
@@ -189,4 +250,35 @@ test('backfillSubThread merges over existing entry (last write wins)', () => {
   expect(map[SUB].turns).toHaveLength(1)
   expect(map[SUB].turns[0].text).toBe('fresh history')
   expect(map[SUB].subagent).toBe('researcher')
+})
+
+test('backfillSubThread attaches a nested child to its parent task call', () => {
+  const child = 'sub_child'
+  const grandchild = 'sub_grandchild'
+  const nestedCall = 'tc_nested_task'
+  const initial: SubThreadMap = {
+    [child]: {
+      subThreadId: child,
+      parentThreadId: PARENT,
+      parentToolCallId: PARENT_TC,
+      subagent: 'researcher',
+      turns: [turn(child, [taskCall(nestedCall)])],
+      isStreaming: false,
+    },
+  }
+
+  const map = backfillSubThread(
+    initial,
+    {
+      sub_thread_id: grandchild,
+      parent_thread_id: child,
+      parent_tool_call_id: nestedCall,
+    },
+    [turn(grandchild)],
+    'summarizer',
+  )
+
+  expect(map[grandchild].parentThreadId).toBe(child)
+  expect(map[child].turns[0].toolCalls[0].subThreadId).toBe(grandchild)
+  expect(map[child].turns[0].toolCalls[0].subagent).toBe('summarizer')
 })

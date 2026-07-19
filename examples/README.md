@@ -15,3 +15,6 @@ From the repository root:
 just demo-sync
 just demo
 ```
+
+No provider key is required: the demo falls back to a deterministic local model.
+Set `ACTANT_PROVIDER` or a supported provider API key to exercise a live model.

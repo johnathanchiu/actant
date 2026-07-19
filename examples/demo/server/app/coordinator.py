@@ -5,7 +5,7 @@ This is the canonical "how to build on actant" reference example
 that `docs/coordinator-guide.md` points at. The shape is:
 
 - Own the runtime stores + publisher + sub-thread registry.
-- Build agents (one main + one researcher subagent) globally.
+- Build one main agent plus researcher and summarizer subagents globally.
 - Wire AgentRuntime with the registry-aware factories from
   `actant.runtime.coordinator`.
 - Implement `SubagentSpawner` for `TaskTool` to delegate work.

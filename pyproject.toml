@@ -1,8 +1,19 @@
 [project]
 name = "actant"
 version = "0.1.0"
-description = "Runtime kernel for long-lived agents with inboxes, memory, tools, policies, environments, and replay"
+description = "Temporal-native runtime for persistent agents with durable inboxes, tools, memory, and replay"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+keywords = ["agents", "llm", "temporal", "workflow", "orchestration"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Typing :: Typed",
+]
 dependencies = [
   "pydantic>=2.0",
   "sqlalchemy>=2.0",
@@ -31,6 +42,12 @@ dev = [
   "pre-commit>=4.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/johnathanchiu/actant"
+Repository = "https://github.com/johnathanchiu/actant"
+Issues = "https://github.com/johnathanchiu/actant/issues"
+Documentation = "https://github.com/johnathanchiu/actant/tree/main/docs"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -41,6 +58,23 @@ packages = ["actant"]
 [tool.hatch.build.targets.wheel.force-include]
 "actant/py.typed" = "actant/py.typed"
 
+[tool.hatch.build.targets.sdist]
+include = [
+  "/actant",
+  "/docs",
+  "/tests",
+  "/LICENSE",
+  "/README.md",
+  "/pyproject.toml",
+]
+exclude = [
+  "**/.venv",
+  "**/__pycache__",
+  "**/node_modules",
+  "**/*.pyc",
+  "**/*.tsbuildinfo",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
@@ -48,6 +82,3 @@ asyncio_mode = "auto"
 [tool.ruff]
 target-version = "py311"
 line-length = 99
-
-[dependency-groups]
-dev = []

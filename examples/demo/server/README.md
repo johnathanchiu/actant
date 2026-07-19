@@ -7,11 +7,14 @@ HTTP/SSE API.
 ## Prerequisites
 
 1. A local Temporal cluster (from the repo root: `just temporal-up-detached`).
-2. One LLM API key in the environment:
+2. Optionally, an LLM API key in the environment:
 
    ```bash
    export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY / GEMINI_API_KEY
    ```
+
+Without a key, the server uses a deterministic local model that exercises
+streaming, deferred approvals, multiple-choice questions, and nested subagents.
 
 ## Run
 
@@ -54,5 +57,6 @@ has `event: <type>` and `data: <json>` where the JSON is
 | Variable | Default | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | — | Pick which provider to use; first one set wins. |
+| `ACTANT_PROVIDER` | auto | Force `fake`, `anthropic`, `openai`, or `gemini`. |
 | `ACTANT_MODEL` | provider default | Override the model id. |
 | `ACTANT_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated allowlist for the demo UI dev server. |

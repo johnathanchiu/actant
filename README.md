@@ -7,9 +7,55 @@ durable inboxes, tools, admission, memory, and replay — built on top of
 The package is intentionally domain-neutral. Applications provide
 agents, tools, memory content, and UI.
 
+> Actant is under active development. Public APIs may change before 1.0.
+
+## Why Actant
+
+Most agent libraries model one invocation. Actant models a persistent agent
+thread as a durable service:
+
+- one Temporal workflow owns each `(agent_id, thread_id)`;
+- messages arrive through a durable inbox, including while work is active;
+- tool admission is explicit: `ALLOW`, `BLOCK`, or `WAIT`;
+- waiting calls can pause for human or external resolution without holding a
+  Python process open;
+- threads, runs, messages, tool calls, and memory remain readable through
+  application-owned projections;
+- subagents use the same governed tool-call and deferred-resolution model.
+
+Temporal owns coordination, stores own readable projections, and applications
+own domain behavior.
+
+## See the Runtime
+
+The included viewer demonstrates streaming turns, approvals, multiple-choice
+questions, and two-level subagent delegation. It works without an API key by
+using a deterministic local model:
+
+```bash
+just demo-sync
+just demo
+```
+
+Then open `http://localhost:5173`. See [`examples/`](examples/) for the demo
+architecture and prompts.
+
+## Installation
+
+Install Actant with the provider SDKs your application uses:
+
+```bash
+pip install "actant[openai]"
+pip install "actant[anthropic]"
+pip install "actant[gemini]"
+pip install "actant[qwen]"
+```
+
+The provider-neutral runtime can be installed with `pip install actant`.
+
 ## Provider Adapters
 
-Install only the SDKs you need:
+With uv, install only the SDKs you need:
 
 ```bash
 uv add --extra openai actant

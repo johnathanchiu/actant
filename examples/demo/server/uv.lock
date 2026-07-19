@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 
 [[package]]
@@ -42,9 +42,6 @@ requires-dist = [
     { name = "temporalio", specifier = ">=1.8" },
 ]
 provides-extras = ["anthropic", "gemini", "openai", "qwen", "providers", "dev"]
-
-[package.metadata.requires-dev]
-dev = []
 
 [[package]]
 name = "actant-demo-server"

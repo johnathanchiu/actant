@@ -28,19 +28,99 @@ jobs:
       - name: Lint
         run: uv run --extra dev --extra providers ruff check actant tests
 
+      - name: Type check
+        run: uv run --extra dev --extra providers pyright actant tests
+
       - name: Test
         run: uv run --extra dev --extra providers python -m pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Check distribution metadata
+        run: uvx twine check dist/*
+
+      - name: Install and import the provider-neutral wheel
+        run: |
+          test_env="$(mktemp -d)/venv"
+          uv venv "$test_env" --python 3.11
+          uv pip install --python "$test_env/bin/python" dist/*.whl
+          cd "$(mktemp -d)"
+          "$test_env/bin/python" - <<'PY'
+          import actant
+          from actant import AgentDefinition
+          from actant.llm import Message, llm_for_model, provider_for_model
+          from actant.runtime import AgentRuntime
+          from actant.tools import ToolRegistry
+
+          assert actant.__file__ is not None
+          assert AgentDefinition is not None
+          assert Message is not None
+          assert AgentRuntime is not None
+          assert ToolRegistry is not None
+          assert provider_for_model("gpt-5") == "openai"
+
+          missing_extras = {
+              "gpt-5": "actant[openai]",
+              "claude-sonnet-4": "actant[anthropic]",
+              "gemini-2.5-pro": "actant[gemini]",
+              "qwen3": "actant[qwen]",
+          }
+          for model, extra in missing_extras.items():
+              try:
+                  llm_for_model(model)
+              except ImportError as exc:
+                  assert extra in str(exc)
+              else:
+                  raise AssertionError(f"{model} unexpectedly loaded without {extra}")
+          PY
+
+  viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: examples/demo/ui
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun run test
+
+      - name: Build
+        run: bun run build
 
   required:
     name: ci / required
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [python]
+    needs: [python, package, viewer]
     if: always()
     steps:
       - name: Check required jobs
         run: |
           if [ "${{ needs.python.result }}" != "success" ]; then
             echo "python job did not succeed"
+            exit 1
+          fi
+          if [ "${{ needs.package.result }}" != "success" ]; then
+            echo "package job did not succeed"
+            exit 1
+          fi
+          if [ "${{ needs.viewer.result }}" != "success" ]; then
+            echo "viewer job did not succeed"
             exit 1
           fi

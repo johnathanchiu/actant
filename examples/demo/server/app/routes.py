@@ -17,7 +17,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from actant.runtime.exceptions import ToolResolutionStaleError
 
-from app.agents import AGENT_ID, RESEARCHER_AGENT_ID
+from app.agents import AGENT_ID, RESEARCHER_AGENT_ID, SUMMARIZER_AGENT_ID
 from app.coordinator import DemoCoordinator
 
 
@@ -87,9 +87,9 @@ async def list_threads(request: Request) -> list[dict[str, Any]]:
 async def get_messages(thread_id: str, request: Request) -> list[dict[str, Any]]:
     coord = get_coordinator(request)
     # The /messages endpoint returns messages for whichever agent owns
-    # the thread (main vs researcher). For sub-thread requests, look
-    # under researcher.
-    for agent_id in (AGENT_ID, RESEARCHER_AGENT_ID):
+    # the thread. Check the root agent and every demo sub-agent so nested
+    # transcripts can be reconstructed after a refresh.
+    for agent_id in (AGENT_ID, RESEARCHER_AGENT_ID, SUMMARIZER_AGENT_ID):
         messages = await coord.stores.messages.list_for_thread(agent_id, thread_id)
         if messages:
             return [m.to_dict() for m in messages]
@@ -122,15 +122,28 @@ async def get_waiting_tool_calls(thread_id: str, request: Request) -> list[dict[
 @router.get("/threads/{thread_id}/sub_threads")
 async def list_sub_threads(thread_id: str, request: Request) -> list[dict[str, Any]]:
     coord = get_coordinator(request)
-    sub_threads = await coord.stores.threads.list_for_agent(RESEARCHER_AGENT_ID)
+    sub_threads = [
+        *await coord.stores.threads.list_for_agent(RESEARCHER_AGENT_ID),
+        *await coord.stores.threads.list_for_agent(SUMMARIZER_AGENT_ID),
+    ]
+    descendants = []
+    known_parents = {thread_id}
+    remaining = list(sub_threads)
+    while remaining:
+        found = [t for t in remaining if t.parent_thread_id in known_parents]
+        if not found:
+            break
+        descendants.extend(found)
+        known_parents.update(t.id for t in found)
+        remaining = [t for t in remaining if t not in found]
     return [
         {
             "sub_thread_id": t.id,
             "parent_thread_id": t.parent_thread_id,
             "parent_tool_call_id": t.parent_tool_call_id,
         }
-        for t in sub_threads
-        if t.parent_thread_id == thread_id and t.parent_tool_call_id
+        for t in descendants
+        if t.parent_tool_call_id
     ]
 
 
