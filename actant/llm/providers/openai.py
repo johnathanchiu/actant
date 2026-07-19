@@ -78,7 +78,7 @@ class OpenAIProvider:
 
     def __init__(
         self,
-        model_id: str = "gpt-5.2",
+        model_id: str,
         *,
         api_key: str | None = None,
         thinking_level: str = "med",

@@ -42,11 +42,11 @@ class _RecordingListener(StreamListener):
 
 
 def test_provider_for_model_routes_known_prefixes() -> None:
-    assert provider_for_model("gpt-5.2") == "openai"
+    assert provider_for_model("gpt-example") == "openai"
     assert provider_for_model("o4-mini") == "openai"
-    assert provider_for_model("claude-sonnet-4-20250514") == "anthropic"
-    assert provider_for_model("gemini/gemini-3-pro-preview") == "gemini"
-    assert provider_for_model("qwen3.6-plus") == "qwen"
+    assert provider_for_model("claude-example") == "anthropic"
+    assert provider_for_model("gemini/example-model") == "gemini"
+    assert provider_for_model("qwen-example") == "qwen"
 
 
 def test_provider_for_model_rejects_unknown_prefix() -> None:
@@ -254,7 +254,7 @@ def test_gemini_argument_conversion_handles_json_string() -> None:
 
 def test_gemini_replays_tool_call_thought_signature() -> None:
     provider = GeminiProvider(
-        model_id="gemini-3-flash-preview",
+        model_id="gemini-example",
         api_key="test",
         check_thinking_support=False,
     )

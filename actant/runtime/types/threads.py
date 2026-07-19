@@ -1,9 +1,8 @@
 """Agent thread lifecycle models.
 
-Coordination primitives (``PARKED`` / ``WAITING_ON_*`` / lease-on-claim)
-that the old orchestrator depended on are gone — Temporal owns
-single-writer execution, so projection rows just need enough state to
-answer "is this thread alive, and how did the last run end."
+Temporal owns single-writer execution, so projection rows only need
+enough state to answer "is this thread alive, and how did the last run
+end."
 """
 
 from __future__ import annotations

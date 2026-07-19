@@ -66,13 +66,13 @@ jobs:
           assert Message is not None
           assert AgentRuntime is not None
           assert ToolRegistry is not None
-          assert provider_for_model("gpt-5") == "openai"
+          assert provider_for_model("gpt-example") == "openai"
 
           missing_extras = {
-              "gpt-5": "actant[openai]",
-              "claude-sonnet-4": "actant[anthropic]",
-              "gemini-2.5-pro": "actant[gemini]",
-              "qwen3": "actant[qwen]",
+              "gpt-example": "actant[openai]",
+              "claude-example": "actant[anthropic]",
+              "gemini/example-model": "actant[gemini]",
+              "qwen-example": "actant[qwen]",
           }
           for model, extra in missing_extras.items():
               try:

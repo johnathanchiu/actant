@@ -1,231 +1,164 @@
-# Actant Runtime Guide
+# Actant runtime guide
 
-Actant is the agent runtime kernel. Product services compose it with their own
-coordinator, API, auth, artifacts, UI events, and lifecycle.
+Actant uses one Temporal workflow for each `(agent_id, thread_id)`. Client code
+signals workflows; worker code hosts the model, tools, stores, and activities.
 
-This document is for engineers and agents building product runtimes on top of
-Actant.
+Read [core concepts](concepts.md) first if thread, run, and turn are not yet
+familiar.
 
-## Mental Model
+## Install
 
-`AgentRuntime` wires three workers over shared runtime stores:
+Install the provider-neutral runtime plus the model SDKs your worker uses:
 
-- `AgentOrchestrator` consumes wake signals and inbox messages, then creates
-  turn jobs and tool jobs.
-- `TurnWorker` performs one LLM turn and persists assistant/tool-call state.
-- `LocalToolWorker` claims one tool job, executes the tool, persists the result,
-  and emits a wake signal.
-
-Apps own the long-running service loop. Actant owns the queue/job semantics.
-
-The product service should own:
-
-- thread/session metadata outside Actant's internal thread rows
-- user auth and tenancy checks
-- artifact/blob storage
-- SSE/websocket/event publishing
-- cancellation API
-- driver task lifecycle
-- hooks that bridge runtime events into the product
-
-## Production Driver Pattern
-
-Use a small pool of app-owned driver tasks that repeatedly call
-`runtime.run_one()`.
-
-```python
-import asyncio
-
-from actant.runtime import AgentRuntime
-from actant.runtime.types.orchestration import StepStatus
-
-DRIVER_CONCURRENCY = 4
-IDLE_SLEEP_SECONDS = 0.05
-
-
-class ProductCoordinator:
-    def __init__(self, runtime: AgentRuntime) -> None:
-        self.runtime = runtime
-        self._drivers: set[asyncio.Task[None]] = set()
-        self._shutdown = False
-
-    def ensure_drivers_started(self) -> None:
-        running = {task for task in self._drivers if not task.done()}
-        self._drivers = running
-        for _ in range(DRIVER_CONCURRENCY - len(running)):
-            self._drivers.add(asyncio.create_task(self.drive()))
-
-    async def drive(self) -> None:
-        while not self._shutdown:
-            step = await self.runtime.run_one()
-            if step.status == StepStatus.IDLE:
-                await asyncio.sleep(IDLE_SLEEP_SECONDS)
-
-    async def shutdown(self) -> None:
-        self._shutdown = True
-        for task in self._drivers:
-            task.cancel()
-        await asyncio.gather(*self._drivers, return_exceptions=True)
-        self._drivers.clear()
+```bash
+pip install actant
+pip install "actant[openai]"  # choose only the provider extras you need
 ```
 
-`run_until_idle()` is useful for tests, examples, and local demos. Deployed
-services should prefer a driver pool over one task per thread. With durable SQL
-stores, multiple drivers can safely claim disjoint work.
+Actant does not select a “latest” model. Pass a model ID from application
+configuration to the corresponding provider adapter.
 
-## Agent Registration Rule
-
-Register the `AgentDefinition` before enqueuing a message or wake that drivers
-can claim.
+## Define an agent
 
 ```python
-self._agents[agent.id] = agent
-self._thread_contexts[thread_id] = context
-self._turn_states.setdefault(thread_id, TurnState())
+from actant import AgentDefinition
+from actant.llm.providers import OpenAIProvider
+from actant.tools import ToolRegistry
 
-await self.runtime.orchestrator.send_message(
-    agent_id=agent.id,
-    thread_id=thread_id,
-    payload={"content": user_message},
+llm = OpenAIProvider(model_id=settings.model_id)
+agent = AgentDefinition(
+    id="assistant",
+    name="Assistant",
+    persona="You are a careful assistant.",
+    llm=llm,
+    tools=ToolRegistry([]),
 )
-self.ensure_drivers_started()
+agents = {agent.id: agent}
 ```
 
-This ordering matters. A driver can claim the wake immediately after it is
-created, so the runtime must already be able to resolve the agent, hooks,
-listener, and per-thread context.
+Use an explicit application setting for `model_id`. Provider model catalogs
+change independently of Actant releases.
 
-Use a mutable `agents` mapping when your app creates per-thread agents:
+## Create the runtime client
 
 ```python
-agents: dict[str, AgentDefinition] = {}
-runtime = AgentRuntime(stores=stores, agents=agents)
-agents["assistant:thread_1"] = build_agent(...)
+from actant.runtime import AgentRuntime, TemporalRuntimeConfig
+from actant.runtime.stores import InMemoryRuntimeStores
+
+stores = InMemoryRuntimeStores()
+config = TemporalRuntimeConfig(
+    address="localhost:7233",
+    namespace="default",
+    task_queue="actant-runtime",
+)
+runtime = AgentRuntime(stores=stores, agents=agents, temporal=config)
 ```
 
-## Hooks And Persistence
+In-memory stores are suitable for tests and local examples. Use the included
+SQLAlchemy Postgres stores, or implement the store protocols, when projections
+must survive process restarts.
 
-Runtime stores persist conversation state, tool calls, jobs, and wake signals.
-Hooks should publish events or update app-owned metadata. Do not double-write
-messages from hooks.
+## Run a worker
 
-Good hook responsibilities:
-
-- publish text deltas to SSE/websocket clients
-- update product thread status
-- persist generated artifacts in product storage
-- emit audit events
-- bridge waiting-tool prompts to a UI
-
-Avoid:
-
-- writing duplicate assistant/user messages
-- mutating runtime tables outside store APIs
-- doing expensive blocking work inside hooks
-
-## Concurrency Guarantees
-
-`run_one()` claims at most one unit of work. A product service gets concurrency
-by running multiple driver tasks.
-
-With Postgres-backed stores, job claims use row-level locking and skip locked
-rows, so concurrent drivers claim different jobs. This is what allows a single
-agent turn with multiple tool calls to execute those tool jobs in parallel.
-
-Use a modest driver count. Four drivers is a reasonable default for a
-single-user conversational product with 1-3 parallel tool calls per turn. Larger
-values should be paired with provider and tool-level rate limits.
-
-## Start Run Flow
-
-A product `start_run()` usually does this:
-
-1. Create or load the product thread.
-2. Resolve the agent name and immutable thread context.
-3. Build/register the `AgentDefinition`.
-4. Mark product thread status active.
-5. Enqueue the message with `orchestrator.send_message(...)`.
-6. Ensure runtime drivers are running.
-7. Return the product thread id immediately.
-
-Keep product ids and Actant ids explicit. A common pattern is:
+The runtime facade does not execute model calls by itself. A worker must poll
+the same Temporal namespace and task queue:
 
 ```python
-agent_id = f"{agent_name}:{thread_id}"
+from actant.runtime import TemporalRuntimeWorker
+
+worker = TemporalRuntimeWorker(
+    stores=stores,
+    agents=agents,
+    config=config,
+    hooks_factory=my_hooks_factory,
+    listener_factory=my_listener_factory,
+)
+await worker.run()
 ```
 
-## Deferred Tools
+Client and worker can live in one service for local development or separate
+processes in production. Every worker that may receive an activity must be able
+to resolve the referenced agent definition and access compatible projection
+stores.
 
-Waiting tools are resolved by the product service, not by Actant automatically.
-A typical flow:
-
-1. Tool admission returns `ToolDecision.wait(...)`.
-2. Product API records or displays the wait request.
-3. User or service resolves it.
-4. Product updates the stored tool call status/result.
-5. Product enqueues `WakeSignal(..., reason=WakeReason.TOOL_UPDATED)`.
-6. Product ensures drivers are running.
-
-The continuation path is still queue-driven. Do not call the LLM directly from
-the resolve endpoint.
-
-## Cancellation
-
-With a global driver pool, cancellation is queue/state based. Do not assume a
-one-task-per-thread model.
-
-Product cancellation should:
-
-- cancel queued turn jobs for the thread
-- cancel queued tool jobs for the thread
-- cancel active internal runs for the thread
-- update the runtime thread status if present
-- update product thread status
-- publish a cancellation event
-
-A tool already running in a driver may finish. The important invariant is that
-queued or subsequent work for that thread does not continue after cancellation.
-
-## Shutdown
-
-Shut down in this order:
-
-1. Stop and await runtime driver tasks.
-2. Close event publishers/subscribers.
-3. Close Redis/queue clients.
-4. Close DB pools.
-
-Drivers should be cancelled before their stores and publishers are disposed.
-
-## Minimal Product Skeleton
+## Send messages
 
 ```python
-class ProductCoordinator:
-    def __init__(self, stores, publisher) -> None:
-        self.agents: dict[str, AgentDefinition] = {}
-        self.contexts: dict[str, ProductContext] = {}
-        self.runtime = AgentRuntime(
-            stores=stores,
-            agents=self.agents,
-            hooks_factory=self.hooks_for,
-            listener_factory=self.listener_for,
-        )
-
-    async def start_run(self, thread_id: str, message: str) -> None:
-        agent = self.build_agent(thread_id)
-        self.agents[agent.id] = agent
-        self.contexts[thread_id] = ProductContext(...)
-
-        await self.runtime.orchestrator.send_message(
-            agent_id=agent.id,
-            thread_id=thread_id,
-            payload={"content": message},
-        )
-        self.ensure_drivers_started()
-
-    def hooks_for(self, thread):
-        return ProductHooks(thread_id=thread.id, publisher=self.publisher)
+await runtime.send_message("assistant", "thread_1", "Hello")
 ```
 
-Keep product concerns outside Actant. Keep runtime state changes behind Actant
-stores. The product coordinator is the seam between the two.
+`send_message` uses Temporal signal-with-start. The first message starts the
+thread workflow; later messages signal that same workflow. Messages arriving
+while a run is active remain in the workflow inbox and are drained at the next
+run boundary.
+
+The call returns after delivery to Temporal. Observe completion through hooks,
+projections, or your application's event API rather than holding the request
+open for the entire agent run.
+
+## Inspect and cancel
+
+```python
+state = await runtime.get_state("assistant", "thread_1")
+await runtime.cancel_thread("assistant", "thread_1")
+```
+
+The query returns live workflow state such as inbox size, total turns, current
+run ID, and cancellation state. Projection stores provide richer readable
+history. Cancellation is durable and projection cleanup is idempotent.
+
+## Resolve deferred tools
+
+```python
+await runtime.resolve_tool(
+    "assistant",
+    "thread_1",
+    tool_call_id,
+    approved=True,
+    answer="Approved",
+)
+```
+
+Resolution completes the Temporal async activity that the workflow is already
+awaiting. See [pauses and deferred work](pauses-and-resume.md) for the full
+lifecycle.
+
+## Workflow lifecycle
+
+For each run, `AgentThreadWorkflow`:
+
+1. drains all currently queued inbound messages;
+2. records a run through an activity;
+3. executes one model turn through an activity;
+4. admits all emitted tool calls in parallel;
+5. executes allowed calls and awaits deferred calls concurrently;
+6. finalizes the tool-result group in transcript order;
+7. repeats until completion, exhaustion, failure, or cancellation;
+8. parks until another message arrives.
+
+At a run boundary, sufficiently long workflow histories use Temporal
+continue-as-new. Queued inbox messages are carried into the new execution.
+
+## Hooks and streaming
+
+`AgentThreadHooks` reports persisted lifecycle events. `StreamListener` reports
+low-latency model deltas. Supply factories because each thread receives its own
+hook/listener instance.
+
+Good hook responsibilities include publishing SSE/websocket events, updating
+product status, and emitting audit telemetry. Do not persist duplicate runtime
+messages from hooks: the runtime stores are already the transcript writer.
+
+## Production checklist
+
+- Use durable projection stores shared by all workers.
+- Keep client and worker Temporal configuration identical.
+- Make tool side effects idempotent where retries or operator actions matter.
+- Choose external-resolution timeouts from product requirements.
+- Rebuild or persist application-owned subthread registries.
+- Reconnect UIs from projections, then resume live event consumption.
+- Test cancellation and stale deferred resolution, not only happy paths.
+- Pin provider SDK ranges and configure model IDs outside library code.
+
+For a complete application composition, see the [demo server](../examples/demo/server/)
+and [coordinator guide](coordinator-guide.md).

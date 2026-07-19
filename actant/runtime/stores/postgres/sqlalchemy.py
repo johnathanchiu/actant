@@ -4,9 +4,7 @@ These models mirror the canonical Postgres runtime tables. Applications
 can use them directly in Alembic metadata while still implementing the
 store protocols with their preferred session/transaction wiring.
 
-Coordination (wake queue, turn/tool job queues, lease+fence on thread
-claims, mailbox) lives in Temporal now. The models here are
-projection-only.
+Coordination lives in Temporal. The models here are projection-only.
 """
 
 from __future__ import annotations

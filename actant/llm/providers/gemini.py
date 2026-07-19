@@ -94,7 +94,7 @@ class GeminiProvider:
 
     def __init__(
         self,
-        model_id: str = "gemini-3-pro-preview",
+        model_id: str,
         *,
         api_key: str | None = None,
         thinking_level: str = "med",

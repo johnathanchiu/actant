@@ -11,6 +11,7 @@ HTTP/SSE API.
 
    ```bash
    export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY / GEMINI_API_KEY
+   export ACTANT_MODEL=...        # model id supported by that provider
    ```
 
 Without a key, the server uses a deterministic local model that exercises
@@ -58,5 +59,5 @@ has `event: <type>` and `data: <json>` where the JSON is
 |---|---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | — | Pick which provider to use; first one set wins. |
 | `ACTANT_PROVIDER` | auto | Force `fake`, `anthropic`, `openai`, or `gemini`. |
-| `ACTANT_MODEL` | provider default | Override the model id. |
+| `ACTANT_MODEL` | required for real providers | Model id supported by the selected provider. |
 | `ACTANT_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated allowlist for the demo UI dev server. |

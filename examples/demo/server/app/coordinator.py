@@ -257,7 +257,6 @@ class DemoCoordinator:
     # ─── Shutdown ───────────────────────────────────────────────────
 
     async def shutdown(self) -> None:
-        self.runtime.stop()
         self.worker_task.cancel()
         try:
             await self.worker_task

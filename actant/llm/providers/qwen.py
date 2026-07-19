@@ -33,7 +33,7 @@ class QwenProvider:
 
     def __init__(
         self,
-        model_id: str = "qwen3.6-plus",
+        model_id: str,
         *,
         api_key: str | None = None,
         base_url: str = DASHSCOPE_BASE_URL,

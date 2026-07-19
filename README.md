@@ -75,10 +75,15 @@ Supported adapters:
 You can route by model prefix:
 
 ```python
+import os
+
 from actant.llm import llm_for_model
 
-llm = llm_for_model("gpt-5.2")
+llm = llm_for_model(os.environ["ACTANT_MODEL"])
 ```
+
+Actant treats model IDs as provider configuration and does not choose a
+"latest" model on your behalf.
 
 ## Memory
 
@@ -132,7 +137,7 @@ await runtime.send_message("assistant", "thread_1", "hello")
 
 Behind the scenes, `send_message` issues a `signal_with_start` against
 the thread workflow — the workflow is created on first contact and
-signalled on subsequent calls. Idempotent.
+signalled on subsequent calls.
 
 To actually execute the workflow, run a worker process:
 
@@ -271,6 +276,17 @@ robust state recovery when Temporal and the store diverge, read
 [`docs/coordinator-guide.md`](docs/coordinator-guide.md). The
 `examples/demo/` directory ships a worked example (`DemoCoordinator`)
 that uses the framework's coordinator primitives.
+
+## Documentation
+
+Start with the [documentation map](docs/README.md):
+
+- [core concepts](docs/concepts.md)
+- [runtime and deployment](docs/actant-runtime-guide.md)
+- [tools and admission](docs/tools-guide.md)
+- [pauses and deferred work](docs/pauses-and-resume.md)
+- [subagents](docs/subagents.md)
+- [application coordinators](docs/coordinator-guide.md)
 
 ## Local Development
 

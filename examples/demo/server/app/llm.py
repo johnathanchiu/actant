@@ -127,25 +127,34 @@ def build_llm() -> tuple[LLMClient, str]:
     """
     forced = (os.getenv("ACTANT_PROVIDER") or "").strip().lower()
 
+    def configured_model(provider: str) -> str:
+        model = (os.getenv("ACTANT_MODEL") or "").strip()
+        if not model:
+            raise RuntimeError(
+                f"ACTANT_MODEL is required when using the {provider} provider. "
+                "Model IDs are application configuration, not Actant defaults."
+            )
+        return model
+
     if forced == "fake":
         return DemoLLM(), DemoLLM.model_id
 
     if forced == "openai" or (not forced and not os.getenv("ANTHROPIC_API_KEY") and os.getenv("OPENAI_API_KEY")):
         from actant.llm.providers.openai import OpenAIProvider
 
-        model = os.getenv("ACTANT_MODEL", "gpt-5.4-nano")
+        model = configured_model("openai")
         return OpenAIProvider(model_id=model), model
 
     if forced == "anthropic" or (not forced and os.getenv("ANTHROPIC_API_KEY")):
         from actant.llm.providers.anthropic import AnthropicProvider
 
-        model = os.getenv("ACTANT_MODEL", "claude-sonnet-4-20250514")
+        model = configured_model("anthropic")
         return AnthropicProvider(model_id=model), model
 
     if forced == "gemini" or (not forced and (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))):
         from actant.llm.providers.gemini import GeminiProvider
 
-        model = os.getenv("ACTANT_MODEL", "gemini-2.5-pro")
+        model = configured_model("gemini")
         return GeminiProvider(model_id=model), model
 
     return DemoLLM(), DemoLLM.model_id

@@ -7,7 +7,6 @@ Public surface:
 - ``TemporalRuntimeWorker`` — worker process that polls a Temporal
   task queue and executes ``AgentThreadWorkflow`` + activities.
 - ``TemporalRuntimeConfig`` — connection/task-queue configuration.
-- ``StepResult`` / ``StepStatus`` — return type of executor stepping.
 """
 
 from __future__ import annotations
@@ -18,12 +17,9 @@ if TYPE_CHECKING:
     from actant.runtime.executors.temporal import TemporalRuntimeWorker
     from actant.runtime.executors.temporal_types import TemporalRuntimeConfig
     from actant.runtime.runtime import AgentRuntime
-    from actant.runtime.types.orchestration import StepResult, StepStatus
 
 __all__ = [
     "AgentRuntime",
-    "StepResult",
-    "StepStatus",
     "TemporalRuntimeConfig",
     "TemporalRuntimeWorker",
 ]
@@ -34,10 +30,6 @@ def __getattr__(name: str) -> Any:
         from actant.runtime.runtime import AgentRuntime
 
         return AgentRuntime
-    if name in {"StepResult", "StepStatus"}:
-        from actant.runtime.types import orchestration
-
-        return getattr(orchestration, name)
     if name == "TemporalRuntimeConfig":
         from actant.runtime.executors.temporal_types import TemporalRuntimeConfig
 

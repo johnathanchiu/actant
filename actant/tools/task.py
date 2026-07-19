@@ -85,7 +85,7 @@ class TaskTool:
     Pass exactly one of ``invoker`` (sync) or ``spawner`` (deferred).
 
     **Parent-thread resolution (deferred mode):** ``parent_thread_id``
-    is OPTIONAL since v0.2 — if unset, the tool reads ``call.thread_id``
+    is optional — if unset, the tool reads ``call.thread_id``
     from each invocation (which the runtime always stamps on
     ``ToolCallView``). This means a single ``TaskTool`` instance can be
     shared across many threads in one ``AgentDefinition``, instead of
@@ -160,11 +160,9 @@ class TaskTool:
     async def build(self, params: JSONObject) -> "TaskInvocation":
         return TaskInvocation(params, self.invoker)
 
-    # Deferred mode hooks. The runtime checks for ``can_execute`` /
-    # ``on_resolve`` via duck typing (see ``ToolExecutor`` and
-    # ``AgentOrchestrator._maybe_run_on_resolve``); we expose them
-    # unconditionally and gate behavior on ``self.deferred`` so
-    # sync-mode TaskTool instances stay backward-compatible.
+    # Deferred mode hooks. The runtime discovers ``can_execute`` and
+    # ``on_resolve`` structurally; expose both and gate their behavior on
+    # ``self.deferred`` so synchronous TaskTool instances use ALLOW.
 
     async def can_execute(self, call: Any, invocation: Any, context: Any) -> ToolDecision:
         del invocation, context

@@ -46,7 +46,6 @@ from actant.runtime.executors.temporal_types import (
 )
 from actant.runtime.executors.temporal_workflows import AgentThreadWorkflow
 from actant.runtime.interfaces.stores import RuntimeStores
-from actant.runtime.types.orchestration import StepResult, StepStatus
 from actant.tools.admission import ToolResolution, ToolResolve
 from actant.tools.base import ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
@@ -226,37 +225,6 @@ class TemporalExecutor:
         handle = client.get_workflow_handle(self._workflow_id(agent_id, thread_id))
         result = await handle.query(AgentThreadWorkflow.get_state)
         return result
-
-    # === RuntimeExecutor protocol compatibility ===
-    #
-    # Temporal workers drive work asynchronously by polling task queues
-    # in a separate process. The poll-based ``run_one`` / ``run_forever``
-    # / ``run_until_idle`` methods don't have a meaningful client-side
-    # equivalent. They're kept as no-ops to preserve the
-    # ``RuntimeExecutor`` Protocol shape; tests should drive workflows
-    # through ``send_message`` and observe via ``get_state`` or by
-    # waiting on the workflow handle.
-
-    async def run_one(self) -> StepResult:
-        return StepResult(StepStatus.IDLE)
-
-    async def run_forever(self, *, idle_sleep: float = 0.1) -> None:
-        del idle_sleep
-        return None
-
-    async def run_until_idle(
-        self, agent_id: str, thread_id: str, max_steps: int = 25
-    ) -> StepResult:
-        # Tests that need an "advance the thread to quiescence" semantic
-        # should construct a ``WorkflowEnvironment``, send the message,
-        # and ``await handle.result()`` (or query state in a poll). The
-        # production runtime never blocks the caller waiting on the
-        # workflow.
-        del agent_id, max_steps
-        return StepResult(StepStatus.IDLE, thread_id)
-
-    def stop(self) -> None:
-        pass
 
     # === internal ===
 

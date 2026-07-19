@@ -168,26 +168,22 @@ Avoid:
 
 ## Deferred Resolution
 
-If a tool waits, it should usually pair with a product endpoint like:
+If a tool waits, the product resolves it through the runtime facade:
 
 ```python
-await stores.tool_calls.update_status(
+await runtime.resolve_tool(
+    agent_id,
+    thread_id,
     tool_call_id,
-    ToolCallStatus.COMPLETED,
-    result=resolution_result.to_dict(),
+    approved=True,
+    answer="Approved",
 )
-await stores.events.put(
-    WakeSignal(
-        agent_id=record.agent_id,
-        thread_id=record.thread_id,
-        reason=WakeReason.TOOL_UPDATED,
-    )
-)
-coordinator.ensure_drivers_started()
 ```
 
-Do not continue the agent inline from the approval request. Resolution should
-re-enter the normal queue path.
+Do not update tool-call rows yourself or continue the model inline from the
+approval endpoint. `resolve_tool` persists the resolution and completes the
+parked Temporal activity, allowing the existing workflow to resume normally.
+See [pauses and deferred work](pauses-and-resume.md) for details.
 
 ## Testing Tools
 

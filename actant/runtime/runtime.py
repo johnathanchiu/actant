@@ -19,7 +19,6 @@ from actant.runtime.executors.base import RuntimeExecutor
 from actant.runtime.executors.temporal import TemporalExecutor
 from actant.runtime.hooks import AgentThreadHooks, StreamListener
 from actant.runtime.interfaces.stores import RuntimeStores
-from actant.runtime.types.orchestration import StepResult
 from actant.runtime.types.threads import AgentThread
 
 HookFactory = Callable[[AgentThread], AgentThreadHooks]
@@ -75,17 +74,6 @@ class AgentRuntime:
     ) -> str:
         return await self.executor.send_message(agent_id, thread_id, content)
 
-    async def run_one(self) -> StepResult:
-        return await self.executor.run_one()
-
-    async def run_forever(self, *, idle_sleep: float = 0.1) -> None:
-        await self.executor.run_forever(idle_sleep=idle_sleep)
-
-    async def run_until_idle(
-        self, agent_id: str, thread_id: str, max_steps: int = 25
-    ) -> StepResult:
-        return await self.executor.run_until_idle(agent_id, thread_id, max_steps)
-
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
         cancel = getattr(self.executor, "cancel_thread", None)
         if cancel is None:
@@ -119,10 +107,6 @@ class AgentRuntime:
         if getter is None:
             raise NotImplementedError("Active executor does not support get_state")
         return await getter(agent_id, thread_id)
-
-    def stop(self) -> None:
-        self.executor.stop()
-
 
 def default_hooks_factory(_thread: AgentThread) -> AgentThreadHooks:
     return AgentThreadHooks()

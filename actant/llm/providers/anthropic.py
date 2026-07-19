@@ -50,7 +50,7 @@ class AnthropicProvider:
 
     def __init__(
         self,
-        model_id: str = "claude-sonnet-4-20250514",
+        model_id: str,
         *,
         api_key: str | None = None,
         thinking_level: str = "med",

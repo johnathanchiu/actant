@@ -1,15 +1,8 @@
-"""Runtime executor boundary.
-
-Executors own how runtime work is driven. The default implementation uses
-Actant's existing SQL/in-memory queues; alternate implementations can place a
-durable workflow engine below the same public runtime API.
-"""
+"""Runtime executor boundary."""
 
 from __future__ import annotations
 
-from typing import Protocol
-
-from actant.runtime.types.orchestration import StepResult
+from typing import Any, Protocol
 
 
 class RuntimeExecutor(Protocol):
@@ -20,12 +13,17 @@ class RuntimeExecutor(Protocol):
         content: str | list[dict[str, object]],
     ) -> str: ...
 
-    async def run_one(self) -> StepResult: ...
+    async def cancel_thread(self, agent_id: str, thread_id: str) -> None: ...
 
-    async def run_forever(self, *, idle_sleep: float = 0.1) -> None: ...
+    async def resolve_tool(
+        self,
+        agent_id: str,
+        thread_id: str,
+        tool_call_id: str,
+        *,
+        approved: bool | None = None,
+        answer: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> None: ...
 
-    async def run_until_idle(
-        self, agent_id: str, thread_id: str, max_steps: int = 25
-    ) -> StepResult: ...
-
-    def stop(self) -> None: ...
+    async def get_state(self, agent_id: str, thread_id: str) -> object: ...

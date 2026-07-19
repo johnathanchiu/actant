@@ -161,7 +161,7 @@ class PublishingThreadHooks(AgentThreadHooks):
     double-write the same row from two callers; the runtime is the
     single thread-safe writer, hooks just announce.
 
-    **Sub-thread dual publishing** (since v0.2): if ``parent_channel``
+    **Sub-thread dual publishing:** if ``parent_channel``
     + ``parent_metadata`` are set, every event is published to TWO
     channels: the thread's own channel (verbatim) AND the parent
     channel (with ``parent_thread_id`` / ``parent_tool_call_id`` /
