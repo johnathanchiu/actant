@@ -156,6 +156,12 @@ Good hook responsibilities include publishing SSE/websocket events, updating
 product status, and emitting audit telemetry. Do not persist duplicate runtime
 messages from hooks: the runtime stores are already the transcript writer.
 
+Use `RunCompletionHandler` for correctness-bearing work that must retry after a
+run projection commits, such as resolving the parent of a completed subagent.
+Pass it to `TemporalRuntimeWorker`; unlike hooks, handler failure keeps the
+finalization activity incomplete and eligible for retry. Handlers must be
+idempotent.
+
 ## Production checklist
 
 - Use durable projection stores shared by all workers.

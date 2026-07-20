@@ -1,6 +1,14 @@
 """Public runtime imports resolve to the reorganized implementation."""
 
-from actant.runtime import AgentRuntime, TemporalRuntimeConfig, TemporalRuntimeWorker
+from actant.runtime import (
+    AgentRuntime,
+    RunCompletion,
+    RunCompletionHandler,
+    TemporalRuntimeConfig,
+    TemporalRuntimeWorker,
+)
+from actant.runtime.completion import RunCompletion as CanonicalCompletion
+from actant.runtime.completion import RunCompletionHandler as CanonicalCompletionHandler
 from actant.runtime.runtime import AgentRuntime as RuntimeModuleAgentRuntime
 from actant.runtime.temporal import TemporalRuntimeClient
 from actant.runtime.temporal.client import TemporalRuntimeClient as CanonicalClient
@@ -13,3 +21,5 @@ def test_public_runtime_imports_resolve_to_canonical_types() -> None:
     assert TemporalRuntimeConfig is CanonicalConfig
     assert TemporalRuntimeWorker is CanonicalWorker
     assert TemporalRuntimeClient is CanonicalClient
+    assert RunCompletion is CanonicalCompletion
+    assert RunCompletionHandler is CanonicalCompletionHandler

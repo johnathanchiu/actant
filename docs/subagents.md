@@ -56,9 +56,8 @@ Register this link before sending the child's first message. Publishing hooks
 can then dual-publish child events onto the parent's channel with enough
 metadata for a viewer to place them under the correct task call.
 
-`SubThreadRegistry` is an in-memory implementation. Production applications
-that must survive coordinator restarts should persist links or reconstruct them
-from thread projections.
+`SubThreadRegistry` is an in-memory event-routing index. Reconstruct it from
+thread projections after restart. It is not the durable completion mechanism.
 
 ## Completion and harvesting
 
@@ -71,9 +70,11 @@ The coordinator owns harvest semantics. It might return:
 - a success/failure envelope;
 - a product-specific result assembled from several stores.
 
-That result resolves the parent's parked task call. `TaskTool.on_resolve`
-converts the JSON envelope into a normal `ToolResult`, after which the parent
-continues its turn loop.
+Register a `RunCompletionHandler` on `TemporalRuntimeWorker`. It runs inside
+the retryable `finalize_run` activity after projections are committed. The
+handler harvests persisted child output and resolves the parent's parked task
+call. `TaskTool.on_resolve` converts the JSON envelope into a normal
+`ToolResult`, after which the parent continues its turn loop.
 
 ## Nested delegation
 

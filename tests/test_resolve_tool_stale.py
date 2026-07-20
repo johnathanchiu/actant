@@ -147,9 +147,48 @@ async def test_deferred_resolution_non_notfound_rpc_error_propagates(
             _AGENT, _THREAD, "tc_internal_1", approved=True, answer="ok"
         )
 
-    # Store should NOT be marked stale — non-NOT_FOUND errors aren't
-    # diagnostic of "the workflow lost the activity."
+    # The staged terminal result remains authoritative. A retry redelivers it
+    # without invoking application resolution logic again.
     post = await stores.tool_calls.get("tc_internal_1")
-    assert post.status != ToolCallStatus.FAILED or post.result is None or (
-        isinstance(post.result, dict) and post.result.get("error") != "stale_activity"
+    assert post.status is ToolCallStatus.COMPLETED
+
+
+async def test_terminal_resolution_retry_redelivers_without_re_resolving(
+    runtime_client: TemporalRuntimeClient, stores: InMemoryRuntimeStores
+) -> None:
+    record = _make_record()
+    record.status = ToolCallStatus.COMPLETED
+    record.result = {"result": {"approved": True}}
+    await stores.tool_calls.save(record)
+
+    delivered: list[Any] = []
+
+    class _Handle:
+        async def complete(self, outcome: Any) -> None:
+            delivered.append(outcome)
+
+    class _RetryClient:
+        def get_async_activity_handle(self, **_: Any) -> _Handle:
+            return _Handle()
+
+    runtime_client._client = _RetryClient()  # type: ignore[assignment]
+    await runtime_client.resolve_deferred_tool_call(
+        _AGENT, _THREAD, _TOOL_CALL_ID, approved=True
     )
+    assert len(delivered) == 1
+    assert delivered[0].status == "completed"
+
+
+async def test_terminal_retry_treats_not_found_as_already_delivered(
+    runtime_client: TemporalRuntimeClient, stores: InMemoryRuntimeStores
+) -> None:
+    record = _make_record()
+    record.status = ToolCallStatus.COMPLETED
+    record.result = {"result": {"approved": True}}
+    await stores.tool_calls.save(record)
+
+    await runtime_client.resolve_deferred_tool_call(
+        _AGENT, _THREAD, _TOOL_CALL_ID, approved=True
+    )
+
+    assert (await stores.tool_calls.get(_TOOL_CALL_ID)).status is ToolCallStatus.COMPLETED

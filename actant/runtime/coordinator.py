@@ -92,11 +92,10 @@ class SubThreadLink:
 class SubThreadRegistry:
     """In-memory map of active sub-threads keyed by ``sub_thread_id``.
 
-    Owned by the app's coordinator. Lifetime is process-scoped (NOT
-    persisted) — on process restart, in-flight sub-threads become
-    orphaned and their parent's deferred tool call should be
-    reconciled to FAILED. Apps that need resume-on-restart semantics
-    should rebuild the registry from the threads store on startup.
+    Owned by the app's coordinator. Lifetime is process-scoped; applications
+    rebuild it from persisted thread parent fields on startup. Durable parent
+    resolution must use a ``RunCompletionHandler`` and projection data rather
+    than relying on registry presence.
 
     Thread-safety: registrations and lookups happen from coroutines
     on a single event loop. The registry is NOT safe for use across
@@ -219,9 +218,9 @@ async def resolve_deferred_tool_call(
 
     Thin wrapper over ``runtime.resolve_deferred_tool_call`` that gives
     apps ONE entry point for resolving deferreds — whether the
-    source is user-driven (DeferredPanel POST → HTTP route →
-    coordinator → this function) or sub-thread-completion driven
-    (sub-thread hooks ``on_complete`` → coordinator → this function).
+    source is user-driven (DeferredPanel POST → HTTP route → coordinator →
+    this function) or sub-thread-completion driven (retryable run-completion
+    handler → coordinator → this function).
 
     Funneling both paths through here pays off when state diverges:
     ``runtime.resolve_deferred_tool_call`` raises

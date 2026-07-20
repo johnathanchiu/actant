@@ -34,6 +34,7 @@ from actant.runtime.temporal.types import (
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.events.lifecycle import AgentThreadHooks
+from actant.runtime.completion import RunCompletion, RunCompletionHandler
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.types.threads import AgentThread
 from actant.tools.admission import (
@@ -107,6 +108,7 @@ async def _run(
     *,
     agent: AgentDefinition,
     hooks_factory: object | None = None,
+    run_completion_handler: RunCompletionHandler | None = None,
 ) -> None:
     """Spin up a WorkflowEnvironment + Worker and run ``test`` inside it."""
     stores = InMemoryRuntimeStores()
@@ -114,6 +116,7 @@ async def _run(
         stores=stores,
         agents={agent.id: agent},
         hooks_factory=hooks_factory,  # type: ignore[arg-type]
+        run_completion_handler=run_completion_handler,
     )
     task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
 
@@ -671,3 +674,40 @@ async def test_hooks_fire_inside_activities() -> None:
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent, hooks_factory=factory)
+
+
+@pytest.mark.asyncio
+async def test_run_completion_handler_receives_persisted_boundary() -> None:
+    completions: list[RunCompletion] = []
+
+    async def handle(completion: RunCompletion) -> None:
+        thread = await setup.stores.threads.get(
+            completion.agent_id, completion.thread_id
+        )
+        assert thread.active_run_id is None
+        completions.append(completion)
+
+    agent = _agent(FakeLLM([FakeResponse(text="ok")]))
+
+    async def body(s: _RunSetup, client) -> None:  # type: ignore[no-untyped-def]
+        nonlocal setup
+        setup = s
+        handle_workflow = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=5),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="hi")],
+        )
+
+        await _wait_for(lambda: len(completions) == 1)
+        assert completions[0].agent_id == _AGENT
+        assert completions[0].thread_id == _THREAD
+        assert completions[0].succeeded
+
+        await handle_workflow.signal(AgentThreadWorkflow.cancel)
+        await asyncio.wait_for(handle_workflow.result(), timeout=5.0)
+
+    setup: _RunSetup
+    await _run(body, agent=agent, run_completion_handler=handle)

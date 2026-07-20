@@ -61,7 +61,7 @@ Plus a related framework fix:
 
 ```python
 from actant.agents import AgentDefinition
-from actant.runtime import AgentRuntime
+from actant.runtime import AgentRuntime, RunCompletion, TemporalRuntimeWorker
 from actant.runtime.coordinator import (
     SubThreadLink,
     SubThreadRegistry,
@@ -139,26 +139,32 @@ class MyCoordinator:
             self.researcher_agent.id, sub_thread_id, message,
         )
 
-    # Called from the sub-thread's on_complete hook (which you wire
-    # in your hooks_factory wrapper if you want; here we just check
-    # registry membership in a fresh hooks subclass).
-    async def on_sub_thread_complete(
-        self, sub_thread_id: str, *, success: bool, final_text: str,
-    ):
-        link = self.registry.pop(sub_thread_id)
-        if link is None:
+    # Passed to TemporalRuntimeWorker(run_completion_handler=...).
+    # This runs inside the retryable finalize_run activity, after the
+    # child's thread/run/message projections have committed.
+    async def handle_run_completion(self, completion: RunCompletion):
+        child = await self.stores.threads.get(
+            completion.agent_id, completion.thread_id,
+        )
+        if child.parent_tool_call_id is None or child.parent_thread_id is None:
             return
-        # Your harvest semantics here. Minimal: pass the final text
-        # back wrapped in a JSON envelope (TaskTool.on_resolve does
-        # json.loads on the answer).
-        envelope = {"text": final_text, "subagent": link.subagent_name}
+        parent_call = await self.stores.tool_calls.get(child.parent_tool_call_id)
+        messages = await self.stores.messages.list_for_thread(
+            completion.agent_id, completion.thread_id,
+        )
+        final_text = next(
+            (m.content for m in reversed(messages)
+             if m.role == "assistant" and isinstance(m.content, str)),
+            completion.outcome,
+        )
+        envelope = {"text": final_text, "subagent": completion.agent_id}
         try:
             await resolve_deferred_tool_call(
                 self.runtime,
-                agent_id="main",  # parent agent
-                thread_id=link.parent_thread_id,
-                tool_call_id=link.parent_tool_call_id,
-                approved=success,
+                agent_id=parent_call.agent_id,
+                thread_id=child.parent_thread_id,
+                tool_call_id=parent_call.id,
+                approved=completion.succeeded,
                 answer=json.dumps(envelope),
             )
         except ToolResolutionStaleError:
@@ -166,6 +172,13 @@ class MyCoordinator:
             # reset). The store is already marked FAILED — nothing
             # more to do.
             pass
+
+    # Worker wiring is separate from AgentRuntime's client role.
+    # worker = TemporalRuntimeWorker(
+    #     stores=self.stores,
+    #     agents={...},
+    #     run_completion_handler=self.handle_run_completion,
+    # )
 
     # Single entry point for user-driven resolves too — funneling
     # both paths through the same method gives one place to handle
@@ -191,7 +204,8 @@ class MyCoordinator:
 
 ## What you DON'T have to do
 
-- Manually wrap hooks for sub-thread routing (the factory does it).
+- Use hooks to continue a parent. Hooks only publish observations;
+  `RunCompletionHandler` owns retryable completion integration.
 - Maintain a side-channel map of "is this thread a sub-thread"
   (the registry IS that map; the factories consult it).
 - Handle "activity not found" errors from Temporal yourself (the
@@ -211,11 +225,10 @@ class MyCoordinator:
 - **Cancellation policy.** When a parent thread cancels, do
   in-flight sub-threads cancel too? Production apps often implement
   cascade-cancel; the demo doesn't bother.
-- **Persistence of registry state.** The `SubThreadRegistry` is
-  in-memory. If you want sub-thread tracking to survive process
-  restarts, rebuild the registry from your store on startup (look
-  at threads with `parent_thread_id` set, populate the registry
-  from those).
+- **Registry reconstruction.** `SubThreadRegistry` is an in-memory live-event
+  routing index. Rebuild active links from thread and tool-call projections on
+  startup. Parent continuation remains safe because the completion handler
+  derives linkage from those projections rather than registry memory.
 
 ## Reference implementation
 

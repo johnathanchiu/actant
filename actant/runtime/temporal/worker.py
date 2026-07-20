@@ -8,6 +8,7 @@ import temporalio.client
 import temporalio.worker
 
 from actant.agents import AgentDefinition
+from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.temporal.activities import (
     HookFactory,
@@ -36,6 +37,7 @@ class TemporalRuntimeWorker:
         hooks_factory: HookFactory | None = None,
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
+        run_completion_handler: RunCompletionHandler | None = None,
     ) -> None:
         self.config = config or TemporalRuntimeConfig()
         self._activities = TemporalRuntimeActivities(
@@ -44,6 +46,7 @@ class TemporalRuntimeWorker:
             hooks_factory=hooks_factory,
             listener_factory=listener_factory,
             message_preprocessor=message_preprocessor,
+            run_completion_handler=run_completion_handler,
         )
 
     async def run(self) -> None:

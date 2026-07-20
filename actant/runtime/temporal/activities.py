@@ -1,8 +1,9 @@
 """Temporal activities for the AgentThreadWorkflow.
 
-All canonical store writes happen in these activity bodies. Hooks are
-fired only after the corresponding canonical write commits, so a crash
-between the two never publishes events for state that didn't persist.
+All canonical store writes happen in these activity bodies. The run-completion
+handler is a retryable, correctness-bearing integration boundary; lifecycle
+hooks are observational and fire only after the corresponding canonical write
+commits.
 
 Each tool-related activity has a single, focused job:
 
@@ -41,6 +42,7 @@ from actant.core import JSONObject, new_id
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message  # for type hint in MessagePreprocessor
 from actant.llm.messages import ToolCall as LLMToolCall
+from actant.runtime.completion import RunCompletion, RunCompletionHandler
 from actant.runtime.temporal.types import (
     ActivityName,
     AdmitDecision,
@@ -93,12 +95,14 @@ class TemporalRuntimeActivities:
         hooks_factory: HookFactory | None = None,
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
+        run_completion_handler: RunCompletionHandler | None = None,
     ) -> None:
         self.stores = stores
         self.agents = agents
         self.hooks_factory = hooks_factory
         self.listener_factory = listener_factory
         self.message_preprocessor = message_preprocessor
+        self.run_completion_handler = run_completion_handler
 
     @property
     def all(self) -> list[Callable[..., object]]:
@@ -539,6 +543,15 @@ class TemporalRuntimeActivities:
         thread.active_run_id = None
         thread.status = _thread_status_for_outcome(payload.outcome)
         await self.stores.threads.update(thread)
+        if self.run_completion_handler is not None:
+            await self.run_completion_handler(
+                RunCompletion(
+                    agent_id=payload.agent_id,
+                    thread_id=payload.thread_id,
+                    run_id=payload.run_id,
+                    outcome=payload.outcome,
+                )
+            )
         hooks = self._hooks(thread)
         success = payload.outcome == RunOutcome.COMPLETED.value
         await hooks.on_complete(success=success, reason=payload.outcome, message="")

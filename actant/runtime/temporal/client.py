@@ -158,6 +158,23 @@ class TemporalRuntimeClient:
         out-of-band resolution arrives.
         """
         del thread_id  # unused — record carries the temporal handle directly
+        existing = await self.stores.tool_calls.get(tool_call_id)
+        if existing.status in {
+            ToolCallStatus.COMPLETED,
+            ToolCallStatus.BLOCKED,
+            ToolCallStatus.FAILED,
+        }:
+            # A previous attempt persisted the logical result but may have lost
+            # Temporal's acknowledgement. Redeliver without invoking
+            # ``on_resolve`` again. NOT_FOUND is success here: it means the
+            # original delivery already woke the activity (or the workflow has
+            # since closed), and the terminal projection is authoritative.
+            if (
+                existing.temporal_workflow_id is not None
+                and existing.temporal_activity_id is not None
+            ):
+                await self._redeliver_terminal_resolution(existing)
+            return
         record = await self._await_temporal_handle(tool_call_id)
 
         resolution = ToolResolution(
@@ -202,6 +219,8 @@ class TemporalRuntimeClient:
                 or "cannot find pending activity" in str(exc).lower()
             )
             if not is_not_found:
+                # Keep the terminal projection. A retry redelivers this exact
+                # outcome without repeating application resolution logic.
                 raise
             reason = f"Temporal lost the pending activity: {exc}"
             stale_result = {
@@ -213,6 +232,36 @@ class TemporalRuntimeClient:
                 tool_call_id, ToolCallStatus.FAILED, result=stale_result
             )
             raise ToolResolutionStaleError(tool_call_id, reason) from exc
+
+    async def _redeliver_terminal_resolution(self, record: ToolCallRecord) -> None:
+        """Retry an ambiguously acknowledged async-activity completion."""
+        assert record.temporal_workflow_id is not None
+        assert record.temporal_activity_id is not None
+        client = await self._get_client()
+        handle = client.get_async_activity_handle(
+            workflow_id=record.temporal_workflow_id,
+            run_id=None,
+            activity_id=record.temporal_activity_id,
+        )
+        metadata = record.result.get("metadata") if isinstance(record.result, dict) else None
+        outcome = ExecuteOutcome(
+            tool_call_id=record.id,
+            status=(
+                ExecuteStatus.COMPLETED
+                if record.status is ToolCallStatus.COMPLETED
+                else ExecuteStatus.FAILED
+            ).value,
+            terminal=bool(metadata.get("terminal")) if isinstance(metadata, dict) else False,
+        )
+        try:
+            await handle.complete(outcome)
+        except temporalio.service.RPCError as exc:
+            if (
+                exc.status == temporalio.service.RPCStatusCode.NOT_FOUND
+                or "cannot find pending activity" in str(exc).lower()
+            ):
+                return
+            raise
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
         client = await self._get_client()

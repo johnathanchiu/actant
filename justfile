@@ -88,19 +88,22 @@ demo-db-down:
 demo-status:
     #!/usr/bin/env bash
     set -euo pipefail
-    declare -A SVC=(
-        [5173]="UI (vite)"
-        [8181]="server (uvicorn)"
-        [27233]="Temporal gRPC"
-        [28233]="Temporal UI"
-        [55435]="demo Postgres"
-    )
+    service_name() {
+        case "$1" in
+            5173) echo "UI (vite)" ;;
+            8181) echo "server (uvicorn)" ;;
+            27233) echo "Temporal gRPC" ;;
+            28233) echo "Temporal UI" ;;
+            55435) echo "demo Postgres" ;;
+        esac
+    }
     any=0
     for port in 5173 8181 27233 28233 55435; do
-        if lsof -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -1 | read -r line; then
+        line=$(lsof -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null | sed -n '2p' || true)
+        if [ -n "$line" ]; then
             cmd=$(echo "$line" | awk '{print $1}')
             pid=$(echo "$line" | awk '{print $2}')
-            echo "  :$port (${SVC[$port]}) → $cmd pid=$pid"
+            echo "  :$port ($(service_name "$port")) → $cmd pid=$pid"
             any=1
         fi
     done

@@ -18,12 +18,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from actant.runtime.completion import RunCompletion, RunCompletionHandler
     from actant.runtime.temporal.types import TemporalRuntimeConfig
     from actant.runtime.temporal.worker import TemporalRuntimeWorker
     from actant.runtime.runtime import AgentRuntime
 
 __all__ = [
     "AgentRuntime",
+    "RunCompletion",
+    "RunCompletionHandler",
     "TemporalRuntimeConfig",
     "TemporalRuntimeWorker",
 ]
@@ -34,6 +37,10 @@ def __getattr__(name: str) -> Any:
         from actant.runtime.runtime import AgentRuntime
 
         return AgentRuntime
+    if name in {"RunCompletion", "RunCompletionHandler"}:
+        from actant.runtime import completion
+
+        return getattr(completion, name)
     if name == "TemporalRuntimeConfig":
         from actant.runtime.temporal.types import TemporalRuntimeConfig
 

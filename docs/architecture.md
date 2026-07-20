@@ -278,9 +278,10 @@ The parent/child relationship includes:
 
 Child lifecycle and streaming events may be dual-published to the root thread
 for UI display. Event routing is not the same thing as durable parent
-resolution. This boundary is an active hardening area: production-grade nested
-execution must survive worker/process restart without relying solely on an
-in-memory subthread registry or completion hook.
+resolution. A `RunCompletionHandler` runs inside the retryable run-finalization
+activity and derives parent linkage from projections. The in-memory registry
+can therefore be rebuilt after restart without deciding whether the parent may
+resume.
 
 See [subagents](subagents.md) for the public patterns and
 [coordinator guide](coordinator-guide.md) for application wiring.
