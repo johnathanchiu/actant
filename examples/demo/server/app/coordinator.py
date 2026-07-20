@@ -23,6 +23,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -53,6 +54,7 @@ from actant.runtime.stores.postgres import (
 )
 from actant.runtime.types.threads import AgentThread
 from actant.tools.calls import ToolCallStatus
+from actant.tools.base import ToolResult
 from actant.tools.task import TaskTool
 
 from app.agents import (
@@ -75,9 +77,7 @@ _SUBAGENT_IDS = {
 }
 
 
-DEFAULT_DATABASE_URL = (
-    "postgresql+asyncpg://actant:actant@localhost:55435/actant_demo"
-)
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://actant:actant@localhost:55435/actant_demo"
 
 
 @dataclass
@@ -106,6 +106,7 @@ class DemoCoordinator:
         engine: object,
         model_id: str,
         registry: SubThreadRegistry,
+        hooks_factory: Callable[[AgentThread], AgentThreadHooks],
     ) -> None:
         self.stores = stores
         self.runtime = runtime
@@ -114,6 +115,7 @@ class DemoCoordinator:
         self.engine = engine
         self.model_id = model_id
         self.registry = registry
+        self.hooks_factory = hooks_factory
 
     # ─── SubagentSpawner protocol (TaskTool.spawner) ────────────────
 
@@ -136,9 +138,7 @@ class DemoCoordinator:
         # coordinator would use, backed by the in-memory registry
         # instead of a store query.
         parent_link = self.registry.get(parent_thread_id)
-        parent_agent_id = (
-            parent_link.sub_agent_id if parent_link is not None else AGENT_ID
-        )
+        parent_agent_id = parent_link.sub_agent_id if parent_link is not None else AGENT_ID
         sub_thread_id = f"sub_{uuid.uuid4().hex[:10]}"
         link = SubThreadLink(
             sub_thread_id=sub_thread_id,
@@ -155,9 +155,7 @@ class DemoCoordinator:
         # Persist parent metadata onto the sub-thread row too so
         # /api/threads/:id/sub_threads can report the mapping after
         # process restart.
-        thread = await self.stores.threads.get_or_create(
-            sub_agent_id, sub_thread_id
-        )
+        thread = await self.stores.threads.get_or_create(sub_agent_id, sub_thread_id)
         await self.stores.threads.update(
             AgentThread(
                 id=thread.id,
@@ -172,8 +170,7 @@ class DemoCoordinator:
         composed = message
         if context:
             composed = (
-                f"{message}\n\nContext from caller:\n"
-                f"```json\n{json.dumps(context, indent=2)}\n```"
+                f"{message}\n\nContext from caller:\n```json\n{json.dumps(context, indent=2)}\n```"
             )
         await self.runtime.send_message(sub_agent_id, sub_thread_id, composed)
 
@@ -208,6 +205,19 @@ class DemoCoordinator:
             answer=answer,
             payload=payload,
         )
+        # The durable record is terminal as soon as the resolution lands,
+        # even though the workflow correctly remains behind the group barrier.
+        # Publish that persisted partial progress immediately so the demo can
+        # show calls resolving independently. ``finalize_tool_group`` emits the
+        # same idempotent lifecycle event once the whole group is ready.
+        record = await self.stores.tool_calls.get(tool_call_id)
+        thread = await self.stores.threads.get(agent_id, thread_id)
+        result = (
+            ToolResult.ok(record.result)
+            if record.status is ToolCallStatus.COMPLETED
+            else ToolResult.fail(str(record.result))
+        )
+        await self.hooks_factory(thread).on_tool_resolved(tool_call_id, result, record.turn_id)
 
     async def handle_run_completion(self, completion: RunCompletion) -> None:
         """Resolve a parent task after a persisted child run completes.
@@ -216,9 +226,7 @@ class DemoCoordinator:
         It derives linkage and output from stores rather than hooks or process
         memory, so worker restart does not orphan the parent's parked call.
         """
-        thread = await self.stores.threads.get(
-            completion.agent_id, completion.thread_id
-        )
+        thread = await self.stores.threads.get(completion.agent_id, completion.thread_id)
         if thread.parent_tool_call_id is None or thread.parent_thread_id is None:
             return
 
@@ -308,9 +316,7 @@ async def _restore_subthread_registry(
                     parent_thread_id=thread.parent_thread_id,
                     parent_tool_call_id=parent_call.id,
                     sub_agent_id=thread.agent_id,
-                    subagent_name=(
-                        subagent if isinstance(subagent, str) else thread.agent_id
-                    ),
+                    subagent_name=(subagent if isinstance(subagent, str) else thread.agent_id),
                     metadata={"parent_agent_id": parent_call.agent_id},
                 )
             )
@@ -455,6 +461,7 @@ async def build_coordinator() -> DemoCoordinator:
         engine=engine,
         model_id=model_id,
         registry=registry,
+        hooks_factory=hooks_factory,
     )
     coordinator_ref.append(coordinator)
     return coordinator

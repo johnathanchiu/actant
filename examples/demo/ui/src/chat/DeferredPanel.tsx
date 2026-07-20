@@ -14,7 +14,11 @@ type Props = {
   onResolve: (
     threadId: string,
     toolCallId: string,
-    body: { approved?: boolean; answer?: string; payload?: Record<string, unknown> },
+    body: {
+      approved?: boolean
+      answer?: string
+      payload?: Record<string, unknown>
+    },
   ) => Promise<void>
 }
 
@@ -30,7 +34,13 @@ type Pending = {
 export function DeferredPanel({ entries, subThreads, onResolve }: Props) {
   const pending = findFirstWaiting(entries, subThreads)
   if (!pending) return null
-  return <DeferredCard key={pending.call.id} onResolve={onResolve} pending={pending} />
+  return (
+    <DeferredCard
+      key={pending.call.id}
+      onResolve={onResolve}
+      pending={pending}
+    />
+  )
 }
 
 function DeferredCard({
@@ -79,7 +89,9 @@ function DeferredCard({
           <span>·</span>
           <span className="text-ink-fade">{call.name}</span>
         </div>
-        <div className="mb-3 text-[0.92rem] leading-snug text-ink">{call.waitPrompt}</div>
+        <div className="mb-3 text-[0.92rem] leading-snug text-ink">
+          {call.waitPrompt}
+        </div>
 
         {kind === 'approval' ? (
           <div className="flex items-center gap-2">
@@ -135,7 +147,9 @@ function DeferredCard({
           </div>
         )}
 
-        {error ? <div className="mt-2 text-[0.78rem] text-accent-warm">{error}</div> : null}
+        {error ? (
+          <div className="mt-2 text-[0.78rem] text-accent-warm">{error}</div>
+        ) : null}
       </div>
     </div>
   )
@@ -147,18 +161,24 @@ function labelFor(kind: Pending['kind']): string {
   return 'awaiting input'
 }
 
-// Tool names whose `waiting` state means "the agent is asking the
-// USER for input" (vs. e.g. `task`, which waits on a sub-agent to
-// finish). DeferredPanel ONLY shows for these — anything else parked
-// in `waiting` state is plumbing the user shouldn't need to interact
-// with.
+// Older persisted calls may not have a wait kind, so retain the
+// well-known tool names as a compatibility fallback. New calls are
+// classified by their declared wait request instead of their tool name.
 const USER_INPUT_TOOLS = new Set(['ask_user', 'request_approval'])
 
 function pendingFor(call: ToolCallEntry, threadId: string): Pending | null {
   if (call.state !== 'waiting') return null
-  if (!USER_INPUT_TOOLS.has(call.name)) return null
   const kind: Pending['kind'] =
-    call.name === 'request_approval' ? 'approval' : 'question'
+    call.waitKind === 'approval'
+      ? 'approval'
+      : call.waitKind === 'multiple_choice'
+        ? 'question'
+        : call.name === 'request_approval'
+          ? 'approval'
+          : call.name === 'ask_user'
+            ? 'question'
+            : 'generic'
+  if (kind === 'generic' && !USER_INPUT_TOOLS.has(call.name)) return null
   return { call, threadId, kind }
 }
 

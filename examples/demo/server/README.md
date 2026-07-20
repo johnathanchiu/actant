@@ -23,7 +23,8 @@ Set `ACTANT_PROVIDER` explicitly to opt into a live provider.
 
 Try asking it to help choose a pizza, then ask for the weather in New York,
 London, and Tokyo. The first request pauses for a real UI choice; the second
-produces three independent tool calls in one agent turn.
+produces three independently approved tool calls in one agent turn. Stop the
+run before the last approval, then continue on the same thread.
 
 ## Run
 

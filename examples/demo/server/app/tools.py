@@ -51,55 +51,61 @@ class _GetWeatherInvocation(BaseToolInvocation[dict[str, Any], dict[str, Any]]):
         if not location:
             return ToolResult.fail("location is required")
 
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                geocode = await client.get(
-                    "https://geocoding-api.open-meteo.com/v1/search",
-                    params={
-                        "name": location.split(",", 1)[0].strip(),
-                        "count": 1,
-                        "language": "en",
-                        "format": "json",
-                    },
-                )
-                geocode.raise_for_status()
-                matches = geocode.json().get("results") or []
-                if not matches:
-                    return ToolResult.fail(f"location not found: {location}")
+        return await _fetch_weather(location)
 
-                match = matches[0]
-                forecast = await client.get(
-                    "https://api.open-meteo.com/v1/forecast",
-                    params={
-                        "latitude": match["latitude"],
-                        "longitude": match["longitude"],
-                        "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m",
-                        "temperature_unit": "fahrenheit",
-                        "wind_speed_unit": "mph",
-                    },
-                )
-                forecast.raise_for_status()
-                current = forecast.json()["current"]
-                return ToolResult.ok(
-                    {
-                        "location": ", ".join(
-                            part
-                            for part in (
-                                match.get("name"),
-                                match.get("admin1"),
-                                match.get("country"),
-                            )
-                            if part
-                        ),
-                        "temperature_f": current["temperature_2m"],
-                        "feels_like_f": current["apparent_temperature"],
-                        "wind_mph": current["wind_speed_10m"],
-                        "weather_code": current["weather_code"],
-                        "observed_at": current["time"],
-                    }
-                )
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            return ToolResult.fail(f"weather lookup failed: {exc}")
+
+async def _fetch_weather(location: str) -> ToolResult:
+    """Fetch one location after admission or explicit approval."""
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            geocode = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={
+                    "name": location.split(",", 1)[0].strip(),
+                    "count": 1,
+                    "language": "en",
+                    "format": "json",
+                },
+            )
+            geocode.raise_for_status()
+            matches = geocode.json().get("results") or []
+            if not matches:
+                return ToolResult.fail(f"location not found: {location}")
+
+            match = matches[0]
+            forecast = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": match["latitude"],
+                    "longitude": match["longitude"],
+                    "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m",
+                    "temperature_unit": "fahrenheit",
+                    "wind_speed_unit": "mph",
+                },
+            )
+            forecast.raise_for_status()
+            current = forecast.json()["current"]
+            return ToolResult.ok(
+                {
+                    "location": ", ".join(
+                        part
+                        for part in (
+                            match.get("name"),
+                            match.get("admin1"),
+                            match.get("country"),
+                        )
+                        if part
+                    ),
+                    "temperature_f": current["temperature_2m"],
+                    "feels_like_f": current["apparent_temperature"],
+                    "wind_mph": current["wind_speed_10m"],
+                    "weather_code": current["weather_code"],
+                    "observed_at": current["time"],
+                }
+            )
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+        return ToolResult.fail(f"weather lookup failed: {exc}")
 
 
 class GetWeatherTool(BaseDeclarativeTool):
@@ -124,6 +130,23 @@ class GetWeatherTool(BaseDeclarativeTool):
 
     async def build(self, params: JSONObject) -> ToolInvocation:
         return _GetWeatherInvocation(dict(params))
+
+    async def can_execute(self, call, invocation, context):  # type: ignore[no-untyped-def]
+        del invocation, context
+        location = str(call.args.get("location", "")).strip()
+        return ToolDecision.wait(
+            ToolWaitRequest(
+                kind="approval",
+                prompt=f"Share {location} with the weather service?",
+                payload={"location": location},
+            )
+        )
+
+    async def on_resolve(self, call, resolution: ToolResolution) -> ToolResult:
+        location = str(call.args.get("location", "")).strip()
+        if resolution.approved is not True:
+            return ToolResult.fail(f"weather lookup denied for {location}")
+        return await _fetch_weather(location)
 
 
 class _FetchUrlInvocation(BaseToolInvocation[dict[str, Any], str]):

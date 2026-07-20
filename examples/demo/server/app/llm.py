@@ -88,6 +88,12 @@ class DemoLLM:
                 ],
                 listener,
             )
+        if "continue" in lowered:
+            return await self._tool_call(
+                "get_weather",
+                {"location": "Tokyo, Japan"},
+                listener,
+            )
         if "pizza" in lowered:
             return await self._tool_call(
                 "ask_user",

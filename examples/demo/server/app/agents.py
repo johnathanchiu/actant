@@ -50,7 +50,9 @@ DEMO_PERSONA = (
     "want to delegate.\n"
     "Use `ask_user` naturally when a small preference would improve the "
     "answer, including food choices such as pizza. Use the tools when they "
-    "fit; otherwise answer directly. Keep responses warm and concise."
+    "fit; otherwise answer directly. If the user continues a cancelled run, "
+    "reuse completed results and retry only work that was cancelled or missing. "
+    "Keep responses warm and concise."
 )
 
 RESEARCHER_PERSONA = (

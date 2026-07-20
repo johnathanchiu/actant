@@ -51,7 +51,10 @@ function call(overrides: Partial<ToolCallEntry> = {}): ToolCallEntry {
   }
 }
 
-function turn(toolCalls: ToolCallEntry[], threadId: string = MAIN_TID): TurnEntry {
+function turn(
+  toolCalls: ToolCallEntry[],
+  threadId: string = MAIN_TID,
+): TurnEntry {
   return {
     kind: 'turn',
     id: 'turn_1',
@@ -119,9 +122,7 @@ test('renders nothing when only a task() call is waiting', () => {
 
 test('renders nothing for unknown-tool calls in waiting state', () => {
   const entries: ConsoleEntry[] = [
-    turn([
-      call({ name: 'fetch_url', state: 'waiting', waitPrompt: 'wat' }),
-    ]),
+    turn([call({ name: 'fetch_url', state: 'waiting', waitPrompt: 'wat' })]),
   ]
   const { container } = render(
     <DeferredPanel entries={entries} subThreads={{}} onResolve={noOp} />,
@@ -182,7 +183,11 @@ test('clicking an option invokes onResolve with (mainThreadId, callId, { answer 
     async (
       _threadId: string,
       _callId: string,
-      _body: { approved?: boolean; answer?: string; payload?: Record<string, unknown> },
+      _body: {
+        approved?: boolean
+        answer?: string
+        payload?: Record<string, unknown>
+      },
     ) => {},
   )
   const entries: ConsoleEntry[] = [
@@ -234,8 +239,37 @@ test('renders Approve / Deny for request_approval', () => {
   expect(text.toLowerCase()).toContain('approval needed')
   expect(text).toContain('OK to delete the production DB?')
   const buttons = Array.from(container.querySelectorAll('button'))
-  expect(buttons.find((b) => b.textContent?.toLowerCase().includes('approve'))).toBeDefined()
-  expect(buttons.find((b) => b.textContent?.toLowerCase().includes('deny'))).toBeDefined()
+  expect(
+    buttons.find((b) => b.textContent?.toLowerCase().includes('approve')),
+  ).toBeDefined()
+  expect(
+    buttons.find((b) => b.textContent?.toLowerCase().includes('deny')),
+  ).toBeDefined()
+})
+
+test('renders approval controls for any tool declaring an approval wait', () => {
+  const entries: ConsoleEntry[] = [
+    turn([
+      call({
+        name: 'get_weather',
+        state: 'waiting',
+        waitPrompt: 'Share Tokyo with the weather service?',
+        waitKind: 'approval',
+      }),
+    ]),
+  ]
+  const { container } = render(
+    <DeferredPanel entries={entries} subThreads={{}} onResolve={noOp} />,
+  )
+
+  expect(container.textContent ?? '').toContain(
+    'Share Tokyo with the weather service?',
+  )
+  expect(
+    Array.from(container.querySelectorAll('button')).some((button) =>
+      button.textContent?.includes('Approve'),
+    ),
+  ).toBe(true)
 })
 
 test('clicking Approve invokes onResolve with (mainThreadId, callId, { approved: true })', async () => {
@@ -243,7 +277,11 @@ test('clicking Approve invokes onResolve with (mainThreadId, callId, { approved:
     async (
       _threadId: string,
       _callId: string,
-      _body: { approved?: boolean; answer?: string; payload?: Record<string, unknown> },
+      _body: {
+        approved?: boolean
+        answer?: string
+        payload?: Record<string, unknown>
+      },
     ) => {},
   )
   const entries: ConsoleEntry[] = [
@@ -279,7 +317,11 @@ test('clicking Deny invokes onResolve with (mainThreadId, callId, { approved: fa
     async (
       _threadId: string,
       _callId: string,
-      _body: { approved?: boolean; answer?: string; payload?: Record<string, unknown> },
+      _body: {
+        approved?: boolean
+        answer?: string
+        payload?: Record<string, unknown>
+      },
     ) => {},
   )
   const entries: ConsoleEntry[] = [
@@ -372,7 +414,11 @@ test('resolving a sub-thread wait POSTs against the SUB thread id, not main', as
     async (
       _threadId: string,
       _callId: string,
-      _body: { approved?: boolean; answer?: string; payload?: Record<string, unknown> },
+      _body: {
+        approved?: boolean
+        answer?: string
+        payload?: Record<string, unknown>
+      },
     ) => {},
   )
   const subThreads: SubThreadMap = {
@@ -388,7 +434,11 @@ test('resolving a sub-thread wait POSTs against the SUB thread id, not main', as
     ]),
   }
   const { container } = render(
-    <DeferredPanel entries={[]} subThreads={subThreads} onResolve={onResolve} />,
+    <DeferredPanel
+      entries={[]}
+      subThreads={subThreads}
+      onResolve={onResolve}
+    />,
   )
   const button = Array.from(container.querySelectorAll('button')).find(
     (b) => b.textContent === 'example.com',
@@ -433,7 +483,11 @@ test('top-level wait beats sub-thread wait when both are present', () => {
     ]),
   }
   const { container } = render(
-    <DeferredPanel entries={entries} subThreads={subThreads} onResolve={noOp} />,
+    <DeferredPanel
+      entries={entries}
+      subThreads={subThreads}
+      onResolve={noOp}
+    />,
   )
   expect(container.textContent ?? '').toContain('MAIN question')
   expect(container.textContent ?? '').not.toContain('SUB question')

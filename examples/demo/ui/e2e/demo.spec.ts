@@ -11,7 +11,9 @@ test('exercises streaming, durable approval, questions, and nested subagents', a
 }) => {
   await page.goto('/')
   await expect(page.getByText('connected', { exact: true })).toBeVisible()
-  await expect(page.getByText('demo/deterministic', { exact: true })).toBeVisible()
+  await expect(
+    page.getByText('demo/deterministic', { exact: true }),
+  ).toBeVisible()
 
   await send(page, 'Show me an approval')
   await expect(page.getByText('approval needed', { exact: true })).toBeVisible()
@@ -38,15 +40,21 @@ test('exercises streaming, durable approval, questions, and nested subagents', a
   await expect(
     page.getByRole('button', { name: 'task → summarizer ok' }),
   ).toBeVisible()
-  await expect(page.getByText('Durable delegation verified', { exact: true })).toBeVisible()
+  await expect(
+    page.getByText('Durable delegation verified', { exact: true }),
+  ).toBeVisible()
 })
 
-test('holds mixed tool groups and surfaces nested subagent approval', async ({ page }) => {
+test('holds mixed tool groups and surfaces nested subagent approval', async ({
+  page,
+}) => {
   await page.goto('/')
   await expect(page.getByText('connected', { exact: true })).toBeVisible()
 
   await send(page, 'Run a mixed parallel tool group')
-  await expect(page.getByText('get_current_time', { exact: true })).toBeVisible()
+  await expect(
+    page.getByText('get_current_time', { exact: true }),
+  ).toBeVisible()
   await expect(page.getByText('approval needed', { exact: true })).toBeVisible()
   await expect(
     page.getByText('Done — the result came back', { exact: false }),
@@ -64,19 +72,96 @@ test('holds mixed tool groups and surfaces nested subagent approval', async ({ p
   ).toBeVisible()
 })
 
-test('has a natural deferred question and parallel weather tools', async ({ page }) => {
+test('has a natural deferred question and parallel weather tools', async ({
+  page,
+}) => {
   await page.goto('/')
   await expect(page.getByText('connected', { exact: true })).toBeVisible()
 
   await send(page, 'Help me choose a pizza for tonight')
   await expect(page.getByText('agent is asking', { exact: true })).toBeVisible()
   await expect(
-    page.getByText('What kind of pizza sounds good right now?', { exact: true }),
+    page.getByText('What kind of pizza sounds good right now?', {
+      exact: true,
+    }),
   ).toBeVisible()
   await page.getByRole('button', { name: 'Surprise me' }).click()
-  await expect(page.getByText('Done — the result came back', { exact: false })).toBeVisible()
+  await expect(
+    page.getByText('Done — the result came back', { exact: false }),
+  ).toBeVisible()
 
   await send(page, 'What is the weather in New York, London, and Tokyo?')
-  await expect(page.getByText('get_weather', { exact: true })).toHaveCount(3)
-  await expect(page.getByText('Done — the result came back', { exact: false })).toHaveCount(2)
+  await expect(page.getByRole('button', { name: /^get_weather/ })).toHaveCount(
+    3,
+  )
+  await expect(page.getByText(/Share New York.*weather service/)).toBeVisible()
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await expect(page.getByText(/Share London.*weather service/)).toBeVisible({
+    timeout: 15_000,
+  })
+  await expect(
+    page.getByText('Done — the result came back', { exact: false }),
+  ).toHaveCount(1)
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await expect(page.getByText(/Share Tokyo.*weather service/)).toBeVisible({
+    timeout: 15_000,
+  })
+  await expect(
+    page.getByText('Done — the result came back', { exact: false }),
+  ).toHaveCount(1)
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await expect(
+    page.getByText('Done — the result came back', { exact: false }),
+  ).toHaveCount(2, { timeout: 15_000 })
+})
+
+test('continues the same thread after cancelling a partially resolved group', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await expect(page.getByText('connected', { exact: true })).toBeVisible()
+
+  await send(page, 'Check the weather in New York, London, and Tokyo')
+  await expect(page.getByRole('button', { name: /^get_weather/ })).toHaveCount(
+    3,
+  )
+  await expect(page.getByText(/Share New York.*weather service/)).toBeVisible()
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await expect(page.getByText(/Share London.*weather service/)).toBeVisible({
+    timeout: 15_000,
+  })
+
+  const threadId = new URL(page.url()).pathname.split('/').at(-1)
+  const cancelled = await page.request.delete(
+    `http://localhost:8181/api/threads/${encodeURIComponent(threadId ?? '')}`,
+  )
+  expect(cancelled.status()).toBe(204)
+
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(
+        'http://localhost:8181/api/threads',
+      )
+      const threads = (await response.json()) as Array<{
+        id: string
+        status: string
+      }>
+      return threads.find((thread) => thread.id === threadId)?.status
+    })
+    .toBe('cancelled')
+  await page.reload()
+  await expect(page.getByText('connected', { exact: true })).toBeVisible()
+
+  await send(page, 'Sorry, can you continue what you were doing?')
+  await expect(page.getByRole('button', { name: /^get_weather/ })).toHaveCount(
+    4,
+    {
+      timeout: 15_000,
+    },
+  )
+  await expect(page.getByText('approval needed', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await expect(
+    page.getByText('Done — the result came back', { exact: false }),
+  ).toBeVisible()
 })
