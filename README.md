@@ -54,17 +54,35 @@ tradeoffs, and an honest comparison with adjacent frameworks.
 
 ## The Contract in One Picture
 
-```text
-one agent turn emits A, B, and C
+```mermaid
+sequenceDiagram
+    participant Turn as Agent turn
+    participant A as Tool A
+    participant B as Tool B
+    participant Human
+    participant C as Tool C
+    participant Barrier as Durable group barrier
+    participant Next as Next agent turn
 
-A: admit -> execute -------------------------- completed
-B: admit -> WAIT ........ human approves .... completed
-C: admit -> execute ---- completed
-   \_________________________________________/
-                durable tool-group barrier
-                                                |
-                                                v
-                                         next agent turn
+    Turn->>A: admit
+    Turn->>B: admit
+    Turn->>C: admit
+
+    par A is allowed
+        A->>A: execute
+        A->>Barrier: completed
+    and B is deferred
+        B-->>Human: approval requested
+        Note over B,Human: No worker is held while waiting
+        Human-->>B: approved
+        B->>Barrier: completed
+    and C is allowed
+        C->>C: execute
+        C->>Barrier: completed
+    end
+
+    Note over Barrier: Opens only after A, B, and C are terminal
+    Barrier->>Next: finalized tool results
 ```
 
 Immediate work does not wait to start. Deferred work consumes no Python worker
