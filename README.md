@@ -139,9 +139,9 @@ The two runtime objects have different jobs:
   that polls Temporal and performs model calls, tool calls, persistence, and
   hooks.
 
-This minimal example runs both roles in one process and prints the agent's
-persisted response. Start Temporal first with `just temporal-up-detached`, then
-run the script:
+This minimal example runs both roles in one process, prints token deltas as
+they arrive, and then accesses the complete persisted response. Start Temporal
+first with `just temporal-up-detached`, then run the script:
 
 ```python
 import asyncio
@@ -158,7 +158,7 @@ from actant.runtime import (
     TemporalRuntimeConfig,
     TemporalRuntimeWorker,
 )
-from actant.runtime.events import AgentThreadHooks
+from actant.runtime.events import AgentThreadHooks, StreamListener
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools import ToolRegistry
 
@@ -166,7 +166,14 @@ stores = InMemoryRuntimeStores()
 llm = (
     llm_for_model(os.environ["ACTANT_MODEL"])
     if os.getenv("ACTANT_MODEL")
-    else FakeLLM([FakeResponse(text="Hello from Actant.")])
+    else FakeLLM(
+        [
+            FakeResponse(
+                text="Hello from Actant.",
+                text_chunks=["Hello ", "from ", "Actant."],
+            )
+        ]
+    )
 )
 responses: asyncio.Queue[Message | Exception] = asyncio.Queue()
 
@@ -179,6 +186,11 @@ class ConsoleHooks(AgentThreadHooks):
 
     async def on_error(self, error: Exception) -> None:
         await responses.put(error)
+
+
+class ConsoleStream(StreamListener):
+    async def on_text_delta(self, delta: str) -> None:
+        print(delta, end="", flush=True)
 
 
 agent = AgentDefinition(
@@ -199,6 +211,7 @@ worker = TemporalRuntimeWorker(
     agents={agent.id: agent},
     config=TemporalRuntimeConfig(address="localhost:7233"),
     hooks_factory=lambda _thread: ConsoleHooks(),
+    listener_factory=lambda _thread: ConsoleStream(),
 )
 
 
@@ -216,11 +229,13 @@ async def ask(prompt: str) -> Message:
 async def main() -> None:
     worker_task = asyncio.create_task(worker.run())
     try:
+        print("Streaming: ", end="", flush=True)
         response = await ask("hello")
+        print()
 
-        # This is the agent's completed response. Return it from an API,
-        # publish it, or display it directly.
-        print(f"Agent: {response.content}")
+        # Unlike the deltas above, this is the complete persisted response.
+        # Return it from an API, publish it, or display it directly.
+        print(f"Final: {response.content}")
     finally:
         worker_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -230,7 +245,8 @@ async def main() -> None:
 asyncio.run(main())
 
 # Output:
-# Agent: Hello from Actant.
+# Streaming: Hello from Actant.
+# Final: Hello from Actant.
 ```
 
 Actant represents IDs as strings at the Temporal and storage boundaries. Use
@@ -240,7 +256,9 @@ registered agent names.
 
 The important line is `response = await ask("hello")`: `response` is the final
 provider-neutral `Message`, and `response.content` is the value normally sent
-to a UI or returned by an API.
+to a UI or returned by an API. `ConsoleStream.on_text_delta()` receives the
+incremental text used to update a UI while that final response is still being
+generated.
 
 `send_message()` itself returns after signaling Temporal because an agent run
 may pause and outlive the submitting request. `AgentThreadHooks` delivers
