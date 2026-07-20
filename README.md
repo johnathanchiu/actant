@@ -158,8 +158,12 @@ The two runtime objects have different jobs:
   hooks.
 
 This minimal example runs both roles in one process, prints token deltas as
-they arrive, and then accesses the complete persisted response. Start Temporal
-first with `just temporal-up-detached`, then run the script:
+they arrive, and then accesses the complete persisted response. Start the
+local Temporal development server first, then run the script:
+
+```bash
+actant server start --detach
+```
 
 ```python
 import asyncio
@@ -432,10 +436,44 @@ Start with the [documentation map](docs/README.md):
 
 ```bash
 just sync                  # install development + provider dependencies
-just temporal-up-detached  # start local Temporal stack
+just server start --detach # start the packaged local Temporal server
 just test                  # run tests (uses in-memory WorkflowEnvironment)
 just temporal-smoke        # full docker round-trip
 ```
+
+The `justfile` is for contributors working from this repository; it is not
+installed by the wheel. Package users get the `actant` CLI instead:
+
+```bash
+actant server start --detach
+actant server status
+actant server logs --follow
+actant server stop
+actant server reset  # also deletes local Temporal data
+```
+
+These commands manage a Docker-backed Temporal server for local development,
+not a production Actant control plane. Production applications point
+`TemporalRuntimeConfig` at their independently operated Temporal service.
+
+The local server is configurable rather than mandatory. Ports have flags and
+environment-variable equivalents, `--no-ui` omits the UI, and teams can supply
+their own Compose stack or compatible Compose command:
+
+```bash
+actant server start --detach --port 17233 --ui-port 18233
+actant server start --detach --no-ui
+actant server start --detach \
+  --compose-file ./temporal.yml \
+  --project-name my-temporal \
+  --compose-command "podman compose"
+```
+
+The corresponding environment variables are `ACTANT_TEMPORAL_PORT`,
+`ACTANT_TEMPORAL_UI_PORT`, `ACTANT_SERVER_COMPOSE_FILE`,
+`ACTANT_SERVER_PROJECT`, and `ACTANT_SERVER_COMPOSE_COMMAND`. The bundled stack
+also accepts `ACTANT_TEMPORAL_IMAGE`, `ACTANT_TEMPORAL_UI_IMAGE`, and
+`ACTANT_TEMPORAL_POSTGRES_IMAGE` image overrides.
 
 Release maintainers can follow the [release checklist](docs/releasing.md).
 User-facing changes are recorded in the [changelog](CHANGELOG.md).

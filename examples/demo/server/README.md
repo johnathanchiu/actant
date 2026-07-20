@@ -6,7 +6,8 @@ HTTP/SSE API.
 
 ## Prerequisites
 
-1. A local Temporal cluster (from the repo root: `just temporal-up-detached`).
+1. A local Temporal cluster (from the repo root:
+   `actant server start --detach --port 27233 --ui-port 28233`).
 2. Optionally, an LLM API key in the environment:
 
    ```bash

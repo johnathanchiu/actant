@@ -18,6 +18,37 @@ pip install "actant[openai]"  # choose only the provider extras you need
 Actant does not select a “latest” model. Pass a model ID from application
 configuration to the corresponding provider adapter.
 
+## Start Temporal locally
+
+The installed CLI can manage a Docker-backed Temporal server for development:
+
+```bash
+actant server start --detach
+actant server status
+```
+
+It listens on `localhost:7233`, with the Temporal UI at
+`http://localhost:8233`. Use `actant server stop` to stop it while retaining
+its data, or `actant server reset` to stop it and delete that data.
+
+This command is a local convenience, not the production deployment model.
+Production clients and workers should connect to an independently managed
+Temporal service through `TemporalRuntimeConfig`.
+
+For local overrides, `server start` accepts `--port`, `--ui-port`, and
+`--no-ui`. Options placed before the action select a different Compose file,
+project, or compatible command:
+
+```bash
+actant server start --detach \
+  --compose-file ./temporal.yml \
+  --project-name my-temporal \
+  --compose-command "podman compose"
+```
+
+Every override also has an environment form; run `actant server --help` and
+`actant server start --help` for the complete surface.
+
 ## Define an agent
 
 ```python

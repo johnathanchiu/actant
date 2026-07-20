@@ -6,7 +6,15 @@ affect users.
 
 ## Unreleased
 
-No user-facing changes yet.
+### Added
+
+- Installed `actant server` CLI for starting, inspecting, logging, stopping,
+  and resetting a Docker-backed local Temporal development server.
+
+### Changed
+
+- Consolidated repository Temporal recipes behind `just server <command>`;
+  detached execution is now the `--detach` flag on `server start`.
 
 ## 0.1.0 - 2026-07-20
 

@@ -11,31 +11,9 @@ sync:
     uv python install {{python_version}}
     uv sync --python {{python_version}} --extra dev --extra providers
 
-# Start the local Temporal stack in the foreground.
-temporal-up:
-    {{compose}} up --remove-orphans temporal-postgres temporal temporal-ui
-
-# Start the local Temporal stack in the background.
-temporal-up-detached:
-    {{compose}} up -d --remove-orphans temporal-postgres temporal temporal-ui
-
-# Stop the local Temporal stack, keeping volumes.
-temporal-down:
-    {{compose}} stop temporal-ui temporal temporal-postgres
-    {{compose}} rm -f temporal-ui temporal temporal-postgres
-
-# Stop the local Temporal stack and delete volumes.
-temporal-reset:
-    {{compose}} stop temporal-ui temporal temporal-postgres
-    {{compose}} rm -f -v temporal-ui temporal temporal-postgres
-
-# Show local Temporal container status.
-temporal-ps:
-    {{compose}} ps temporal-postgres temporal temporal-ui
-
-# Tail local Temporal logs.
-temporal-logs:
-    {{compose}} logs -f temporal
+# Manage the packaged local Temporal server (`just server start --detach`).
+server command *args="":
+    uv run actant server {{command}} {{args}}
 
 # Run Actant tests.
 test *args="":
@@ -57,7 +35,7 @@ package:
 # Start Temporal and run the executor smoke test.
 temporal-smoke:
     just sync
-    just temporal-up-detached
+    just server start --detach
     uv run --extra dev --extra providers python scripts/temporal_smoke.py
 
 # Install demo dependencies (Python server + JS UI).
@@ -67,6 +45,7 @@ demo-sync:
 
 # Run just the demo server. Requires one of ANTHROPIC_API_KEY /
 # OPENAI_API_KEY / GEMINI_API_KEY in the environment.
+# Run the demo FastAPI server.
 demo-server:
     cd examples/demo/server && uv run python -m uvicorn app.main:app --port 8181 --reload
 
@@ -85,6 +64,7 @@ demo-db-down:
 
 # Show what's currently bound on the demo's ports. Helpful for
 # diagnosing "why doesn't `just demo` start?".
+# Show processes currently listening on demo ports.
 demo-status:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -119,6 +99,7 @@ demo-status:
 #     port mapping).
 # If our own actant-* compose containers hold the port, that's fine
 # — `docker compose up` will see them and proceed.
+# Verify that every port required by the demo is available.
 demo-doctor:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -186,6 +167,7 @@ demo-doctor:
 #
 # Ctrl+C stops the foreground server + UI AND stops the docker
 # services we started this run (Temporal, Postgres).
+# Run the complete FastAPI, React, Postgres, and Temporal demo.
 demo:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -230,6 +212,7 @@ demo:
 
 # Stop the demo's docker services (used after Ctrl+C if for some reason
 # the cleanup trap didn't run, or to reset state).
+# Stop and remove the demo's Docker services.
 demo-down:
     {{compose}} stop demo-postgres temporal-ui temporal temporal-postgres
     {{compose}} rm -f demo-postgres temporal-ui temporal temporal-postgres

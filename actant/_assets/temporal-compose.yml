@@ -1,0 +1,41 @@
+services:
+  temporal-postgres:
+    image: "${ACTANT_TEMPORAL_POSTGRES_IMAGE:-postgres:17}"
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  temporal:
+    image: "${ACTANT_TEMPORAL_IMAGE:-temporalio/auto-setup:1.27.2}"
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: temporal-postgres
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+    ports:
+      - "${ACTANT_TEMPORAL_PORT:-7233}:7233"
+
+  temporal-ui:
+    image: "${ACTANT_TEMPORAL_UI_IMAGE:-temporalio/ui:2.34.0}"
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "${ACTANT_TEMPORAL_UI_PORT:-8233}:8080"
+
+volumes:
+  temporal-data:
