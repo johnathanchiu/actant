@@ -284,7 +284,7 @@ coordinator, a remote worker, a durable workflow, or a test double.
 ## Hooks
 
 `AgentThreadHooks` exposes async callbacks fired from inside activities
-for persistence, streaming, and observability:
+for live delivery and observability:
 
 - user/assistant messages
 - turn start
@@ -323,11 +323,13 @@ Start with the [documentation map](docs/README.md):
 ## Local Development
 
 ```bash
-just sync                  # install deps + Temporal extra
+just sync                  # install development + provider dependencies
 just temporal-up-detached  # start local Temporal stack
 just test                  # run tests (uses in-memory WorkflowEnvironment)
 just temporal-smoke        # full docker round-trip
 ```
+
+Release maintainers can follow the [release checklist](docs/releasing.md).
 
 ## License
 

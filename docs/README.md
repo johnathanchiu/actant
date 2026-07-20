@@ -16,6 +16,8 @@ that Actant models a durable thread, not a single model invocation.
 6. [Subagents](subagents.md) — synchronous and durable delegation.
 7. [Coordinator guide](coordinator-guide.md) — application policy for
    multi-agent products.
+8. [Release checklist](releasing.md) — validate, version, and publish the wheel
+   through GitHub's trusted PyPI workflow.
 
 ## Learn from a running system
 

@@ -5,7 +5,7 @@ row has been cleaned up (test teardown, manual cleanup, retention
 policy). Pre-fix, ``finish`` called ``get`` which raised KeyError,
 the activity entered exponential-backoff retry, and a doomed
 finalize spammed the worker log forever. Post-fix, all three
-``RunStore`` impls (in-memory, sqlalchemy, raw asyncpg) treat a
+``RunStore`` implementations (in-memory and SQLAlchemy) treat a
 missing run as a successful no-op.
 
 The sqlalchemy + raw impls are exercised at the protocol level by

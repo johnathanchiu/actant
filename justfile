@@ -51,7 +51,7 @@ typecheck:
 
 # Build and validate the distributions without publishing them.
 package:
-    uv build
+    uv build --clear
     uvx twine check dist/*
 
 # Start Temporal and run the executor smoke test.
