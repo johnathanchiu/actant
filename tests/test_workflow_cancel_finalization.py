@@ -31,12 +31,12 @@ from actant.agents import AgentDefinition
 from actant.core import JSONObject, new_id
 from actant.llm.messages import ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
-from actant.runtime.executors.temporal_activities import TemporalRuntimeActivities
-from actant.runtime.executors.temporal_types import (
+from actant.runtime.temporal.activities import TemporalRuntimeActivities
+from actant.runtime.temporal.types import (
     InboundMessage,
     ThreadInput,
 )
-from actant.runtime.executors.temporal_workflows import AgentThreadWorkflow
+from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.types.threads import ThreadStatus
 from actant.tools.admission import (

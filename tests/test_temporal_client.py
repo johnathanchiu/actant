@@ -1,4 +1,4 @@
-"""Public TemporalExecutor integration tests."""
+"""TemporalRuntimeClient integration tests."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from actant.agents import AgentDefinition
 from actant.core import JSONObject, new_id
 from actant.llm.messages import ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
-from actant.runtime.executors.temporal import TemporalExecutor
-from actant.runtime.executors.temporal_activities import TemporalRuntimeActivities
-from actant.runtime.executors.temporal_types import TemporalRuntimeConfig
-from actant.runtime.executors.temporal_workflows import AgentThreadWorkflow
+from actant.runtime.temporal.activities import TemporalRuntimeActivities
+from actant.runtime.temporal.client import TemporalRuntimeClient
+from actant.runtime.temporal.types import TemporalRuntimeConfig
+from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools.admission import (
     ToolCallView,
@@ -77,7 +77,7 @@ async def _wait_for(
 class _RunSetup:
     env: WorkflowEnvironment
     stores: InMemoryRuntimeStores
-    runtime: TemporalExecutor
+    runtime: TemporalRuntimeClient
     task_queue: str
 
 
@@ -87,7 +87,7 @@ async def _run(
     agent: AgentDefinition,
 ) -> None:
     stores = InMemoryRuntimeStores()
-    task_queue = f"test-executor-{uuid.uuid4().hex[:8]}"
+    task_queue = f"test-client-{uuid.uuid4().hex[:8]}"
     activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
 
     async with await WorkflowEnvironment.start_local() as env:
@@ -97,7 +97,7 @@ async def _run(
             workflows=[AgentThreadWorkflow],
             activities=activities.all,
         ):
-            runtime = TemporalExecutor(
+            runtime = TemporalRuntimeClient(
                 stores=stores,
                 agents={agent.id: agent},
                 config=TemporalRuntimeConfig(
@@ -110,7 +110,7 @@ async def _run(
 
 
 @pytest.mark.asyncio
-async def test_temporal_executor_send_message_signals_existing_workflow() -> None:
+async def test_temporal_client_send_message_signals_existing_workflow() -> None:
     agent = _agent(FakeLLM([FakeResponse(text="one"), FakeResponse(text="two")]))
 
     async def body(s: _RunSetup) -> None:
@@ -178,7 +178,7 @@ class _ApprovalTool(BaseDeclarativeTool):
 
 
 @pytest.mark.asyncio
-async def test_temporal_executor_resolve_tool_completes_wait_activity() -> None:
+async def test_temporal_client_resolve_tool_completes_wait_activity() -> None:
     tool_call = _tool_call("needs_approval")
     agent = _agent(
         FakeLLM([FakeResponse(tool_calls=[tool_call]), FakeResponse(text="approved!")]),

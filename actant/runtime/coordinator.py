@@ -226,7 +226,7 @@ async def resolve_deferred(
     Funneling both paths through here pays off when state diverges:
     ``runtime.resolve_tool`` raises
     :class:`actant.runtime.exceptions.ToolResolutionStaleError` if
-    Temporal has lost the parked activity (see ``executors/temporal.py``).
+    Temporal has lost the parked activity (see ``temporal/client.py``).
     The store is reconciled to FAILED before the error fires, so callers
     can catch the typed error and surface a useful message without
     leaving stale WAITING state behind.

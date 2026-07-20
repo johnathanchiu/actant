@@ -45,7 +45,7 @@ async def main() -> None:
     worker = TemporalRuntimeWorker(stores=stores, agents=agents, config=config)
     worker_task = asyncio.create_task(worker.run())
     runtime = AgentRuntime(
-        stores=stores, agents=agents, executor="temporal", temporal=config
+        stores=stores, agents=agents, temporal=config
     )
 
     try:
@@ -63,7 +63,7 @@ async def main() -> None:
         messages = await stores.messages.list_for_thread(agent.id, thread_id)
         transcript = [(message.role, message.content) for message in messages]
         assert transcript == [("user", "hello"), ("assistant", "done")]
-        print("Temporal executor smoke passed")
+        print("Temporal runtime smoke passed")
     finally:
         worker_task.cancel()
         try:

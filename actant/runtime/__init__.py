@@ -3,9 +3,9 @@
 The runtime package is organized by responsibility:
 
 - ``runtime.py``: application-facing client facade.
-- ``executors/temporal_workflows.py``: durable orchestration algorithm.
-- ``executors/temporal_activities.py``: side effects scheduled by the workflow.
-- ``executors/temporal.py``: Temporal client and worker adapters.
+- ``temporal/workflow.py``: durable orchestration algorithm.
+- ``temporal/activities.py``: side effects scheduled by the workflow.
+- ``temporal/client.py`` and ``temporal/worker.py``: deployment roles.
 - ``stores/``: readable execution projections.
 - ``hooks.py``: optional lifecycle and streaming observers.
 
@@ -18,8 +18,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from actant.runtime.executors.temporal import TemporalRuntimeWorker
-    from actant.runtime.executors.temporal_types import TemporalRuntimeConfig
+    from actant.runtime.temporal.types import TemporalRuntimeConfig
+    from actant.runtime.temporal.worker import TemporalRuntimeWorker
     from actant.runtime.runtime import AgentRuntime
 
 __all__ = [
@@ -35,11 +35,11 @@ def __getattr__(name: str) -> Any:
 
         return AgentRuntime
     if name == "TemporalRuntimeConfig":
-        from actant.runtime.executors.temporal_types import TemporalRuntimeConfig
+        from actant.runtime.temporal.types import TemporalRuntimeConfig
 
         return TemporalRuntimeConfig
     if name == "TemporalRuntimeWorker":
-        from actant.runtime.executors import TemporalRuntimeWorker
+        from actant.runtime.temporal.worker import TemporalRuntimeWorker
 
         return TemporalRuntimeWorker
     raise AttributeError(f"module 'actant.runtime' has no attribute {name!r}")

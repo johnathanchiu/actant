@@ -41,7 +41,7 @@ from actant.core import JSONObject, new_id
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message  # for type hint in MessagePreprocessor
 from actant.llm.messages import ToolCall as LLMToolCall
-from actant.runtime.executors.temporal_types import (
+from actant.runtime.temporal.types import (
     ActivityName,
     AdmitDecision,
     AdmitInput,

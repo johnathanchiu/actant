@@ -4,8 +4,8 @@ These checks exist because configuration on the client cannot affect a running
 workflow unless it is copied into a serializable workflow payload.
 """
 
-from actant.runtime.executors.temporal_types import ThreadInput
-from actant.runtime.executors.temporal_workflows import _continue_as_new_threshold
+from actant.runtime.temporal.types import ThreadInput
+from actant.runtime.temporal.workflow import _continue_as_new_threshold
 
 
 def test_continue_as_new_threshold_comes_from_thread_input() -> None:

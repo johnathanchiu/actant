@@ -21,8 +21,8 @@ import pytest
 import temporalio.service
 
 from actant.runtime.exceptions import ToolResolutionStaleError
-from actant.runtime.executors.temporal import TemporalExecutor
-from actant.runtime.executors.temporal_types import TemporalRuntimeConfig
+from actant.runtime.temporal.client import TemporalRuntimeClient
+from actant.runtime.temporal.types import TemporalRuntimeConfig
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
@@ -78,8 +78,8 @@ def stores() -> InMemoryRuntimeStores:
 
 
 @pytest.fixture
-async def executor(stores: InMemoryRuntimeStores) -> TemporalExecutor:
-    ex = TemporalExecutor(
+async def runtime_client(stores: InMemoryRuntimeStores) -> TemporalRuntimeClient:
+    ex = TemporalRuntimeClient(
         stores=stores,
         agents={},  # resolve_tool doesn't need agent definitions
         config=TemporalRuntimeConfig(),
@@ -90,7 +90,7 @@ async def executor(stores: InMemoryRuntimeStores) -> TemporalExecutor:
 
 
 async def test_resolve_tool_reconciles_when_activity_not_found(
-    executor: TemporalExecutor, stores: InMemoryRuntimeStores
+    runtime_client: TemporalRuntimeClient, stores: InMemoryRuntimeStores
 ) -> None:
     """The store should flip WAITING → FAILED with stale_activity reason,
     and the caller should see ``ToolResolutionStaleError``."""
@@ -102,7 +102,7 @@ async def test_resolve_tool_reconciles_when_activity_not_found(
     assert pre.status == ToolCallStatus.WAITING
 
     with pytest.raises(ToolResolutionStaleError) as excinfo:
-        await executor.resolve_tool(
+        await runtime_client.resolve_tool(
             _AGENT, _THREAD, _TOOL_CALL_ID, approved=True, answer="ok"
         )
 
@@ -119,7 +119,7 @@ async def test_resolve_tool_reconciles_when_activity_not_found(
 
 
 async def test_resolve_tool_non_notfound_rpc_error_propagates(
-    executor: TemporalExecutor, stores: InMemoryRuntimeStores
+    runtime_client: TemporalRuntimeClient, stores: InMemoryRuntimeStores
 ) -> None:
     """Other Temporal errors (e.g. INTERNAL) shouldn't be silently swallowed
     by the reconciliation path. They should bubble up as-is."""
@@ -136,14 +136,14 @@ async def test_resolve_tool_non_notfound_rpc_error_propagates(
         def get_async_activity_handle(self, **_: Any) -> _InternalErrorHandle:
             return _InternalErrorHandle()
 
-    executor._client = _FakeInternal()  # type: ignore[assignment]
+    runtime_client._client = _FakeInternal()  # type: ignore[assignment]
 
     record = _make_record()
     record.id = "tc_internal_1"
     await stores.tool_calls.save(record)
 
     with pytest.raises(temporalio.service.RPCError):
-        await executor.resolve_tool(
+        await runtime_client.resolve_tool(
             _AGENT, _THREAD, "tc_internal_1", approved=True, answer="ok"
         )
 

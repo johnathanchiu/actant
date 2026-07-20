@@ -25,14 +25,14 @@ from actant.agents import AgentDefinition
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
-from actant.runtime.executors.temporal_activities import TemporalRuntimeActivities
-from actant.runtime.executors.temporal_types import (
+from actant.runtime.temporal.activities import TemporalRuntimeActivities
+from actant.runtime.temporal.types import (
     ExecuteOutcome,
     ExecuteStatus,
     InboundMessage,
     ThreadInput,
 )
-from actant.runtime.executors.temporal_workflows import AgentThreadWorkflow
+from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.hooks import AgentThreadHooks
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.types.threads import AgentThread
@@ -392,7 +392,7 @@ async def test_wait_tool_parks_until_external_completion() -> None:
     ``(workflow_id, activity_id)`` onto the tool_call record and parks
     via ``raise_complete_async``. Test delivers the resolution by:
     1. Persisting the result to the record (mirrors what
-       ``TemporalExecutor.resolve_tool`` does on the production path).
+       ``TemporalRuntimeClient.resolve_tool`` does on the production path).
     2. Calling ``client.get_async_activity_handle(...).complete(...)``
        to unblock the workflow's ``await``.
     """
@@ -436,7 +436,7 @@ async def test_wait_tool_parks_until_external_completion() -> None:
         assert record.temporal_activity_id is not None
 
         # Deliver the resolution: persist result + complete the activity.
-        # This mirrors what ``TemporalExecutor.resolve_tool`` does in
+        # This mirrors what ``TemporalRuntimeClient.resolve_tool`` does in
         # production. (Direct calls here for explicit testing of the
         # Temporal mechanics.)
         await s.stores.tool_calls.update_status(

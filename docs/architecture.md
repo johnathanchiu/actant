@@ -38,15 +38,15 @@ The central invariant is:
 
 ## Read the implementation in this order
 
-1. `actant/runtime/executors/temporal_workflows.py`
+1. `actant/runtime/temporal/workflow.py`
    - `AgentThreadWorkflow.run`: lifetime of a thread.
    - `AgentThreadWorkflow._do_run`: model-turn loop for one run.
    - `AgentThreadWorkflow._execute_tool_group`: the group barrier.
-2. `actant/runtime/executors/temporal_activities.py`
+2. `actant/runtime/temporal/activities.py`
    - External work and projection writes scheduled by the workflow.
-3. `actant/runtime/executors/temporal.py`
+3. `actant/runtime/temporal/client.py` and `worker.py`
    - Client operations and worker registration.
-4. `actant/runtime/executors/temporal_types.py`
+4. `actant/runtime/temporal/types.py`
    - Serializable payloads crossing workflow/activity boundaries.
 5. `actant/runtime/interfaces/stores.py`
    - Projection-store contracts.
@@ -54,8 +54,8 @@ The central invariant is:
    - Optional live event and model-stream observers.
 
 The public entry point is `actant/runtime/runtime.py`. It deliberately contains
-almost no orchestration: `AgentRuntime` delegates commands to the configured
-executor.
+almost no orchestration: `AgentRuntime` delegates commands to its Temporal
+client.
 
 ## Thread, run, turn, and group
 

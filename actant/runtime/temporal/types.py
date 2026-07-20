@@ -1,4 +1,4 @@
-"""Serializable Temporal runtime payloads for the AgentThreadWorkflow.
+"""Serializable payloads crossing Temporal workflow/activity boundaries.
 
 All types here cross the workflow/activity boundary, so they are frozen
 dataclasses with JSON-friendly fields (primitives, dicts, lists, nested
@@ -17,7 +17,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class TemporalRuntimeConfig:
-    """Configuration for Actant's Temporal executor."""
+    """Connection and lifecycle configuration for Actant's Temporal runtime."""
 
     address: str = "localhost:7233"
     namespace: str = "default"

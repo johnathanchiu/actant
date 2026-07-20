@@ -1,4 +1,4 @@
-"""Pure-Temporal runtime executor.
+"""Client-side commands for the Temporal runtime.
 
 One workflow per ``(agent_id, thread_id)``. ``send_message`` issues a
 ``signal_with_start`` so the workflow is created on first contact and
@@ -24,18 +24,16 @@ from typing import Any, cast
 import temporalio.client
 import temporalio.exceptions  # re-exported for callers that catch typed errors
 import temporalio.service
-import temporalio.worker
 
 from actant.runtime.exceptions import ToolResolutionStaleError
 
 from actant.agents import AgentDefinition
-from actant.runtime.executors.temporal_activities import (
+from actant.runtime.temporal.activities import (
     HookFactory,
     ListenerFactory,
     MessagePreprocessor,
-    TemporalRuntimeActivities,
 )
-from actant.runtime.executors.temporal_types import (
+from actant.runtime.temporal.types import (
     ExecuteOutcome,
     ExecuteStatus,
     InboundMessage,
@@ -44,7 +42,7 @@ from actant.runtime.executors.temporal_types import (
     ThreadInput,
     ThreadStateView,
 )
-from actant.runtime.executors.temporal_workflows import AgentThreadWorkflow
+from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.tools.admission import ToolResolution, ToolResolve
 from actant.tools.base import ToolResult
@@ -61,8 +59,8 @@ from actant.tools.calls import ToolCallRecord, ToolCallStatus
 _HANDLE_WAIT_BACKOFF_S: tuple[float, ...] = (0.05, 0.1, 0.2, 0.4, 0.8)
 
 
-class TemporalExecutor:
-    """Client-side executor that drives ``AgentThreadWorkflow`` runs."""
+class TemporalRuntimeClient:
+    """Send commands to Actant thread workflows through Temporal."""
 
     def __init__(
         self,
@@ -300,47 +298,6 @@ class TemporalExecutor:
 
     def _workflow_id(self, agent_id: str, thread_id: str) -> str:
         return f"{self.config.workflow_id_prefix}-{agent_id}-{thread_id}"
-
-
-class TemporalRuntimeWorker:
-    """Worker process: polls a task queue and runs workflows + activities.
-
-    Constructed with the same store / agent / hook dependencies that
-    ``TemporalExecutor`` accepts. The activity implementations close
-    over these via ``TemporalRuntimeActivities``; the workflow code is
-    pure (no store access) and is registered alongside.
-    """
-
-    def __init__(
-        self,
-        *,
-        stores: RuntimeStores,
-        agents: Mapping[str, AgentDefinition],
-        config: TemporalRuntimeConfig | None = None,
-        hooks_factory: HookFactory | None = None,
-        listener_factory: ListenerFactory | None = None,
-        message_preprocessor: MessagePreprocessor | None = None,
-    ) -> None:
-        self.config = config or TemporalRuntimeConfig()
-        self._activities = TemporalRuntimeActivities(
-            stores=stores,
-            agents=agents,
-            hooks_factory=hooks_factory,
-            listener_factory=listener_factory,
-            message_preprocessor=message_preprocessor,
-        )
-    async def run(self) -> None:
-        client = await temporalio.client.Client.connect(
-            self.config.address,
-            namespace=self.config.namespace,
-        )
-        worker = temporalio.worker.Worker(
-            client,
-            task_queue=self.config.task_queue,
-            workflows=[AgentThreadWorkflow],
-            activities=self._activities.all,
-        )
-        await worker.run()
 
 
 def _coerce_config(config: object | None) -> TemporalRuntimeConfig:

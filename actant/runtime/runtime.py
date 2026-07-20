@@ -1,7 +1,7 @@
 """Friendly runtime wiring.
 
 ``AgentRuntime`` is the public client-side facade. It connects to a
-Temporal cluster (via ``TemporalExecutor``) and exposes thread
+Temporal cluster (via ``TemporalRuntimeClient``) and exposes thread
 operations: ``send_message``, ``cancel_thread``, ``resolve_tool``,
 ``get_state``. Application code never holds an orchestrator or worker
 reference — those live on the worker process started via
@@ -11,14 +11,13 @@ reference — those live on the worker process started via
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Literal
+from typing import Any
 
 from actant.agents import AgentDefinition
 from actant.llm.messages import Message
-from actant.runtime.executors.base import RuntimeExecutor
-from actant.runtime.executors.temporal import TemporalExecutor
 from actant.runtime.hooks import AgentThreadHooks, StreamListener
 from actant.runtime.interfaces.stores import RuntimeStores
+from actant.runtime.temporal.client import TemporalRuntimeClient
 from actant.runtime.types.threads import AgentThread
 
 HookFactory = Callable[[AgentThread], AgentThreadHooks]
@@ -34,7 +33,6 @@ class AgentRuntime:
         *,
         stores: RuntimeStores,
         agents: Mapping[str, AgentDefinition],
-        executor: Literal["temporal"] | RuntimeExecutor = "temporal",
         hooks_factory: HookFactory | None = None,
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
@@ -45,26 +43,14 @@ class AgentRuntime:
         self.hooks_factory = hooks_factory
         self.listener_factory = listener_factory
         self.message_preprocessor = message_preprocessor
-        self.executor = self._build_executor(executor, temporal=temporal)
-
-    def _build_executor(
-        self,
-        executor: Literal["temporal"] | RuntimeExecutor,
-        *,
-        temporal: object | None,
-    ) -> RuntimeExecutor:
-        if not isinstance(executor, str):
-            return executor
-        if executor == "temporal":
-            return TemporalExecutor(
-                stores=self.stores,
-                agents=self.agents,
-                hooks_factory=self.hooks_factory,
-                listener_factory=self.listener_factory,
-                message_preprocessor=self.message_preprocessor,
-                config=temporal,
-            )
-        raise ValueError(f"Unsupported runtime executor: {executor}")
+        self._client = TemporalRuntimeClient(
+            stores=self.stores,
+            agents=self.agents,
+            hooks_factory=self.hooks_factory,
+            listener_factory=self.listener_factory,
+            message_preprocessor=self.message_preprocessor,
+            config=temporal,
+        )
 
     async def send_message(
         self,
@@ -72,13 +58,10 @@ class AgentRuntime:
         thread_id: str,
         content: str | list[dict[str, object]],
     ) -> str:
-        return await self.executor.send_message(agent_id, thread_id, content)
+        return await self._client.send_message(agent_id, thread_id, content)
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
-        cancel = getattr(self.executor, "cancel_thread", None)
-        if cancel is None:
-            raise NotImplementedError("Active executor does not support cancel_thread")
-        await cancel(agent_id, thread_id)
+        await self._client.cancel_thread(agent_id, thread_id)
 
     async def resolve_tool(
         self,
@@ -90,10 +73,7 @@ class AgentRuntime:
         answer: str = "",
         payload: dict[str, Any] | None = None,
     ) -> None:
-        resolve = getattr(self.executor, "resolve_tool", None)
-        if resolve is None:
-            raise NotImplementedError("Active executor does not support resolve_tool")
-        await resolve(
+        await self._client.resolve_tool(
             agent_id,
             thread_id,
             tool_call_id,
@@ -103,10 +83,8 @@ class AgentRuntime:
         )
 
     async def get_state(self, agent_id: str, thread_id: str) -> object:
-        getter = getattr(self.executor, "get_state", None)
-        if getter is None:
-            raise NotImplementedError("Active executor does not support get_state")
-        return await getter(agent_id, thread_id)
+        return await self._client.get_state(agent_id, thread_id)
+
 
 def default_hooks_factory(_thread: AgentThread) -> AgentThreadHooks:
     return AgentThreadHooks()

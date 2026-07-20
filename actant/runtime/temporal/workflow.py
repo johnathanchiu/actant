@@ -34,7 +34,7 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-from actant.runtime.executors.temporal_types import (
+from actant.runtime.temporal.types import (
     ActivityName,
     AdmitDecision,
     AdmitInput,
