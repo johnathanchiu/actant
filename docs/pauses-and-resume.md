@@ -25,6 +25,7 @@ connection, or worker process does not need to stay alive.
 ```python
 from actant.tools import ToolDecision, ToolWaitRequest
 
+
 async def can_execute(self, call, invocation, context):
     return ToolDecision.wait(
         ToolWaitRequest(

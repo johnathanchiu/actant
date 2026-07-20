@@ -86,15 +86,17 @@ class MyCoordinator:
             name="Main",
             persona="...",
             llm=llm,
-            tools=ToolRegistry([
-                # TaskTool reads call.thread_id at invocation time, so
-                # ONE instance works for many threads.
-                TaskTool(
-                    spawner=self,  # implements SubagentSpawner
-                    subagent_choices=["researcher"],
-                ),
-                # ... your other tools ...
-            ]),
+            tools=ToolRegistry(
+                [
+                    # TaskTool reads call.thread_id at invocation time, so
+                    # ONE instance works for many threads.
+                    TaskTool(
+                        spawner=self,  # implements SubagentSpawner
+                        subagent_choices=["researcher"],
+                    ),
+                    # ... your other tools ...
+                ]
+            ),
         )
         self.researcher_agent = AgentDefinition(
             id="researcher",
@@ -111,32 +113,37 @@ class MyCoordinator:
                 self.main_agent.id: self.main_agent,
                 self.researcher_agent.id: self.researcher_agent,
             },
-            hooks_factory=publishing_hooks_factory(
-                self.publisher, registry=self.registry
-            ),
-            listener_factory=publishing_listener_factory(
-                self.publisher, registry=self.registry
-            ),
+            hooks_factory=publishing_hooks_factory(self.publisher, registry=self.registry),
+            listener_factory=publishing_listener_factory(self.publisher, registry=self.registry),
         )
 
     # TaskTool's SubagentSpawner Protocol —
     # ``can_execute`` calls this with the parent's thread/tool_call.
     async def spawn(
-        self, *, name, message, context,
-        parent_thread_id, parent_tool_call_id,
+        self,
+        *,
+        name,
+        message,
+        context,
+        parent_thread_id,
+        parent_tool_call_id,
     ):
         sub_thread_id = f"sub_{uuid.uuid4().hex[:10]}"
         # Register the link BEFORE send_message so the hook factory
         # sees the relationship synchronously.
-        self.registry.register(SubThreadLink(
-            sub_thread_id=sub_thread_id,
-            parent_thread_id=parent_thread_id,
-            parent_tool_call_id=parent_tool_call_id,
-            sub_agent_id=self.researcher_agent.id,
-            subagent_name=name,
-        ))
+        self.registry.register(
+            SubThreadLink(
+                sub_thread_id=sub_thread_id,
+                parent_thread_id=parent_thread_id,
+                parent_tool_call_id=parent_tool_call_id,
+                sub_agent_id=self.researcher_agent.id,
+                subagent_name=name,
+            )
+        )
         await self.runtime.send_message(
-            self.researcher_agent.id, sub_thread_id, message,
+            self.researcher_agent.id,
+            sub_thread_id,
+            message,
         )
 
     # Passed to TemporalRuntimeWorker(run_completion_handler=...).
@@ -144,17 +151,22 @@ class MyCoordinator:
     # child's thread/run/message projections have committed.
     async def handle_run_completion(self, completion: RunCompletion):
         child = await self.stores.threads.get(
-            completion.agent_id, completion.thread_id,
+            completion.agent_id,
+            completion.thread_id,
         )
         if child.parent_tool_call_id is None or child.parent_thread_id is None:
             return
         parent_call = await self.stores.tool_calls.get(child.parent_tool_call_id)
         messages = await self.stores.messages.list_for_thread(
-            completion.agent_id, completion.thread_id,
+            completion.agent_id,
+            completion.thread_id,
         )
         final_text = next(
-            (m.content for m in reversed(messages)
-             if m.role == "assistant" and isinstance(m.content, str)),
+            (
+                m.content
+                for m in reversed(messages)
+                if m.role == "assistant" and isinstance(m.content, str)
+            ),
             completion.outcome,
         )
         envelope = {"text": final_text, "subagent": completion.agent_id}
@@ -184,15 +196,24 @@ class MyCoordinator:
     # both paths through the same method gives one place to handle
     # state divergence.
     async def resolve_user_input(
-        self, *, agent_id, thread_id, tool_call_id,
-        approved=None, answer="", payload=None,
+        self,
+        *,
+        agent_id,
+        thread_id,
+        tool_call_id,
+        approved=None,
+        answer="",
+        payload=None,
     ):
         try:
             await resolve_deferred_tool_call(
                 self.runtime,
-                agent_id=agent_id, thread_id=thread_id,
+                agent_id=agent_id,
+                thread_id=thread_id,
                 tool_call_id=tool_call_id,
-                approved=approved, answer=answer, payload=payload,
+                approved=approved,
+                answer=answer,
+                payload=payload,
             )
         except ToolResolutionStaleError as exc:
             # Surface a clean error upward. The store is reconciled;

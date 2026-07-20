@@ -214,7 +214,9 @@ await runtime.cancel_thread(agent.id, thread_id)
 
 # Resolve a deferred (WAIT) tool call
 await runtime.resolve_deferred_tool_call(
-    agent.id, thread_id, tool_call_id,
+    agent.id,
+    thread_id,
+    tool_call_id,
     approved=True,
     answer="ok",
 )
@@ -232,6 +234,7 @@ implement `can_execute` and return `allow`, `block`, or `wait`:
 
 ```python
 from actant.tools import ToolDecision, ToolWaitRequest
+
 
 async def can_execute(self, call, invocation, context):
     if await approval_store.approved(call.id):
