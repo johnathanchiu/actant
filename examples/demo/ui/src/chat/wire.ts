@@ -2,9 +2,9 @@
  * Wire types for the actant demo server's SSE stream.
  *
  * Mirrors the JSON shape emitted by
- * ``actant.runtime.hooks.PublishingThreadHooks`` /
+ * ``actant.runtime.events.PublishingThreadHooks`` /
  * ``PublishingStreamListener`` — see
- * https://github.com/.../actant/runtime/hooks.py.
+ * https://github.com/.../actant/runtime/events/lifecycle.py.
  *
  * Every event lands as an SSE frame of the form:
  *

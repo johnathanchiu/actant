@@ -14,7 +14,7 @@ from actant.llm.providers.openai import (
     _OpenAIToolStreamState,
     _forward_stream_event,
 )
-from actant.runtime.hooks import StreamListener
+from actant.runtime.events.streaming import StreamListener
 from actant.tools import make_tool_schema
 
 

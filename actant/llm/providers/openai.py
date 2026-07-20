@@ -30,7 +30,7 @@ from actant.llm.providers._shared import (
 from actant.llm.rate_limit import RateLimiter
 
 if TYPE_CHECKING:
-    from actant.runtime.hooks import StreamListener
+    from actant.runtime.events.streaming import StreamListener
 
 logger = logging.getLogger(__name__)
 

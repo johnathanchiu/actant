@@ -33,7 +33,7 @@ from actant.runtime.temporal.types import (
     ThreadInput,
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
-from actant.runtime.hooks import AgentThreadHooks
+from actant.runtime.events.lifecycle import AgentThreadHooks
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.types.threads import AgentThread
 from actant.tools.admission import (

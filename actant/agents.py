@@ -11,7 +11,7 @@ from actant.llm.messages import Message
 from actant.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from actant.runtime.hooks import StreamListener
+    from actant.runtime.events.streaming import StreamListener
 
 
 @dataclass(frozen=True)

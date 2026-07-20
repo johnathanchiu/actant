@@ -7,7 +7,7 @@ The runtime package is organized by responsibility:
 - ``temporal/activities.py``: side effects scheduled by the workflow.
 - ``temporal/client.py`` and ``temporal/worker.py``: deployment roles.
 - ``stores/``: readable execution projections.
-- ``hooks.py``: optional lifecycle and streaming observers.
+- ``events/``: optional lifecycle and streaming observers.
 
 See ``docs/architecture.md`` in the source distribution for the detailed
 execution path and activity contracts.

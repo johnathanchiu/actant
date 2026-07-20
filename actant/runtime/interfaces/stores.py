@@ -12,7 +12,7 @@ from typing import Protocol
 from actant.agents import Agent
 from actant.core import JSONObject
 from actant.llm.messages import Message
-from actant.runtime.interfaces.events import EventPublisher
+from actant.runtime.events.publisher import EventPublisher
 from actant.runtime.types.threads import (
     AgentRun,
     AgentThread,

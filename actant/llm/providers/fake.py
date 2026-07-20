@@ -10,7 +10,7 @@ from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall
 
 if TYPE_CHECKING:
-    from actant.runtime.hooks import StreamListener
+    from actant.runtime.events.streaming import StreamListener
 
 
 @dataclass

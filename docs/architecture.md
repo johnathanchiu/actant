@@ -50,7 +50,7 @@ The central invariant is:
    - Serializable payloads crossing workflow/activity boundaries.
 5. `actant/runtime/interfaces/stores.py`
    - Projection-store contracts.
-6. `actant/runtime/hooks.py`
+6. `actant/runtime/events/`
    - Optional live event and model-stream observers.
 
 The public entry point is `actant/runtime/runtime.py`. It deliberately contains

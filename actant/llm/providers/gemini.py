@@ -16,7 +16,7 @@ from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers._shared import env_api_key, sanitize_tool_messages
 
 if TYPE_CHECKING:
-    from actant.runtime.hooks import StreamListener
+    from actant.runtime.events.streaming import StreamListener
 
 
 def dereference_schema(schema: "ToolSchema") -> "ToolSchema":

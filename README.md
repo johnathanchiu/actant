@@ -116,7 +116,7 @@ from actant.runtime import (
     TemporalRuntimeConfig,
     TemporalRuntimeWorker,
 )
-from actant.runtime.hooks import AgentThreadHooks
+from actant.runtime.events import AgentThreadHooks
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools import ToolRegistry
 

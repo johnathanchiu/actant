@@ -37,7 +37,7 @@ from actant.runtime.coordinator import (
     resolve_deferred_tool_call,
 )
 from actant.runtime.exceptions import ToolResolutionStaleError
-from actant.runtime.hooks import (
+from actant.runtime.events import (
     AgentThreadHooks,
     PublishingStreamListener,
     PublishingThreadHooks,

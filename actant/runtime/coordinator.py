@@ -39,13 +39,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from actant.core import JSONObject
-from actant.runtime.hooks import (
+from actant.runtime.events import (
     AgentThreadHooks,
     PublishingStreamListener,
     PublishingThreadHooks,
     StreamListener,
 )
-from actant.runtime.interfaces.events import EventPublisher
+from actant.runtime.events import EventPublisher
 from actant.runtime.types.threads import AgentThread
 
 if TYPE_CHECKING:

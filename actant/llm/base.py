@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 from actant.llm.messages import Message
 
 if TYPE_CHECKING:
-    from actant.runtime.hooks import StreamListener
+    from actant.runtime.events.streaming import StreamListener
 
 
 class LLMClient(Protocol):

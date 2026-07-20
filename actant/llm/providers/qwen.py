@@ -21,7 +21,7 @@ from actant.llm.providers._shared import (
 )
 
 if TYPE_CHECKING:
-    from actant.runtime.hooks import StreamListener
+    from actant.runtime.events.streaming import StreamListener
 
 DASHSCOPE_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 ToolSchema = dict[str, object]

@@ -10,7 +10,7 @@ from actant.llm.base import LLMClient
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 
 if TYPE_CHECKING:
-    from actant.runtime.hooks import StreamListener
+    from actant.runtime.events.streaming import StreamListener
 
 
 class DemoLLM:

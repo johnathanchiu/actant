@@ -1,4 +1,4 @@
-"""Event publisher protocol used by streaming hooks."""
+"""Transport-neutral publisher protocol for runtime events."""
 
 from __future__ import annotations
 

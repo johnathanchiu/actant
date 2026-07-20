@@ -1,4 +1,4 @@
-"""Thread hook interfaces."""
+"""Persisted lifecycle observers and their publishing implementation."""
 
 from __future__ import annotations
 
@@ -6,100 +6,8 @@ from typing import cast
 
 from actant.core import JSONObject, JSONValue
 from actant.llm.messages import Message
-from actant.runtime.interfaces.events import EventPublisher
+from actant.runtime.events.publisher import EventPublisher
 from actant.tools.base import ToolResult
-
-
-class StreamListener:
-    """Per-call sink for token-level deltas from an LLM provider.
-
-    Stream events precede the canonical assistant-message write and may be
-    lost or duplicated. Implementations should be lightweight, non-blocking,
-    and safe to abandon when a client disconnects.
-    """
-
-    async def on_text_delta(self, delta: str) -> None:
-        pass
-
-    async def on_thinking_delta(self, delta: str) -> None:
-        pass
-
-    async def on_tool_call_start(self, tool_call_id: str, name: str) -> None:
-        """Fired when a tool_use content block opens during streaming.
-
-        ``tool_call_id`` matches the eventual ``on_tool_call`` arg, so
-        downstream sinks can correlate the streamed args with the
-        assembled call that lands at turn end.
-        """
-        pass
-
-    async def on_tool_call_args_delta(self, tool_call_id: str, delta: str) -> None:
-        """Fired for each ``input_json_delta`` chunk inside an open
-        tool_use block. ``delta`` is a partial JSON string fragment
-        (concatenation of all deltas yields the final ``args`` JSON)."""
-        pass
-
-    async def on_tool_call_args_complete(self, tool_call_id: str) -> None:
-        """Fired when a tool_use content block closes during streaming."""
-        pass
-
-    def cancel_requested(self) -> bool:
-        return False
-
-
-class PublishingStreamListener(StreamListener):
-    """Stream listener that re-emits deltas onto an EventPublisher channel.
-
-    Mirrors :class:`PublishingThreadHooks`' sub-thread dual-publish
-    behavior: when ``parent_channel`` + ``parent_metadata`` are set,
-    every delta lands on both the thread's own channel AND the parent
-    channel with metadata stamped. See ``actant.runtime.coordinator``
-    for the canonical wiring.
-    """
-
-    def __init__(
-        self,
-        thread_id: str,
-        publisher: EventPublisher,
-        *,
-        channel: str | None = None,
-        parent_channel: str | None = None,
-        parent_metadata: JSONObject | None = None,
-    ) -> None:
-        self.thread_id = thread_id
-        self.publisher = publisher
-        self.channel = channel or f"thread:{thread_id}"
-        self.parent_channel = parent_channel
-        self.parent_metadata = parent_metadata
-
-    async def _emit(self, event_type: str, data: JSONObject) -> None:
-        await self.publisher.publish(
-            self.channel,
-            {"type": event_type, "thread_id": self.thread_id, "data": data},
-        )
-        if self.parent_channel is not None and self.parent_metadata is not None:
-            payload: JSONObject = {
-                "type": event_type,
-                "thread_id": self.thread_id,
-                "data": data,
-            }
-            payload.update(self.parent_metadata)
-            await self.publisher.publish(self.parent_channel, payload)
-
-    async def on_text_delta(self, delta: str) -> None:
-        await self._emit("text_delta", {"delta": delta})
-
-    async def on_thinking_delta(self, delta: str) -> None:
-        await self._emit("thinking_delta", {"delta": delta})
-
-    async def on_tool_call_start(self, tool_call_id: str, name: str) -> None:
-        await self._emit("tool_call_start", {"tool_call_id": tool_call_id, "name": name})
-
-    async def on_tool_call_args_delta(self, tool_call_id: str, delta: str) -> None:
-        await self._emit("tool_call_args_delta", {"tool_call_id": tool_call_id, "delta": delta})
-
-    async def on_tool_call_args_complete(self, tool_call_id: str) -> None:
-        await self._emit("tool_call_args_complete", {"tool_call_id": tool_call_id})
 
 
 class AgentThreadHooks:

@@ -15,7 +15,7 @@ from typing import Any
 
 from actant.agents import AgentDefinition
 from actant.llm.messages import Message
-from actant.runtime.hooks import AgentThreadHooks, StreamListener
+from actant.runtime.events import AgentThreadHooks, StreamListener
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.temporal.client import TemporalRuntimeClient
 from actant.runtime.types.threads import AgentThread

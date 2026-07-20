@@ -22,7 +22,7 @@ from actant.runtime.coordinator import (
     resolve_deferred_tool_call,
 )
 from actant.runtime.exceptions import ToolResolutionStaleError
-from actant.runtime.hooks import PublishingThreadHooks
+from actant.runtime.events.lifecycle import PublishingThreadHooks
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
 from actant.runtime.types.threads import AgentThread
 

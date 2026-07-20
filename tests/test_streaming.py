@@ -14,7 +14,7 @@ import pytest
 
 from actant.llm.errors import StreamCancelled
 from actant.llm.providers.fake import FakeLLM, FakeResponse
-from actant.runtime.hooks import StreamListener
+from actant.runtime.events.streaming import StreamListener
 
 
 @dataclass
