@@ -32,8 +32,7 @@ class DemoLLM:
 
         if latest.role == "tool":
             return await self._text(
-                "The durable tool call completed successfully. This response resumed from "
-                "the persisted thread state.",
+                "Done — the result came back and the conversation resumed from durable state.",
                 listener,
             )
 
@@ -78,6 +77,29 @@ class DemoLLM:
                         {"action": "complete the mixed parallel tool group"},
                     ),
                 ],
+                listener,
+            )
+        if "weather" in lowered:
+            return await self._tool_calls(
+                [
+                    ("get_weather", {"location": "New York, NY"}),
+                    ("get_weather", {"location": "London, UK"}),
+                    ("get_weather", {"location": "Tokyo, Japan"}),
+                ],
+                listener,
+            )
+        if "pizza" in lowered:
+            return await self._tool_call(
+                "ask_user",
+                {
+                    "question": "What kind of pizza sounds good right now?",
+                    "options": [
+                        "Classic pepperoni",
+                        "Spicy and meaty",
+                        "Veggie-loaded",
+                        "Surprise me",
+                    ],
+                },
                 listener,
             )
         if "choose" in lowered or "question" in lowered:
@@ -170,7 +192,9 @@ def build_llm() -> tuple[LLMClient, str]:
     if forced == "fake":
         return DemoLLM(), DemoLLM.model_id
 
-    if forced == "openai" or (not forced and not os.getenv("ANTHROPIC_API_KEY") and os.getenv("OPENAI_API_KEY")):
+    if forced == "openai" or (
+        not forced and not os.getenv("ANTHROPIC_API_KEY") and os.getenv("OPENAI_API_KEY")
+    ):
         from actant.llm.providers.openai import OpenAIProvider
 
         model = configured_model("openai")
@@ -182,7 +206,9 @@ def build_llm() -> tuple[LLMClient, str]:
         model = configured_model("anthropic")
         return AnthropicProvider(model_id=model), model
 
-    if forced == "gemini" or (not forced and (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))):
+    if forced == "gemini" or (
+        not forced and (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    ):
         from actant.llm.providers.gemini import GeminiProvider
 
         model = configured_model("gemini")

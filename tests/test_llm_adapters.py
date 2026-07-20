@@ -54,6 +54,18 @@ def test_provider_for_model_rejects_unknown_prefix() -> None:
         provider_for_model("unknown-model")
 
 
+def test_openai_requests_are_never_stored_by_provider() -> None:
+    provider = OpenAIProvider(model_id="gpt-5.4-nano", api_key="test")
+
+    params = provider._request_params(
+        "You are helpful.",
+        [Message(role="user", content="hello")],
+        [],
+    )
+
+    assert params["store"] is False
+
+
 def test_tool_call_from_raw_normalizes_null_fields() -> None:
     tool_call = ToolCall.from_raw(
         {

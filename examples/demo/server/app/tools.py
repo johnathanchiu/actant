@@ -42,6 +42,90 @@ class GetCurrentTimeTool(BaseDeclarativeTool):
         return _GetCurrentTimeInvocation(None)
 
 
+class _GetWeatherInvocation(BaseToolInvocation[dict[str, Any], dict[str, Any]]):
+    def get_description(self) -> str:
+        return f"Checking weather in {self.params.get('location', '')}"
+
+    async def execute(self) -> ToolResult:
+        location = str(self.params.get("location", "")).strip()
+        if not location:
+            return ToolResult.fail("location is required")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                geocode = await client.get(
+                    "https://geocoding-api.open-meteo.com/v1/search",
+                    params={
+                        "name": location.split(",", 1)[0].strip(),
+                        "count": 1,
+                        "language": "en",
+                        "format": "json",
+                    },
+                )
+                geocode.raise_for_status()
+                matches = geocode.json().get("results") or []
+                if not matches:
+                    return ToolResult.fail(f"location not found: {location}")
+
+                match = matches[0]
+                forecast = await client.get(
+                    "https://api.open-meteo.com/v1/forecast",
+                    params={
+                        "latitude": match["latitude"],
+                        "longitude": match["longitude"],
+                        "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m",
+                        "temperature_unit": "fahrenheit",
+                        "wind_speed_unit": "mph",
+                    },
+                )
+                forecast.raise_for_status()
+                current = forecast.json()["current"]
+                return ToolResult.ok(
+                    {
+                        "location": ", ".join(
+                            part
+                            for part in (
+                                match.get("name"),
+                                match.get("admin1"),
+                                match.get("country"),
+                            )
+                            if part
+                        ),
+                        "temperature_f": current["temperature_2m"],
+                        "feels_like_f": current["apparent_temperature"],
+                        "wind_mph": current["wind_speed_10m"],
+                        "weather_code": current["weather_code"],
+                        "observed_at": current["time"],
+                    }
+                )
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            return ToolResult.fail(f"weather lookup failed: {exc}")
+
+
+class GetWeatherTool(BaseDeclarativeTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="get_weather",
+            schema=make_tool_schema(
+                name="get_weather",
+                description=(
+                    "Get the current weather for one city. When the user asks about "
+                    "multiple cities, issue one get_weather call per city in the same turn."
+                ),
+                parameters={
+                    "location": {
+                        "type": "string",
+                        "description": "City and optional region or country, such as Paris, France.",
+                    }
+                },
+                required=["location"],
+            ),
+        )
+
+    async def build(self, params: JSONObject) -> ToolInvocation:
+        return _GetWeatherInvocation(dict(params))
+
+
 class _FetchUrlInvocation(BaseToolInvocation[dict[str, Any], str]):
     def get_description(self) -> str:
         url = self.params.get("url", "")
@@ -238,4 +322,10 @@ class AskUserTool(BaseDeclarativeTool):
 
 
 def demo_tools() -> list[BaseDeclarativeTool]:
-    return [GetCurrentTimeTool(), FetchUrlTool(), RequestApprovalTool(), AskUserTool()]
+    return [
+        GetCurrentTimeTool(),
+        GetWeatherTool(),
+        FetchUrlTool(),
+        RequestApprovalTool(),
+        AskUserTool(),
+    ]

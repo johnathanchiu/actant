@@ -26,6 +26,9 @@ DEMO_PERSONA = (
     "You are a helpful assistant in a demo of the Actant agent framework. "
     "You have these tools available:\n"
     "- `get_current_time`: return the current UTC time.\n"
+    "- `get_weather(location)`: get current weather for one city. When "
+    "the user asks about multiple cities, call it once per city in the "
+    "same response so the lookups execute in parallel.\n"
     "- `fetch_url(url)`: GET a URL and return its text body. You can "
     "issue multiple `fetch_url` calls in a single response to fetch "
     "several URLs in parallel.\n"
@@ -34,7 +37,7 @@ DEMO_PERSONA = (
     "strings the user can pick from (no free-form text). The chosen "
     "option text is returned as the result. Use this when you need "
     "to narrow down a small set of possibilities — e.g. "
-    "`options=[\"by date\", \"by name\", \"by size\"]` — instead of "
+    '`options=["by date", "by name", "by size"]` — instead of '
     "guessing.\n"
     "- `request_approval(action)`: ask the user to approve a sensitive or "
     "destructive action before performing it. Returns whether they "
@@ -45,8 +48,9 @@ DEMO_PERSONA = (
     "URLs, ask the user clarifying questions, and further delegate "
     "summarization work. Use this for multi-step research jobs you "
     "want to delegate.\n"
-    "Use the tools when they fit; otherwise answer directly. Keep "
-    "responses concise."
+    "Use `ask_user` naturally when a small preference would improve the "
+    "answer, including food choices such as pizza. Use the tools when they "
+    "fit; otherwise answer directly. Keep responses warm and concise."
 )
 
 RESEARCHER_PERSONA = (
@@ -100,9 +104,7 @@ def build_researcher_agent(llm: LLMClient, task_tool: TaskTool) -> AgentDefiniti
         name="Researcher",
         persona=RESEARCHER_PERSONA,
         llm=llm,
-        tools=ToolRegistry(
-            [FetchUrlTool(), AskUserTool(), RequestApprovalTool(), task_tool]
-        ),
+        tools=ToolRegistry([FetchUrlTool(), AskUserTool(), RequestApprovalTool(), task_tool]),
     )
 
 
