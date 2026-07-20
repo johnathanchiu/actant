@@ -257,7 +257,7 @@ In-memory variants for tests/local dev:
 - `InMemoryRuntimeStores` — drop-in for the projection contracts.
 
 Postgres backend:
-- `actant.runtime.stores.postgres.sqlalchemy` — DeclarativeBase models +
+- `actant.runtime.stores.postgres` — DeclarativeBase models +
   `ACTANT_RUNTIME_METADATA` you can plug into your own Alembic setup.
 
 Tables: `actant_threads`, `actant_runs`, `actant_messages`,

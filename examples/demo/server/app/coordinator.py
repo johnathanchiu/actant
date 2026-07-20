@@ -44,7 +44,7 @@ from actant.runtime.events import (
     StreamListener,
 )
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
-from actant.runtime.stores.postgres.sqlalchemy import (
+from actant.runtime.stores.postgres import (
     SQLAlchemyMessageStore,
     SQLAlchemyRunStore,
     SQLAlchemyThreadStore,

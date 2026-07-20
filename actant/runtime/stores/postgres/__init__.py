@@ -1,12 +1,13 @@
-"""Postgres runtime store implementations.
+"""Postgres projection schema and SQLAlchemy store implementations.
 
 Projection-only — Temporal owns coordination. SQLAlchemy is the only
 postgres backend; the previous raw-asyncpg variant was deleted to
 avoid maintaining two parallel implementations of every store
-mutation.
+mutation. Schema, transactional stores, and pure conversion functions live in
+separate modules so migration code does not depend on query implementation.
 """
 
-from actant.runtime.stores.postgres.sqlalchemy import (
+from actant.runtime.stores.postgres.models import (
     ACTANT_RUNTIME_METADATA,
     ActantMessageModel,
     ActantMessagePartModel,
@@ -14,13 +15,15 @@ from actant.runtime.stores.postgres.sqlalchemy import (
     ActantRuntimeBase,
     ActantThreadModel,
     ActantToolCallModel,
+    create_schema,
+)
+from actant.runtime.stores.postgres.stores import (
     SQLAlchemyEventPublisher,
     SQLAlchemyMessageStore,
     SQLAlchemyRunStore,
     SQLAlchemyRuntimeStores,
     SQLAlchemyThreadStore,
     SQLAlchemyToolCallStore,
-    create_schema,
 )
 
 __all__ = [

@@ -7,7 +7,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from actant.runtime.stores.postgres.sqlalchemy import (
+from actant.runtime.stores.postgres import (
     ACTANT_RUNTIME_METADATA,
     ActantRunModel,
     ActantThreadModel,
