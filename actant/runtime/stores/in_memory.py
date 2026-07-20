@@ -1,7 +1,7 @@
 """In-memory stores for tests and local demos.
 
 These back the projection-only ``RuntimeStores`` surface used by the
-Temporal runtime: threads, runs, messages, tool_calls, memory cards.
+Temporal runtime: threads, runs, messages, and tool calls.
 Coordination stores (events, turn_jobs, tool_jobs, mailbox) are gone —
 Temporal owns durable inbox delivery and work scheduling.
 """
@@ -12,12 +12,10 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 
 from actant.agents import Agent
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
-from actant.memory import MemoryCard, MemoryCardRef, MemorySearchResult
 from actant.runtime.types.threads import (
     AgentRun,
     AgentThread,
@@ -279,86 +277,6 @@ class InMemoryEventPublisher:
             self._subscribers[channel].remove(queue)
 
 
-class InMemoryMemoryStore:
-    def __init__(self) -> None:
-        self._cards: dict[tuple[str, str], MemoryCard] = {}
-
-    async def put(self, card: MemoryCard) -> MemoryCard:
-        self._cards[(card.namespace, card.id)] = card
-        return card
-
-    async def get(self, namespace: str, card_id: str) -> MemoryCard | None:
-        return self._cards.get((namespace, card_id))
-
-    async def delete(self, namespace: str, card_id: str) -> bool:
-        return self._cards.pop((namespace, card_id), None) is not None
-
-    async def list(self, namespace: str) -> list[MemoryCardRef]:
-        refs = [
-            card.ref()
-            for (card_namespace, _card_id), card in self._cards.items()
-            if card_namespace == namespace
-        ]
-        return sorted(refs, key=lambda ref: (ref.title.lower(), ref.id))
-
-    async def search(
-        self,
-        namespace: str,
-        query: str,
-        *,
-        limit: int = 10,
-    ) -> list[MemorySearchResult]:
-        terms = [term.lower() for term in query.split() if term.strip()]
-        results: list[MemorySearchResult] = []
-        for (card_namespace, _card_id), card in self._cards.items():
-            if card_namespace != namespace:
-                continue
-            haystack = f"{card.title}\n{card.body}\n{' '.join(card.tags)}".lower()
-            score = float(sum(1 for term in terms if term in haystack))
-            if terms and score == 0:
-                continue
-            results.append(
-                MemorySearchResult(
-                    card=card.ref(),
-                    score=score,
-                    snippet=_snippet(card.body, terms),
-                )
-            )
-        return sorted(results, key=lambda result: (-result.score, result.card.title))[:limit]
-
-    async def append(self, namespace: str, card_id: str, body: str) -> MemoryCard | None:
-        card = await self.get(namespace, card_id)
-        if card is None:
-            return None
-        separator = "" if not card.body or card.body.endswith("\n") else "\n"
-        card.body = f"{card.body}{separator}{body}"
-        card.updated_at = datetime.now(UTC)
-        card.version += 1
-        return card
-
-    async def replace(self, namespace: str, card_id: str, body: str) -> MemoryCard | None:
-        card = await self.get(namespace, card_id)
-        if card is None:
-            return None
-        card.body = body
-        card.updated_at = datetime.now(UTC)
-        card.version += 1
-        return card
-
-
-def _snippet(body: str, terms: list[str]) -> str:
-    if not body:
-        return ""
-    lowered = body.lower()
-    for term in terms:
-        index = lowered.find(term)
-        if index >= 0:
-            start = max(0, index - 80)
-            end = min(len(body), index + 160)
-            return body[start:end]
-    return body[:240]
-
-
 @dataclass
 class InMemoryRuntimeStores:
     agents: InMemoryAgentStore = field(default_factory=InMemoryAgentStore)
@@ -366,7 +284,6 @@ class InMemoryRuntimeStores:
     runs: InMemoryRunStore = field(default_factory=InMemoryRunStore)
     messages: InMemoryMessageStore = field(default_factory=InMemoryMessageStore)
     tool_calls: InMemoryToolCallStore = field(default_factory=InMemoryToolCallStore)
-    memory: InMemoryMemoryStore = field(default_factory=InMemoryMemoryStore)
     publisher: InMemoryEventPublisher = field(default_factory=InMemoryEventPublisher)
 
     def __post_init__(self) -> None:

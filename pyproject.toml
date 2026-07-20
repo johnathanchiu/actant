@@ -1,7 +1,7 @@
 [project]
 name = "actant"
 version = "0.1.0"
-description = "Temporal-native runtime for persistent agents with durable inboxes, tools, memory, and replay"
+description = "Temporal-native runtime for persistent agents with durable inboxes, governed tools, and replay"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

@@ -10,8 +10,8 @@ message on the same thread.
 ### Agent definition
 
 An `AgentDefinition` is immutable runtime configuration: identity, persona,
-LLM client, tool registry, tool allowlist, context policy, memory namespace,
-and turn budget. It describes how an agent behaves; it is not the agent's
+LLM client, tool registry, tool allowlist, context policy, and turn budget. It
+describes how an agent behaves; it is not the agent's
 conversation state.
 
 Applications keep the definition registered anywhere a Temporal worker may
@@ -54,7 +54,7 @@ tool group before the next model turn.
 ### Projection stores
 
 Temporal is the coordination source of truth. Runtime stores are readable
-projections of threads, runs, messages, tool calls, and memory. They make APIs,
+projections of threads, runs, messages, and tool calls. They make APIs,
 UIs, audits, and recovery practical without replaying a workflow history for
 every read.
 
@@ -91,7 +91,6 @@ Actant supplies:
 - explicit tool admission and external resolution;
 - projection store contracts and included implementations;
 - streaming and lifecycle hooks;
-- memory cards and memory tools;
 - subagent delegation primitives.
 
 ## What the application does

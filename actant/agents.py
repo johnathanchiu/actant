@@ -30,7 +30,6 @@ class Agent:
     persona_version: str
     model: ModelConfig
     tool_allowlist: set[str] = field(default_factory=set)
-    memory_namespace: str = "default"
     max_turns_per_thread: int = 25
 
 
@@ -50,7 +49,6 @@ class AgentDefinition:
     tool_allowlist: set[str] = field(default_factory=set)
     context_policy: ContextPolicy = field(default_factory=ContextPolicy)
     persona_version: str = "v1"
-    memory_namespace: str = "default"
     max_turns_per_thread: int = 25
 
     async def complete(

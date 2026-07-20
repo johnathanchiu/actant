@@ -10,7 +10,7 @@ a coordinator.
 
 ## The problem actant doesn't solve for you
 
-Actant is a kernel: durable inbox, tool admission, memory, hooks,
+Actant is a kernel: durable inbox, tool admission, hooks,
 replay. It deliberately doesn't ship policy for:
 
 - **Per-thread vs global agent definitions** — does each thread get
@@ -233,7 +233,8 @@ runtime = AgentRuntime(
     stores=InMemoryRuntimeStores(),
     agents={"bot": my_agent},
 )
-await runtime.send_message("bot", "thread_1", "hello")
+thread_id = uuid.uuid4().hex
+await runtime.send_message("bot", thread_id, "hello")
 ```
 
 …and you don't have a `task()` tool, and you don't run a worker

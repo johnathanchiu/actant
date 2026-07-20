@@ -8,7 +8,6 @@ mutation.
 
 from actant.runtime.stores.postgres.sqlalchemy import (
     ACTANT_RUNTIME_METADATA,
-    ActantMemoryCardModel,
     ActantMessageModel,
     ActantMessagePartModel,
     ActantRunModel,
@@ -16,7 +15,6 @@ from actant.runtime.stores.postgres.sqlalchemy import (
     ActantThreadModel,
     ActantToolCallModel,
     SQLAlchemyEventPublisher,
-    SQLAlchemyMemoryStore,
     SQLAlchemyMessageStore,
     SQLAlchemyRunStore,
     SQLAlchemyRuntimeStores,
@@ -27,7 +25,6 @@ from actant.runtime.stores.postgres.sqlalchemy import (
 
 __all__ = [
     "ACTANT_RUNTIME_METADATA",
-    "ActantMemoryCardModel",
     "ActantMessageModel",
     "ActantMessagePartModel",
     "ActantRunModel",
@@ -35,7 +32,6 @@ __all__ = [
     "ActantThreadModel",
     "ActantToolCallModel",
     "SQLAlchemyEventPublisher",
-    "SQLAlchemyMemoryStore",
     "SQLAlchemyMessageStore",
     "SQLAlchemyRunStore",
     "SQLAlchemyRuntimeStores",

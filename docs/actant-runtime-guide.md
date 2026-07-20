@@ -84,8 +84,15 @@ stores.
 ## Send messages
 
 ```python
-await runtime.send_message("assistant", "thread_1", "Hello")
+from uuid import uuid4
+
+thread_id = uuid4().hex
+await runtime.send_message("assistant", thread_id, "Hello")
 ```
+
+Thread IDs are strings because they cross Temporal and persistence boundaries.
+Generate them from UUIDs (or an equivalently collision-resistant application
+scheme) instead of using sequential labels in production.
 
 `send_message` uses Temporal signal-with-start. The first message starts the
 thread workflow; later messages signal that same workflow. Messages arriving
@@ -99,8 +106,8 @@ open for the entire agent run.
 ## Inspect and cancel
 
 ```python
-state = await runtime.get_state("assistant", "thread_1")
-await runtime.cancel_thread("assistant", "thread_1")
+state = await runtime.get_state("assistant", thread_id)
+await runtime.cancel_thread("assistant", thread_id)
 ```
 
 The query returns live workflow state such as inbox size, total turns, current
@@ -112,7 +119,7 @@ history. Cancellation is durable and projection cleanup is idempotent.
 ```python
 await runtime.resolve_tool(
     "assistant",
-    "thread_1",
+    thread_id,
     tool_call_id,
     approved=True,
     answer="Approved",

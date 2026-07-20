@@ -45,7 +45,6 @@ from actant.runtime.hooks import (
 )
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
 from actant.runtime.stores.postgres.sqlalchemy import (
-    SQLAlchemyMemoryStore,
     SQLAlchemyMessageStore,
     SQLAlchemyRunStore,
     SQLAlchemyThreadStore,
@@ -92,7 +91,6 @@ class _DemoStores:
     runs: SQLAlchemyRunStore
     messages: SQLAlchemyMessageStore
     tool_calls: SQLAlchemyToolCallStore
-    memory: SQLAlchemyMemoryStore
     publisher: InMemoryEventPublisher
 
 
@@ -355,7 +353,6 @@ async def build_coordinator() -> DemoCoordinator:
         runs=SQLAlchemyRunStore(session_factory),
         messages=SQLAlchemyMessageStore(session_factory),
         tool_calls=SQLAlchemyToolCallStore(session_factory),
-        memory=SQLAlchemyMemoryStore(session_factory),
         publisher=InMemoryEventPublisher(),
     )
 

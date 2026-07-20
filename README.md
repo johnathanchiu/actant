@@ -1,11 +1,11 @@
 # Actant
 
 Actant is a small Python runtime kernel for long-lived agents with
-durable inboxes, tools, admission, memory, and replay — built on top of
+durable inboxes, governed tools, pause/resume, and replay — built on top of
 [Temporal](https://temporal.io/).
 
 The package is intentionally domain-neutral. Applications provide
-agents, tools, memory content, and UI.
+agents, tools, domain context, and UI.
 
 > Actant is under active development. Public APIs may change before 1.0.
 
@@ -21,7 +21,7 @@ thread as a durable service:
 - tool admission is explicit: `ALLOW`, `BLOCK`, or `WAIT`;
 - waiting calls can pause for human or external resolution without holding a
   Python process open;
-- threads, runs, messages, tool calls, and memory remain readable through
+- threads, runs, messages, and tool calls remain readable through
   application-owned projections;
 - subagents use the same governed tool-call and deferred-resolution model.
 
@@ -87,45 +87,29 @@ llm = llm_for_model(os.environ["ACTANT_MODEL"])
 Actant treats model IDs as provider configuration and does not choose a
 "latest" model on your behalf.
 
-## Memory
-
-Memory is modeled as durable cards plus optional tools. Register the
-tools for an agent namespace when you want the agent to manage its own
-memory:
-
-```python
-from actant.memory import memory_tools
-from actant.runtime.stores import InMemoryRuntimeStores
-from actant.tools import ToolRegistry
-
-stores = InMemoryRuntimeStores()
-tools = ToolRegistry(memory_tools(stores.memory, "agent_pm_1"))
-```
-
-Available memory tools: `list_memory_cards`, `read_memory_card`,
-`search_memory`, `write_memory_card`, `append_memory_card`.
-
-Applications can also build prompt-cache-friendly memory context
-explicitly via `build_memory_context`.
-
 ## Agent Runtime
 
 `AgentRuntime` is the client-side facade. It signals a Temporal
 workflow per `(agent_id, thread_id)`:
 
 ```python
+import os
+from uuid import uuid4
+
 from actant import AgentDefinition
+from actant.llm import llm_for_model
 from actant.runtime import AgentRuntime, TemporalRuntimeConfig
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools import ToolRegistry
 
 stores = InMemoryRuntimeStores()
+llm = llm_for_model(os.environ["ACTANT_MODEL"])
 agent = AgentDefinition(
     id="assistant",
     name="Assistant",
     persona="You are a useful assistant.",
     llm=llm,
-    tools=ToolRegistry([...]),
+    tools=ToolRegistry([]),
 )
 
 runtime = AgentRuntime(
@@ -134,8 +118,14 @@ runtime = AgentRuntime(
     temporal=TemporalRuntimeConfig(address="localhost:7233"),
 )
 
-await runtime.send_message("assistant", "thread_1", "hello")
+thread_id = uuid4().hex
+await runtime.send_message(agent.id, thread_id, "hello")
 ```
+
+Actant represents IDs as strings at the Temporal and storage boundaries. Use
+UUIDs (or another globally unique scheme) for thread and application-generated
+IDs; human-readable strings such as `agent.id` are appropriate for stable
+registered agent names.
 
 Behind the scenes, `send_message` issues a `signal_with_start` against
 the thread workflow — the workflow is created on first contact and
@@ -150,8 +140,6 @@ worker = TemporalRuntimeWorker(
     stores=stores,
     agents={agent.id: agent},
     config=TemporalRuntimeConfig(address="localhost:7233"),
-    hooks_factory=my_hooks_factory,
-    listener_factory=my_listener_factory,
 )
 await worker.run()
 ```
@@ -178,17 +166,17 @@ load-balances workflows + activities across them.
 
 ```python
 # Cancel an in-flight thread
-await runtime.cancel_thread("assistant", "thread_1")
+await runtime.cancel_thread(agent.id, thread_id)
 
 # Resolve a deferred (WAIT) tool call
 await runtime.resolve_tool(
-    "assistant", "thread_1", tool_call_id,
+    agent.id, thread_id, tool_call_id,
     approved=True,
     answer="ok",
 )
 
 # Read live state without disturbing the workflow
-state = await runtime.get_state("assistant", "thread_1")
+state = await runtime.get_state(agent.id, thread_id)
 ```
 
 ## Tool Admission
@@ -232,7 +220,7 @@ Postgres backend:
   `ACTANT_RUNTIME_METADATA` you can plug into your own Alembic setup.
 
 Tables: `actant_threads`, `actant_runs`, `actant_messages`,
-`actant_message_parts`, `actant_tool_calls`, `actant_memory_cards`.
+`actant_message_parts`, and `actant_tool_calls`.
 
 Applications can implement custom stores against the contracts in
 `actant.runtime.interfaces.stores`.
@@ -246,7 +234,7 @@ when an agent is allowed to delegate work:
 from actant.tools import InMemorySubagentRegistry, TaskTool, ToolRegistry
 
 registry = InMemorySubagentRegistry({"researcher": researcher_invoker})
-tools = ToolRegistry([TaskTool(registry)])
+tools = ToolRegistry([TaskTool(invoker=registry)])
 ```
 
 The invoker is app-owned, so a subagent can be another Actant
@@ -270,8 +258,8 @@ implementations.
 
 ## Examples
 
-See `examples/` for runnable compositions of agents, tools, memory, and
-admission. `examples/demo/` is the worked FastAPI + React demo.
+See `examples/` for runnable compositions of agents, tools, admission, and
+delegation. `examples/demo/` is the worked FastAPI + React demo.
 
 For apps that need multiple agents, `task()`-style delegation, or
 robust state recovery when Temporal and the store diverge, read

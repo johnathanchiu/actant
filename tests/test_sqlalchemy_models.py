@@ -24,7 +24,6 @@ def test_sqlalchemy_metadata_declares_runtime_tables() -> None:
         "actant_messages",
         "actant_message_parts",
         "actant_tool_calls",
-        "actant_memory_cards",
     }
 
 
@@ -77,7 +76,6 @@ def test_sqlalchemy_runtime_stores_wire_concrete_store_implementations() -> None
     assert stores.runs.__class__.__name__ == "SQLAlchemyRunStore"
     assert stores.messages.__class__.__name__ == "SQLAlchemyMessageStore"
     assert stores.tool_calls.__class__.__name__ == "SQLAlchemyToolCallStore"
-    assert stores.memory.__class__.__name__ == "SQLAlchemyMemoryStore"
     # Coordination stores no longer exist on the runtime stores facade.
     assert not hasattr(stores, "events")
     assert not hasattr(stores, "mailbox")

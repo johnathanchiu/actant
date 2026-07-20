@@ -22,7 +22,6 @@ from sqlalchemy import (
     Integer,
     Text,
     func,
-    or_,
     select,
     text,
 )
@@ -32,7 +31,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message, Role
-from actant.memory import MemoryCard, MemoryCardRef, MemorySearchResult
 from actant.runtime.session import message_to_parts, parts_to_messages
 from actant.runtime.types.session import MessagePart, PartKind, WaitStatus
 from actant.runtime.types.threads import (
@@ -194,31 +192,6 @@ class ActantToolCallModel(ActantRuntimeBase):
     # take the WAIT path.
     temporal_workflow_id: Mapped[str | None] = mapped_column(Text)
     temporal_activity_id: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-
-class ActantMemoryCardModel(ActantRuntimeBase):
-    __tablename__ = "actant_memory_cards"
-
-    namespace: Mapped[str] = mapped_column(Text, primary_key=True)
-    card_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    tags: Mapped[list[str]] = mapped_column(
-        JSONB,
-        nullable=False,
-        server_default=text("'[]'::jsonb"),
-    )
-    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -638,112 +611,6 @@ class SQLAlchemyToolCallStore:
             return [_tool_call(row) for row in rows]
 
 
-class SQLAlchemyMemoryStore:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self.session_factory = session_factory
-
-    async def put(self, card: MemoryCard) -> MemoryCard:
-        async with self.session_factory() as session:
-            async with session.begin():
-                model = await session.get(
-                    ActantMemoryCardModel,
-                    {"namespace": card.namespace, "card_id": card.id},
-                )
-                if model is None:
-                    session.add(
-                        ActantMemoryCardModel(
-                            namespace=card.namespace,
-                            card_id=card.id,
-                            title=card.title,
-                            body=card.body,
-                            tags=list(card.tags),
-                            version=card.version,
-                            created_at=card.created_at,
-                            updated_at=card.updated_at,
-                        )
-                    )
-                else:
-                    model.title = card.title
-                    model.body = card.body
-                    model.tags = list(card.tags)
-                    model.version = card.version
-                    model.updated_at = card.updated_at
-        return card
-
-    async def get(self, namespace: str, card_id: str) -> MemoryCard | None:
-        async with self.session_factory() as session:
-            model = await session.get(
-                ActantMemoryCardModel,
-                {"namespace": namespace, "card_id": card_id},
-            )
-            return _memory_card(model) if model is not None else None
-
-    async def delete(self, namespace: str, card_id: str) -> bool:
-        async with self.session_factory() as session:
-            async with session.begin():
-                model = await session.get(
-                    ActantMemoryCardModel,
-                    {"namespace": namespace, "card_id": card_id},
-                )
-                if model is None:
-                    return False
-                await session.delete(model)
-                return True
-
-    async def list(self, namespace: str) -> list[MemoryCardRef]:
-        async with self.session_factory() as session:
-            rows = (
-                await session.scalars(
-                    select(ActantMemoryCardModel)
-                    .where(ActantMemoryCardModel.namespace == namespace)
-                    .order_by(ActantMemoryCardModel.title)
-                )
-            ).all()
-            return [_memory_card(row).ref() for row in rows]
-
-    async def search(
-        self, namespace: str, query: str, *, limit: int = 10
-    ) -> list[MemorySearchResult]:
-        async with self.session_factory() as session:
-            rows = (
-                await session.scalars(
-                    select(ActantMemoryCardModel)
-                    .where(
-                        ActantMemoryCardModel.namespace == namespace,
-                        or_(
-                            ActantMemoryCardModel.title.ilike(f"%{query}%"),
-                            ActantMemoryCardModel.body.ilike(f"%{query}%"),
-                        ),
-                    )
-                    .order_by(ActantMemoryCardModel.updated_at.desc())
-                    .limit(limit)
-                )
-            ).all()
-            return [
-                MemorySearchResult(card=_memory_card(row).ref(), score=1.0, snippet=row.body[:240])
-                for row in rows
-            ]
-
-    async def append(self, namespace: str, card_id: str, body: str) -> MemoryCard | None:
-        card = await self.get(namespace, card_id)
-        if card is None:
-            return None
-        separator = "" if not card.body or card.body.endswith("\n") else "\n"
-        card.body = f"{card.body}{separator}{body}"
-        card.version += 1
-        card.updated_at = datetime.now(UTC)
-        return await self.put(card)
-
-    async def replace(self, namespace: str, card_id: str, body: str) -> MemoryCard | None:
-        card = await self.get(namespace, card_id)
-        if card is None:
-            return None
-        card.body = body
-        card.version += 1
-        card.updated_at = datetime.now(UTC)
-        return await self.put(card)
-
-
 class SQLAlchemyEventPublisher:
     async def publish(self, channel: str, event: JSONObject) -> None:
         del channel, event
@@ -760,7 +627,6 @@ class SQLAlchemyRuntimeStores:
         self.runs = SQLAlchemyRunStore(session_factory)
         self.messages = SQLAlchemyMessageStore(session_factory)
         self.tool_calls = SQLAlchemyToolCallStore(session_factory)
-        self.memory = SQLAlchemyMemoryStore(session_factory)
         self.publisher = SQLAlchemyEventPublisher()
 
 
@@ -927,22 +793,8 @@ def _tool_call(row: ActantToolCallModel) -> ToolCallRecord:
     )
 
 
-def _memory_card(row: ActantMemoryCardModel) -> MemoryCard:
-    return MemoryCard(
-        id=row.card_id,
-        namespace=row.namespace,
-        title=row.title,
-        body=row.body,
-        tags=tuple(row.tags),
-        version=row.version,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
-
-
 __all__ = [
     "ACTANT_RUNTIME_METADATA",
-    "ActantMemoryCardModel",
     "ActantMessageModel",
     "ActantMessagePartModel",
     "ActantRunModel",
@@ -950,7 +802,6 @@ __all__ = [
     "ActantThreadModel",
     "ActantToolCallModel",
     "SQLAlchemyEventPublisher",
-    "SQLAlchemyMemoryStore",
     "SQLAlchemyMessageStore",
     "SQLAlchemyRunStore",
     "SQLAlchemyRuntimeStores",

@@ -44,7 +44,7 @@ in a wait request that will be exposed to clients.
 ```python
 await runtime.resolve_tool(
     "assistant",
-    "thread_1",
+    thread_id,
     tool_call_id,
     approved=True,
     answer="Approved by the report owner",

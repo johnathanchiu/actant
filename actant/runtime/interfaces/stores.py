@@ -1,8 +1,8 @@
 """Runtime store interfaces.
 
 The Temporal runtime owns durable execution (inbox, leases, scheduling).
-Stores hold projections — threads, runs, messages, tool_calls, memory
-cards — written from inside activities and read by application code.
+Stores hold projections — threads, runs, messages, and tool calls —
+written from inside activities and read by application code.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from typing import Protocol
 from actant.agents import Agent
 from actant.core import JSONObject
 from actant.llm.messages import Message
-from actant.memory import MemoryCard, MemoryCardRef, MemorySearchResult
 from actant.runtime.interfaces.events import EventPublisher
 from actant.runtime.types.threads import (
     AgentRun,
@@ -140,24 +139,6 @@ class ToolCallStore(Protocol):
     async def get_open_for_thread(self, agent_id: str, thread_id: str) -> list[ToolCallRecord]: ...
 
 
-class MemoryStore(Protocol):
-    async def put(self, card: MemoryCard) -> MemoryCard: ...
-
-    async def get(self, namespace: str, card_id: str) -> MemoryCard | None: ...
-
-    async def delete(self, namespace: str, card_id: str) -> bool: ...
-
-    async def list(self, namespace: str) -> list[MemoryCardRef]: ...
-
-    async def search(
-        self, namespace: str, query: str, *, limit: int = 10
-    ) -> list[MemorySearchResult]: ...
-
-    async def append(self, namespace: str, card_id: str, body: str) -> MemoryCard | None: ...
-
-    async def replace(self, namespace: str, card_id: str, body: str) -> MemoryCard | None: ...
-
-
 class RuntimeStores(Protocol):
     @property
     def threads(self) -> ThreadStore: ...
@@ -170,9 +151,6 @@ class RuntimeStores(Protocol):
 
     @property
     def tool_calls(self) -> ToolCallStore: ...
-
-    @property
-    def memory(self) -> MemoryStore: ...
 
     @property
     def publisher(self) -> EventPublisher: ...
