@@ -298,3 +298,7 @@ just temporal-up-detached  # start local Temporal stack
 just test                  # run tests (uses in-memory WorkflowEnvironment)
 just temporal-smoke        # full docker round-trip
 ```
+
+## License
+
+Actant is released under the [MIT License](LICENSE).
