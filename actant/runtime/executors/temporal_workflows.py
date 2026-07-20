@@ -185,24 +185,28 @@ class AgentThreadWorkflow:
             # state for thread + open tool_calls; calling them in series
             # is safe because each is idempotent on the same row.
             if self._current_run_id is not None:
-                await workflow.execute_activity(
-                    ActivityName.FINALIZE_RUN,
-                    FinalizeRunInput(
+                await asyncio.shield(
+                    workflow.execute_activity(
+                        ActivityName.FINALIZE_RUN,
+                        FinalizeRunInput(
+                            agent_id=payload.agent_id,
+                            thread_id=payload.thread_id,
+                            run_id=self._current_run_id,
+                            outcome=RunOutcome.CANCELLED.value,
+                            turn_count=self._turn_count_total,
+                        ),
+                        start_to_close_timeout=_PROJECTION_TIMEOUT,
+                    )
+                )
+            await asyncio.shield(
+                workflow.execute_activity(
+                    ActivityName.APPLY_THREAD_CANCELLATION,
+                    ApplyThreadCancellationInput(
                         agent_id=payload.agent_id,
                         thread_id=payload.thread_id,
-                        run_id=self._current_run_id,
-                        outcome=RunOutcome.CANCELLED.value,
-                        turn_count=self._turn_count_total,
                     ),
                     start_to_close_timeout=_PROJECTION_TIMEOUT,
                 )
-            await workflow.execute_activity(
-                ActivityName.APPLY_THREAD_CANCELLATION,
-                ApplyThreadCancellationInput(
-                    agent_id=payload.agent_id,
-                    thread_id=payload.thread_id,
-                ),
-                start_to_close_timeout=_PROJECTION_TIMEOUT,
             )
             raise
 
