@@ -136,7 +136,7 @@ For each run, `AgentThreadWorkflow`:
 
 1. drains all currently queued inbound messages;
 2. records a run through an activity;
-3. executes one model turn through an activity;
+3. executes one agent turn through an activity;
 4. admits all emitted tool calls in parallel;
 5. executes allowed calls and awaits deferred calls concurrently;
 6. finalizes the tool-result group in transcript order;

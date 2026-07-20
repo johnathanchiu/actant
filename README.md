@@ -192,13 +192,15 @@ workflow and activity tasks across every worker polling the same task queue.
 
 `AgentThreadWorkflow`:
 
-- **Thread workflow** = the durable lifetime of one agent thread. It remains
+- **Agent thread** = the durable, addressable lifetime of the conversation. It remains
   addressable and parks on `wait_condition(inbox)` while idle.
-- **Run** = one activation caused by draining pending inbound messages.
-- **Agent loop** = the repeated model → tools → model cycle within that run. It
-  stops when the model returns no tool calls, the run budget is exhausted, the
-  run fails, or the thread is cancelled.
-- **Model turn** = one `run_turn` activity invocation (one model call).
+- **Agent run** = one end-to-end activation caused by draining pending inbound
+  messages. It continues until a stop condition is reached.
+- **Agent turn** = one `run_turn` activity invocation: a single model call and
+  the assistant output it produces.
+- **Agent loop** = the orchestration algorithm that advances an agent run
+  through agent turns and their tool groups. It is behavior, not another
+  persisted level in the hierarchy.
 - **Tool fan-out** = parallel `admit_tool` activities, followed by
   `execute_tool` for allowed calls or `await_external_resolution` for
   deferred calls. Deferred calls park as Temporal async activities, not

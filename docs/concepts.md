@@ -17,7 +17,7 @@ conversation state.
 Applications keep the definition registered anywhere a Temporal worker may
 execute its activities. The client process and worker process may be separate.
 
-### Thread
+### Agent thread
 
 A thread is the durable address `(agent_id, thread_id)`. One
 `AgentThreadWorkflow` owns that address, serializes its work, and remains alive
@@ -26,17 +26,23 @@ between runs. New messages are signals to the same workflow.
 The thread is the right unit for cancellation, live state queries, conversation
 history, and parent/child relationships.
 
-### Run
+### Agent run
 
 A run begins when an idle thread drains one or more queued messages. It ends
 when the model returns without tool calls, reaches its turn budget, fails, or
 is cancelled. A later message starts another run on the same thread.
 
-### Turn
+### Agent turn
 
-A turn is one model call. It can produce text, thinking summaries, and a group
-of tool calls. If tools return results, Actant appends those results to the
-transcript and begins the next turn.
+An agent turn is one model call. It can produce text, thinking summaries, and
+a group of tool calls. If tools return results, Actant appends those results
+to the transcript and begins the next turn.
+
+### Agent loop
+
+The agent loop is the control algorithm that advances one agent run through
+agent turns and tool groups until the run reaches a stop condition. It is not a
+fourth persisted object between a run and a turn.
 
 ### Tool call
 
@@ -49,7 +55,7 @@ classifies it as:
 
 Calls emitted by the same turn are admitted in parallel. Allowed and waiting
 calls are then processed concurrently, and their results are finalized as one
-tool group before the next model turn.
+tool group before the next agent turn.
 
 ### Projection stores
 
@@ -74,7 +80,7 @@ primitives onto an agent lifecycle:
 send_message
     -> signal-with-start thread workflow
     -> start run activity
-    -> model turn activity
+    -> agent turn activity
     -> admit tool activities
     -> execute or durably await resolution
     -> finalize tool results

@@ -32,8 +32,8 @@ TemporalRuntimeActivities (side effects)
 
 The central invariant is:
 
-> Tool calls emitted by one assistant turn progress independently, but the
-> next model turn cannot start until every call in that group has reached a
+> Tool calls emitted by one agent turn progress independently, but the
+> next agent turn cannot start until every call in that group has reached a
 > terminal result and the group has been finalized into the transcript.
 
 ## Read the implementation in this order
@@ -61,26 +61,26 @@ The public entry point is `actant/runtime/runtime.py`. It deliberately contains
 almost no orchestration: `AgentRuntime` delegates commands to its Temporal
 client.
 
-## Thread, run, turn, and group
+## Agent thread, run, turn, and group
 
 ```text
-thread (one long-lived workflow)
-└── run (work caused by one drain of the inbox)
-    └── agent loop
-        ├── model turn 1 (one model invocation)
-        │   └── tool group
-        │       ├── tool call A
-        │       └── tool call B
-        ├── model turn 2
-        └── ...
+agent thread (one long-lived workflow)
+└── agent run (one end-to-end activation)
+    ├── agent turn 1 (one model invocation)
+    │   └── tool group
+    │       ├── tool call A
+    │       └── tool call B
+    ├── agent turn 2
+    └── ...
 ```
 
-- A **thread** remains addressable between user messages.
-- A **run** starts after the workflow drains its inbox and ends on completion,
+- An **agent thread** remains addressable between user messages.
+- An **agent run** starts after the workflow drains its inbox and ends on completion,
   exhaustion, failure, or cancellation.
-- The **agent loop** is the model/tool cycle executed during that run.
-- A **model turn** is one model call.
-- A **tool group** contains every tool call emitted by the same assistant turn.
+- An **agent turn** is one model call and its assistant output.
+- The **agent loop** is the algorithm that advances the run through turns and
+  tool groups; it is not another persisted entity in this hierarchy.
+- A **tool group** contains every tool call emitted by the same agent turn.
 
 All calls in a group share a `group_id`. Every persisted call also carries the
 `run_id` and `turn_id` that produced it.
@@ -128,7 +128,7 @@ For every tool call in one turn:
    BLOCK -> no second activity; admission already persisted a terminal result
 4. Await every scheduled execution/wait handle in completion order.
 5. Run finalize_tool_group once.
-6. Return control to the agent loop for its next model turn.
+6. Return control to the agent loop for its next agent turn.
 ```
 
 Admission and execution use `workflow.as_completed`. Completion order does not
@@ -143,11 +143,11 @@ time --->
 allowed call:   admit -- execute ---------------- completed
 deferred call:  admit -- WAIT ........ approve -- completed
 group barrier:  ================================== open
-next model turn:                                  start
+next agent turn:                                  start
 ```
 
 The allowed call does not wait for the deferred call before executing. The
-agent does wait before starting another model turn.
+agent does wait before starting another agent turn.
 
 ## Deferred activity completion
 
@@ -175,7 +175,7 @@ therefore needs an explicit idempotency expectation.
 | Activity | Responsibility | External effects | Idempotency key/expectation |
 |---|---|---|---|
 | `start_run` | Open a projected run | Thread/run writes | `run_id`; safe to observe an existing run |
-| `run_turn` | Produce one assistant turn | Message reads/writes, model call, live events | `turn_id` identifies the logical turn; model calls are not inherently idempotent |
+| `run_turn` | Produce one agent turn | Message reads/writes, model call, live events | `turn_id` identifies the logical turn; model calls are not inherently idempotent |
 | `admit_tool` | Classify one call | Tool construction/policy, tool-call write, event | `tool_call_id`; terminal failure conversion at activity boundary |
 | `execute_tool` | Run one allowed call | Arbitrary tool side effect, tool-call write, event | Tool implementations own external idempotency; automatic retries are disabled |
 | `await_external_resolution` | Park a deferred call | Store Temporal identity, async completion | `tool_call_id`; external resolution reconciles stale handles |
@@ -298,6 +298,6 @@ When changing orchestration code, answer these questions in the pull request:
    recorded?
 4. Does every emitted tool call still receive exactly one transcript result?
 5. Can one waiting sibling prevent another sibling from starting?
-6. Can the next model turn begin before every group member is terminal?
+6. Can the next agent turn begin before every group member is terminal?
 7. Does cancellation reconcile Temporal and projection state?
 8. Can the UI reconstruct the same state without receiving live events?

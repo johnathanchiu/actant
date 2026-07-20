@@ -76,7 +76,7 @@ class MessageStore(Protocol):
         message: Message,
         tool_calls: Sequence[ToolCallRecord],
     ) -> MessageRecord:
-        """Atomically persist an assistant turn's full state.
+        """Atomically persist an agent turn's assistant output and tool calls.
 
         Writes the assistant message AND its tool-call records in one
         transaction. Either both commit or neither — prevents the state

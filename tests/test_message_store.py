@@ -57,7 +57,7 @@ async def test_append_user_supports_multimodal_blocks() -> None:
 
 @pytest.mark.asyncio
 async def test_append_assistant_without_tool_calls() -> None:
-    """Plain text-only assistant turn (no tools used)."""
+    """Plain text-only agent turn (no tools used)."""
     stores = InMemoryRuntimeStores()
     msg = Message(role="assistant", content="done")
     await stores.messages.append_assistant(_AGENT, _THREAD, "turn_1", msg)

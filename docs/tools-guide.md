@@ -109,7 +109,7 @@ return ToolResult(
 ```
 
 Products may interpret metadata and content blocks to emit artifacts, render UI
-previews, or feed future model turns.
+previews, or feed future agent turns.
 
 ## Admission: Allow, Block, Wait
 

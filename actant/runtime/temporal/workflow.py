@@ -8,7 +8,7 @@ message, cancel) flows through this workflow.
 The workflow is a thin orchestrator. It:
 
 1. Receives ``inbound`` signals (user messages) into an in-memory inbox.
-2. For each run: drains the inbox, runs the agent loop until the model
+2. For each agent run: drains the inbox, runs the agent loop until the model
    stops emitting tool_calls or the turn budget is exhausted.
 3. For each turn's tool_calls: kicks off ``admit_tool`` activities,
    then for each non-blocked tool fires ``execute_tool`` (ALLOW) or
@@ -65,13 +65,13 @@ class AgentThreadWorkflow:
     """The thread.
 
     The workflow owns the durable lifetime of one agent thread. Each inbox
-    activation starts a run whose agent loop continues until ``COMPLETED``,
+    activation starts an agent run whose agent loop continues until ``COMPLETED``,
     ``EXHAUSTED``, ``FAILED``, or ``CANCELLED``. After finalization, the thread
     workflow parks on ``wait_condition`` until another ``inbound`` message
     arrives or the workflow is cancelled.
 
-    Exhaustion ends only the current run. The thread remains alive and the next
-    inbound message starts a fresh run with a fresh budget.
+    Exhaustion ends only the current agent run. The agent thread remains alive
+    and the next inbound message starts a fresh run with a fresh budget.
     """
 
     def __init__(self) -> None:

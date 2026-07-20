@@ -184,7 +184,7 @@ async def test_admit_tool_swallows_can_execute_exception() -> None:
             msgs = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
             return sum(1 for m in msgs if m.role == "assistant") >= 2
 
-        # The whole point: workflow recovers, second assistant turn fires.
+        # The whole point: workflow recovers, second agent turn fires.
         await _wait_for(two_assistants)
 
         # Tool call is in a terminal status (BLOCKED via admission_error path).
