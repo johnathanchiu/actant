@@ -61,6 +61,9 @@ every read.
 The runtime writes conversation projections. Hooks announce events; they should
 not write duplicate messages.
 
+For the exact algorithm, activity boundaries, and state-transition details, see
+the [runtime architecture](architecture.md).
+
 ## What Temporal does
 
 Temporal provides durable workflow state, signals, activity scheduling,

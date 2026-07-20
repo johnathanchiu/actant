@@ -68,7 +68,9 @@ def llm_for_model(model_id: str, *, thinking_level: str = "med") -> LLMClient:
             from actant.llm.providers.qwen import QwenProvider
         except ModuleNotFoundError as exc:
             if exc.name == "openai":
-                raise ImportError("Qwen support requires `pip install 'actant[qwen]'`.") from exc
+                raise ImportError(
+                    "Qwen support requires `pip install 'actant[qwen]'`."
+                ) from exc
             raise
         return QwenProvider(model_id=model_id)
     raise ValueError(f"Unsupported provider: {provider}")

@@ -1,12 +1,16 @@
-"""Runtime execution primitives.
+"""Public runtime entry points.
 
-Public surface:
+The runtime package is organized by responsibility:
 
-- ``AgentRuntime`` — friendly facade. Wires stores + agents + an
-  executor (Temporal by default).
-- ``TemporalRuntimeWorker`` — worker process that polls a Temporal
-  task queue and executes ``AgentThreadWorkflow`` + activities.
-- ``TemporalRuntimeConfig`` — connection/task-queue configuration.
+- ``runtime.py``: application-facing client facade.
+- ``executors/temporal_workflows.py``: durable orchestration algorithm.
+- ``executors/temporal_activities.py``: side effects scheduled by the workflow.
+- ``executors/temporal.py``: Temporal client and worker adapters.
+- ``stores/``: readable execution projections.
+- ``hooks.py``: optional lifecycle and streaming observers.
+
+See ``docs/architecture.md`` in the source distribution for the detailed
+execution path and activity contracts.
 """
 
 from __future__ import annotations

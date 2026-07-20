@@ -149,6 +149,10 @@ class ThreadInput:
     external_resolution_timeout_seconds: int = 7 * 24 * 60 * 60
     # Carry-forward state for continue_as_new. Empty on initial start.
     carry_inbox: list[InboundMessage] = field(default_factory=list)
+    # Appended after carry_inbox to preserve the positional shape of the
+    # pre-0.1 payload while still carrying client configuration into the
+    # deterministic workflow.
+    history_size_threshold: int = 5_000
 
 
 # === Activity I/O ===

@@ -313,6 +313,7 @@ that uses the framework's coordinator primitives.
 Start with the [documentation map](docs/README.md):
 
 - [core concepts](docs/concepts.md)
+- [runtime architecture and implementation map](docs/architecture.md)
 - [runtime and deployment](docs/actant-runtime-guide.md)
 - [tools and admission](docs/tools-guide.md)
 - [pauses and deferred work](docs/pauses-and-resume.md)

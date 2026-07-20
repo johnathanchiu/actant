@@ -164,6 +164,7 @@ class AgentThreadWorkflow:
                             external_resolution_timeout_seconds=(
                                 payload.external_resolution_timeout_seconds
                             ),
+                            history_size_threshold=payload.history_size_threshold,
                             carry_inbox=list(self._inbox),
                         )
                     )
@@ -369,9 +370,7 @@ class AgentThreadWorkflow:
 
 
 def _continue_as_new_threshold(payload: ThreadInput) -> int:
-    # Hardcoded for now; could be made configurable on ThreadInput.
-    del payload
-    return 5_000
+    return max(1, payload.history_size_threshold)
 
 
 # Convenience name so callers don't have to know the class location for

@@ -167,7 +167,9 @@ class TemporalRuntimeActivities:
             )
             await hooks.on_user_message(msg.content)
 
-        messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
+        messages = await self.stores.messages.list_for_thread(
+            payload.agent_id, payload.thread_id
+        )
         if self.message_preprocessor is not None:
             messages = await self.message_preprocessor(messages)
         context = TurnContext(
@@ -503,7 +505,9 @@ class TemporalRuntimeActivities:
                 result_dict,
             )
             if record.wait_request is not None:
-                await hooks.on_tool_resolved(record.id, _result_from_record(record), record.turn_id)
+                await hooks.on_tool_resolved(
+                    record.id, _result_from_record(record), record.turn_id
+                )
 
     # === finalize_run ===
 
@@ -588,9 +592,7 @@ class TemporalRuntimeActivities:
         # tool_call ids against tool_result ids, and append placeholders
         # for orphans. ``append_tool_result`` is idempotent on
         # (agent, thread, tool_call_id) so re-running this is safe.
-        messages = await self.stores.messages.list_for_thread(
-            payload.agent_id, payload.thread_id
-        )
+        messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
         tool_call_ids: set[str] = set()
         tool_result_ids: set[str] = set()
         for msg in messages:

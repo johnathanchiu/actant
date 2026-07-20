@@ -11,7 +11,12 @@ from actant.tools.base import ToolResult
 
 
 class StreamListener:
-    """Per-call sink for token-level deltas from an LLM provider."""
+    """Per-call sink for token-level deltas from an LLM provider.
+
+    Stream events precede the canonical assistant-message write and may be
+    lost or duplicated. Implementations should be lightweight, non-blocking,
+    and safe to abandon when a client disconnects.
+    """
 
     async def on_text_delta(self, delta: str) -> None:
         pass
@@ -91,16 +96,24 @@ class PublishingStreamListener(StreamListener):
         await self._emit("tool_call_start", {"tool_call_id": tool_call_id, "name": name})
 
     async def on_tool_call_args_delta(self, tool_call_id: str, delta: str) -> None:
-        await self._emit(
-            "tool_call_args_delta", {"tool_call_id": tool_call_id, "delta": delta}
-        )
+        await self._emit("tool_call_args_delta", {"tool_call_id": tool_call_id, "delta": delta})
 
     async def on_tool_call_args_complete(self, tool_call_id: str) -> None:
         await self._emit("tool_call_args_complete", {"tool_call_id": tool_call_id})
 
 
 class AgentThreadHooks:
-    """Async callbacks fired by turn execution and coordinator lifecycle events."""
+    """Async callbacks fired after runtime lifecycle transitions.
+
+    Hooks are the live-notification path, not the canonical transcript. The
+    corresponding store mutation normally happens before a hook fires, so
+    consumers should reload projections after reconnecting.
+
+    Activity methods await these callbacks. Implementations must therefore be
+    fast and should handle transport failures internally. Do not put a durable
+    coordination decision exclusively in a hook: a worker crash after the
+    canonical write but before callback completion must remain recoverable.
+    """
 
     async def on_user_message(self, content: str | list[dict[str, object]]) -> None:
         """Fired when a user turn is being persisted.

@@ -7,12 +7,14 @@ that Actant models a durable thread, not a single model invocation.
 ## Start here
 
 1. [Core concepts](concepts.md) — the vocabulary and ownership boundaries.
-2. [Runtime guide](actant-runtime-guide.md) — connect a client and run a worker.
-3. [Tools guide](tools-guide.md) — tool schemas, execution, and admission.
-4. [Pauses and deferred work](pauses-and-resume.md) — approval and durable wait
+2. [Runtime architecture](architecture.md) — the exact workflow algorithm,
+   activity contracts, state ownership, and recommended code-reading order.
+3. [Runtime guide](actant-runtime-guide.md) — connect a client and run a worker.
+4. [Tools guide](tools-guide.md) — tool schemas, execution, and admission.
+5. [Pauses and deferred work](pauses-and-resume.md) — approval and durable wait
    semantics.
-5. [Subagents](subagents.md) — synchronous and durable delegation.
-6. [Coordinator guide](coordinator-guide.md) — application policy for
+6. [Subagents](subagents.md) — synchronous and durable delegation.
+7. [Coordinator guide](coordinator-guide.md) — application policy for
    multi-agent products.
 
 ## Learn from a running system
