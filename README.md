@@ -87,23 +87,60 @@ llm = llm_for_model(os.environ["ACTANT_MODEL"])
 Actant treats model IDs as provider configuration and does not choose a
 "latest" model on your behalf.
 
-## Agent Runtime
+## Run an Agent
 
-`AgentRuntime` is the client-side facade. It signals a Temporal
-workflow per `(agent_id, thread_id)`:
+The two runtime objects have different jobs:
+
+- `AgentRuntime` is the client facade. APIs and application code use it to
+  send messages, cancel threads, resolve waiting tools, and query live state.
+- `TemporalRuntimeWorker` is the execution host. It is a long-running process
+  that polls Temporal and performs model calls, tool calls, persistence, and
+  hooks.
+
+This minimal example runs both roles in one process and prints the agent's
+persisted response. Start Temporal first with `just temporal-up-detached`, then
+run the script:
 
 ```python
+import asyncio
 import os
+from contextlib import suppress
 from uuid import uuid4
 
 from actant import AgentDefinition
 from actant.llm import llm_for_model
-from actant.runtime import AgentRuntime, TemporalRuntimeConfig
+from actant.llm.messages import Message
+from actant.llm.providers.fake import FakeLLM, FakeResponse
+from actant.runtime import (
+    AgentRuntime,
+    TemporalRuntimeConfig,
+    TemporalRuntimeWorker,
+)
+from actant.runtime.hooks import AgentThreadHooks
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools import ToolRegistry
 
 stores = InMemoryRuntimeStores()
-llm = llm_for_model(os.environ["ACTANT_MODEL"])
+llm = (
+    llm_for_model(os.environ["ACTANT_MODEL"])
+    if os.getenv("ACTANT_MODEL")
+    else FakeLLM([FakeResponse(text="Hello from Actant.")])
+)
+finished = asyncio.Event()
+
+
+class ConsoleHooks(AgentThreadHooks):
+    async def on_assistant_message(self, message: Message) -> None:
+        print(f"Agent: {message.content}")
+
+    async def on_complete(self, success: bool, reason: str, message: str) -> None:
+        finished.set()
+
+    async def on_error(self, error: Exception) -> None:
+        print(f"Agent error: {error}")
+        finished.set()
+
+
 agent = AgentDefinition(
     id="assistant",
     name="Assistant",
@@ -117,9 +154,27 @@ runtime = AgentRuntime(
     agents={agent.id: agent},
     temporal=TemporalRuntimeConfig(address="localhost:7233"),
 )
+worker = TemporalRuntimeWorker(
+    stores=stores,
+    agents={agent.id: agent},
+    config=TemporalRuntimeConfig(address="localhost:7233"),
+    hooks_factory=lambda _thread: ConsoleHooks(),
+)
 
-thread_id = uuid4().hex
-await runtime.send_message(agent.id, thread_id, "hello")
+
+async def main() -> None:
+    worker_task = asyncio.create_task(worker.run())
+    try:
+        thread_id = uuid4().hex
+        await runtime.send_message(agent.id, thread_id, "hello")
+        await asyncio.wait_for(finished.wait(), timeout=60)
+    finally:
+        worker_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker_task
+
+
+asyncio.run(main())
 ```
 
 Actant represents IDs as strings at the Temporal and storage boundaries. Use
@@ -127,25 +182,11 @@ UUIDs (or another globally unique scheme) for thread and application-generated
 IDs; human-readable strings such as `agent.id` are appropriate for stable
 registered agent names.
 
-Behind the scenes, `send_message` issues a `signal_with_start` against
-the thread workflow — the workflow is created on first contact and
-signalled on subsequent calls.
-
-To actually execute the workflow, run a worker process:
-
-```python
-from actant.runtime import TemporalRuntimeWorker
-
-worker = TemporalRuntimeWorker(
-    stores=stores,
-    agents={agent.id: agent},
-    config=TemporalRuntimeConfig(address="localhost:7233"),
-)
-await worker.run()
-```
-
-Run as many worker processes as you want — Temporal's task queue
-load-balances workflows + activities across them.
+`send_message()` returns after signaling Temporal; it does not wait for the
+model response. Hooks provide the live completion path, while the message store
+provides the durable reload path. In production, run workers independently from
+API/client processes and use shared durable stores. Temporal load-balances
+workflow and activity tasks across every worker polling the same task queue.
 
 ## Workflow Anatomy
 
