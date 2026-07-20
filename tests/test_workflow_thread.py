@@ -567,7 +567,7 @@ async def test_exhaustion_finalizes_run_then_next_message_starts_fresh_run() -> 
     """Force tool calls every turn until the run hits its budget.
 
     With ``max_turns_per_run=2`` and the agent always producing a tool
-    call, the agent loop hits ``turns_left == 0`` and finalizes
+    call, the agent run hits ``turns_left == 0`` and finalizes
     EXHAUSTED. The next user message should start a brand new run
     with a fresh budget (different ``run_id`` on stored runs).
     """

@@ -8,7 +8,7 @@ message, cancel) flows through this workflow.
 The workflow is a thin orchestrator. It:
 
 1. Receives ``inbound`` signals (user messages) into an in-memory inbox.
-2. For each agent run: drains the inbox, runs the agent loop until the model
+2. For each agent run: drains the inbox and advances through turns until the model
    stops emitting tool_calls or the turn budget is exhausted.
 3. For each turn's tool_calls: kicks off ``admit_tool`` activities,
    then for each non-blocked tool fires ``execute_tool`` (ALLOW) or
@@ -65,7 +65,7 @@ class AgentThreadWorkflow:
     """The thread.
 
     The workflow owns the durable lifetime of one agent thread. Each inbox
-    activation starts an agent run whose agent loop continues until ``COMPLETED``,
+    activation starts an agent run that continues until ``COMPLETED``,
     ``EXHAUSTED``, ``FAILED``, or ``CANCELLED``. After finalization, the thread
     workflow parks on ``wait_condition`` until another ``inbound`` message
     arrives or the workflow is cancelled.
@@ -138,7 +138,7 @@ class AgentThreadWorkflow:
                     start_to_close_timeout=_PROJECTION_TIMEOUT,
                 )
 
-                outcome = await self._do_run(payload, run_id, msgs)
+                outcome = await self._execute_run(payload, run_id, msgs)
 
                 await workflow.execute_activity(
                     ActivityName.FINALIZE_RUN,
@@ -211,7 +211,7 @@ class AgentThreadWorkflow:
             )
             raise
 
-    async def _do_run(
+    async def _execute_run(
         self,
         payload: ThreadInput,
         run_id: str,

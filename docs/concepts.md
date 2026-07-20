@@ -30,19 +30,14 @@ history, and parent/child relationships.
 
 A run begins when an idle thread drains one or more queued messages. It ends
 when the model returns without tool calls, reaches its turn budget, fails, or
-is cancelled. A later message starts another run on the same thread.
+is cancelled. During that lifetime, the run advances through agent turns and
+their tool groups. A later message starts another run on the same thread.
 
 ### Agent turn
 
 An agent turn is one model call. It can produce text, thinking summaries, and
 a group of tool calls. If tools return results, Actant appends those results
 to the transcript and begins the next turn.
-
-### Agent loop
-
-The agent loop is the control algorithm that advances one agent run through
-agent turns and tool groups until the run reaches a stop condition. It is not a
-fourth persisted object between a run and a turn.
 
 ### Tool call
 

@@ -74,7 +74,7 @@ Register a `RunCompletionHandler` on `TemporalRuntimeWorker`. It runs inside
 the retryable `finalize_run` activity after projections are committed. The
 handler harvests persisted child output and resolves the parent's parked task
 call. `TaskTool.on_resolve` converts the JSON envelope into a normal
-`ToolResult`, after which the parent continues its agent loop.
+`ToolResult`, after which the parent continues its agent run.
 
 ## Nested delegation
 

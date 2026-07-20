@@ -1,8 +1,9 @@
 # Actant
 
-Actant is a small Python runtime kernel for long-lived agents with
-durable inboxes, governed tools, pause/resume, and replay — built on top of
-[Temporal](https://temporal.io/).
+Actant is a durable Python agent runtime built on
+[Temporal](https://temporal.io/). Define agents and tools normally; Actant
+automatically handles parallel tool execution, deferred calls, human
+approvals, nested agents, durable suspension, and crash-safe continuation.
 
 The package is intentionally domain-neutral. Applications provide
 agents, tools, domain context, and UI.
@@ -13,8 +14,26 @@ agents, tools, domain context, and UI.
 
 ## Why Actant
 
-Most agent libraries model one invocation. Actant models a persistent agent
-thread as a durable service:
+Building an agent run is easy. Making it correct when several tools run in
+parallel, one needs a human response, another finishes immediately, a worker
+restarts, and a nested agent also pauses is a distributed-systems problem.
+
+Actant makes that orchestration the runtime's job instead of application code:
+
+- no custom pause/resume state machine;
+- no polling loop or process held open for human approval;
+- no manual serialization and reconstruction of interrupted runs;
+- no hand-written fan-out/fan-in barrier for parallel tool calls;
+- no separate orchestration path for nested agents;
+- no custom worker-restart or duplicate-resolution reconciliation.
+
+When one agent turn emits multiple tool calls, Actant admits every call
+independently, runs eligible calls concurrently, parks only calls awaiting
+external input, and starts the next agent turn only after the entire group is
+terminal. That invariant survives processes, workers, restarts, and long human
+delays.
+
+Underneath that simple contract:
 
 - one Temporal workflow owns each `(agent_id, thread_id)`;
 - messages arrive through a durable inbox, including while work is active;
@@ -27,6 +46,29 @@ thread as a durable service:
 
 Temporal owns coordination, stores own readable projections, and applications
 own domain behavior.
+
+Other frameworks provide graphs, interrupts, deferred-result objects, or
+durable-execution integrations. Actant provides the finished orchestration
+contract. Read [Why Actant?](docs/why-actant.md) for the detailed guarantees,
+tradeoffs, and an honest comparison with adjacent frameworks.
+
+## The Contract in One Picture
+
+```text
+one agent turn emits A, B, and C
+
+A: admit -> execute -------------------------- completed
+B: admit -> WAIT ........ human approves .... completed
+C: admit -> execute ---- completed
+   \_________________________________________/
+                durable tool-group barrier
+                                                |
+                                                v
+                                         next agent turn
+```
+
+Immediate work does not wait to start. Deferred work consumes no Python worker
+while parked. The model does not receive a partial tool group.
 
 ## See the Runtime
 
@@ -126,19 +168,17 @@ llm = (
     if os.getenv("ACTANT_MODEL")
     else FakeLLM([FakeResponse(text="Hello from Actant.")])
 )
-finished = asyncio.Event()
+responses: asyncio.Queue[Message | Exception] = asyncio.Queue()
 
 
 class ConsoleHooks(AgentThreadHooks):
     async def on_assistant_message(self, message: Message) -> None:
-        print(f"Agent: {message.content}")
-
-    async def on_complete(self, success: bool, reason: str, message: str) -> None:
-        finished.set()
+        # A turn containing tool calls is not the final agent response.
+        if not message.tool_calls:
+            await responses.put(message)
 
     async def on_error(self, error: Exception) -> None:
-        print(f"Agent error: {error}")
-        finished.set()
+        await responses.put(error)
 
 
 agent = AgentDefinition(
@@ -162,12 +202,25 @@ worker = TemporalRuntimeWorker(
 )
 
 
+async def ask(prompt: str) -> Message:
+    """Submit one run and return its final assistant message."""
+    thread_id = uuid4().hex
+    await runtime.send_message(agent.id, thread_id, prompt)
+
+    response = await asyncio.wait_for(responses.get(), timeout=60)
+    if isinstance(response, Exception):
+        raise response
+    return response
+
+
 async def main() -> None:
     worker_task = asyncio.create_task(worker.run())
     try:
-        thread_id = uuid4().hex
-        await runtime.send_message(agent.id, thread_id, "hello")
-        await asyncio.wait_for(finished.wait(), timeout=60)
+        response = await ask("hello")
+
+        # This is the agent's completed response. Return it from an API,
+        # publish it, or display it directly.
+        print(f"Agent: {response.content}")
     finally:
         worker_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -175,6 +228,9 @@ async def main() -> None:
 
 
 asyncio.run(main())
+
+# Output:
+# Agent: Hello from Actant.
 ```
 
 Actant represents IDs as strings at the Temporal and storage boundaries. Use
@@ -182,11 +238,22 @@ UUIDs (or another globally unique scheme) for thread and application-generated
 IDs; human-readable strings such as `agent.id` are appropriate for stable
 registered agent names.
 
-`send_message()` returns after signaling Temporal; it does not wait for the
-model response. Hooks provide the live completion path, while the message store
-provides the durable reload path. In production, run workers independently from
-API/client processes and use shared durable stores. Temporal load-balances
-workflow and activity tasks across every worker polling the same task queue.
+The important line is `response = await ask("hello")`: `response` is the final
+provider-neutral `Message`, and `response.content` is the value normally sent
+to a UI or returned by an API.
+
+`send_message()` itself returns after signaling Temporal because an agent run
+may pause and outlive the submitting request. `AgentThreadHooks` delivers
+completed, persisted assistant messages. `StreamListener` separately delivers
+live text, thinking, and tool-argument deltas while each model turn is running.
+The durable reload path is
+`stores.messages.list_for_thread(agent.id, thread_id)`.
+
+In production, hooks and stream listeners normally publish these events to an
+SSE/websocket channel instead of an in-process queue; the included viewer shows
+that complete path. Run workers independently from API/client processes and
+use shared durable stores. Temporal load-balances workflow and activity tasks
+across every worker polling the same task queue.
 
 ## Execution Anatomy
 
@@ -195,12 +262,10 @@ workflow and activity tasks across every worker polling the same task queue.
 - **Agent thread** = the durable, addressable lifetime of the conversation. It remains
   addressable and parks on `wait_condition(inbox)` while idle.
 - **Agent run** = one end-to-end activation caused by draining pending inbound
-  messages. It continues until a stop condition is reached.
+  messages. It advances through agent turns and their tool groups until a stop
+  condition is reached.
 - **Agent turn** = one `run_turn` activity invocation: a single model call and
   the assistant output it produces.
-- **Agent loop** = the orchestration algorithm that advances an agent run
-  through agent turns and their tool groups. It is behavior, not another
-  persisted level in the hierarchy.
 - **Tool fan-out** = parallel `admit_tool` activities, followed by
   `execute_tool` for allowed calls or `await_external_resolution` for
   deferred calls. Deferred calls park as Temporal async activities, not
@@ -318,6 +383,7 @@ that uses the framework's coordinator primitives.
 
 Start with the [documentation map](docs/README.md):
 
+- [why Actant and how it differs](docs/why-actant.md)
 - [core concepts](docs/concepts.md)
 - [runtime architecture and implementation map](docs/architecture.md)
 - [runtime and deployment](docs/actant-runtime-guide.md)

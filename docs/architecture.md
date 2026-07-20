@@ -40,7 +40,7 @@ The central invariant is:
 
 1. `actant/runtime/temporal/workflow.py`
    - `AgentThreadWorkflow.run`: lifetime of a thread.
-   - `AgentThreadWorkflow._do_run`: agent loop for one run.
+   - `AgentThreadWorkflow._execute_run`: orchestration for one agent run.
    - `AgentThreadWorkflow._execute_tool_group`: the group barrier.
 2. `actant/runtime/temporal/activities.py`
    - External work and projection writes scheduled by the workflow.
@@ -75,11 +75,10 @@ agent thread (one long-lived workflow)
 ```
 
 - An **agent thread** remains addressable between user messages.
-- An **agent run** starts after the workflow drains its inbox and ends on completion,
-  exhaustion, failure, or cancellation.
+- An **agent run** starts after the workflow drains its inbox, advances through
+  turns and tool groups, and ends on completion, exhaustion, failure, or
+  cancellation.
 - An **agent turn** is one model call and its assistant output.
-- The **agent loop** is the algorithm that advances the run through turns and
-  tool groups; it is not another persisted entity in this hierarchy.
 - A **tool group** contains every tool call emitted by the same agent turn.
 
 All calls in a group share a `group_id`. Every persisted call also carries the
@@ -128,7 +127,7 @@ For every tool call in one turn:
    BLOCK -> no second activity; admission already persisted a terminal result
 4. Await every scheduled execution/wait handle in completion order.
 5. Run finalize_tool_group once.
-6. Return control to the agent loop for its next agent turn.
+6. Return control to the agent run for its next agent turn.
 ```
 
 Admission and execution use `workflow.as_completed`. Completion order does not
