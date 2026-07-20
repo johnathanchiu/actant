@@ -9,6 +9,8 @@ agents, tools, memory content, and UI.
 
 > Actant is under active development. Public APIs may change before 1.0.
 
+**[Read the Actant documentation →](docs/README.md)**
+
 ## Why Actant
 
 Most agent libraries model one invocation. Actant models a persistent agent
