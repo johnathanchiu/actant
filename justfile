@@ -43,11 +43,9 @@ demo-sync:
     cd examples/demo/server && uv sync
     cd examples/demo/ui && bun install
 
-# Run just the demo server. Requires one of ANTHROPIC_API_KEY /
-# OPENAI_API_KEY / GEMINI_API_KEY in the environment.
-# Run the demo FastAPI server.
+# Run the demo FastAPI server (deterministic unless ACTANT_PROVIDER is set).
 demo-server:
-    cd examples/demo/server && uv run python -m uvicorn app.main:app --port 8181 --reload
+    cd examples/demo/server && ACTANT_PROVIDER="${ACTANT_PROVIDER:-fake}" uv run python -m uvicorn app.main:app --port 8181 --reload
 
 # Run just the demo UI.
 demo-ui:
@@ -191,6 +189,7 @@ demo:
     export ACTANT_TEMPORAL_ADDRESS="localhost:27233"
     export ACTANT_DEMO_DATABASE_URL="postgresql+asyncpg://actant:actant@localhost:55435/actant_demo"
     export VITE_ACTANT_API_BASE="http://localhost:8181"
+    export ACTANT_PROVIDER="${ACTANT_PROVIDER:-fake}"
 
     # ``exec`` inside the subshells means $! is the real uvicorn/vite PID,
     # not the wrapping subshell — kill on cleanup actually reaches them.

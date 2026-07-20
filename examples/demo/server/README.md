@@ -8,15 +8,18 @@ HTTP/SSE API.
 
 1. A local Temporal cluster (from the repo root:
    `actant server start --detach --port 27233 --ui-port 28233`).
-2. Optionally, an LLM API key in the environment:
+2. Optionally, a live provider and model selection:
 
    ```bash
-   export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY / GEMINI_API_KEY
-   export ACTANT_MODEL=...        # model id supported by that provider
+   export ACTANT_PROVIDER=anthropic  # or openai / gemini
+   export ANTHROPIC_API_KEY=...
+   export ACTANT_MODEL=...           # model id supported by that provider
    ```
 
-Without a key, the server uses a deterministic local model that exercises
+The repository's `just demo` and `just demo-server` commands default to the
+deterministic local model even if API keys exist in your shell. It exercises
 streaming, deferred approvals, multiple-choice questions, and nested subagents.
+Set `ACTANT_PROVIDER` explicitly to opt into a live provider.
 
 ## Run
 
