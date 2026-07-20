@@ -9,7 +9,7 @@ Deferred tool resolution does NOT use a workflow signal. Instead, the
 workflow fires an ``await_external_resolution`` activity for any tool
 that returned WAIT from its admission decision; that activity stamps
 ``(workflow_id, activity_id)`` onto the tool_call record and parks via
-``activity.raise_complete_async``. ``resolve_tool`` here looks up that
+``activity.raise_complete_async``. ``resolve_deferred_tool_call`` looks up that
 handle from the record and delivers the result via
 ``client.complete_activity_by_id`` — the workflow's ``await`` on the
 activity handle unblocks naturally with the result.
@@ -52,7 +52,7 @@ from actant.tools.calls import ToolCallRecord, ToolCallStatus
 # ``deferred`` SSE event) BEFORE the workflow dispatches
 # await_external_resolution, which is what stamps the temporal handle.
 # A scripted or fast-clicking caller can race that gap and call
-# resolve_tool while temporal_workflow_id is still null. We poll briefly
+# resolve_deferred_tool_call while temporal_workflow_id is still null. We poll briefly
 # for the handle to land before failing — the handle write happens within
 # tens of ms in practice, so a short bounded wait avoids the surprising
 # 500 without papering over a real misconfiguration.
@@ -72,7 +72,7 @@ class TemporalRuntimeClient:
         message_preprocessor: MessagePreprocessor | None = None,
         config: object | None = None,
     ) -> None:
-        # Stores + agents are used here for the resolve_tool path so the
+        # Stores + agents are used here for deferred resolution so the
         # client can look up the tool's on_resolve transform and persist
         # the resolved result before completing the activity. The hook
         # factories are unused on the client side; they live on the
@@ -129,7 +129,7 @@ class TemporalRuntimeClient:
             return self.config.max_turns_per_run
         return max(1, agent.max_turns_per_thread)
 
-    async def resolve_tool(
+    async def resolve_deferred_tool_call(
         self,
         agent_id: str,
         thread_id: str,
@@ -244,7 +244,7 @@ class TemporalRuntimeClient:
         # never get a handle and never will, so retrying just hides bugs.
         if record.status != ToolCallStatus.WAITING:
             raise RuntimeError(
-                f"resolve_tool: tool_call {tool_call_id!r} has no temporal "
+                f"resolve_deferred_tool_call: tool_call {tool_call_id!r} has no temporal "
                 "activity handle (was the admission decision actually WAIT?)"
             )
         for delay in _HANDLE_WAIT_BACKOFF_S:
@@ -261,7 +261,7 @@ class TemporalRuntimeClient:
                 # complete_activity_by_id call.
                 break
         raise RuntimeError(
-            f"resolve_tool: tool_call {tool_call_id!r} has no temporal "
+            f"resolve_deferred_tool_call: tool_call {tool_call_id!r} has no temporal "
             "activity handle (was the admission decision actually WAIT?)"
         )
 

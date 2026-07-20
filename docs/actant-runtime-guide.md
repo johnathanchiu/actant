@@ -117,7 +117,7 @@ history. Cancellation is durable and projection cleanup is idempotent.
 ## Resolve deferred tools
 
 ```python
-await runtime.resolve_tool(
+await runtime.resolve_deferred_tool_call(
     "assistant",
     thread_id,
     tool_call_id,

@@ -12,7 +12,7 @@ or a delegated subagent.
 4. The workflow schedules `await_external_resolution`.
 5. That activity switches to Temporal async completion, so no Python worker is
    held while the call is parked.
-6. The application later calls `runtime.resolve_tool(...)`.
+6. The application later calls `runtime.resolve_deferred_tool_call(...)`.
 7. Actant persists the resolution and completes the activity by its stable ID.
 8. The workflow wakes, finalizes the tool-result message, and continues the
    normal turn loop.
@@ -42,7 +42,7 @@ in a wait request that will be exposed to clients.
 ## Resolving a wait
 
 ```python
-await runtime.resolve_tool(
+await runtime.resolve_deferred_tool_call(
     "assistant",
     thread_id,
     tool_call_id,
@@ -64,7 +64,8 @@ HTTP timeout conventions. Human approvals may reasonably wait for days.
 
 If Temporal no longer has the parked activity, resolution raises
 `ToolResolutionStaleError` after reconciling the projection. Multi-agent apps
-should funnel resolution through `actant.runtime.coordinator.resolve_deferred`
+should funnel resolution through
+`actant.runtime.coordinator.resolve_deferred_tool_call`
 and surface a refreshable conflict to the caller.
 
 ## Cancellation

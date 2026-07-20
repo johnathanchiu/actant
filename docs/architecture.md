@@ -152,7 +152,7 @@ agent does wait before starting another model turn.
 2. It asks Temporal to leave the activity logically incomplete.
 3. The activity invocation returns control to the worker; no Python task or
    worker slot must remain occupied while a person or subagent responds.
-4. `AgentRuntime.resolve_tool` validates the persisted waiting call and
+4. `AgentRuntime.resolve_deferred_tool_call` validates the persisted waiting call and
    completes that Temporal activity by identity.
 5. Temporal records the result and wakes the workflow.
 6. The group barrier closes only when all sibling handles have also completed.
@@ -251,7 +251,7 @@ consumption.
 commands to Temporal:
 
 - `send_message`
-- `resolve_tool`
+- `resolve_deferred_tool_call`
 - `cancel_thread`
 - `get_state`
 

@@ -178,7 +178,7 @@ class _ApprovalTool(BaseDeclarativeTool):
 
 
 @pytest.mark.asyncio
-async def test_temporal_client_resolve_tool_completes_wait_activity() -> None:
+async def test_temporal_client_resolves_deferred_tool_call() -> None:
     tool_call = _tool_call("needs_approval")
     agent = _agent(
         FakeLLM([FakeResponse(tool_calls=[tool_call]), FakeResponse(text="approved!")]),
@@ -200,7 +200,7 @@ async def test_temporal_client_resolve_tool_completes_wait_activity() -> None:
             )
 
         await _wait_for(waiting_with_handle)
-        await s.runtime.resolve_tool(
+        await s.runtime.resolve_deferred_tool_call(
             _AGENT,
             _THREAD,
             tool_call.id,

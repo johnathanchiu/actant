@@ -4,7 +4,7 @@ Covers:
 - SubThreadRegistry round-trip + lookup
 - publishing_hooks_factory: top-level threads vs sub-threads
 - publishing_listener_factory: same
-- resolve_deferred: thin wrapper passes args through; surfaces
+- resolve_deferred_tool_call: thin wrapper passes args through; surfaces
   ToolResolutionStaleError when runtime reconciles a stale activity
 """
 
@@ -19,7 +19,7 @@ from actant.runtime.coordinator import (
     SubThreadRegistry,
     publishing_hooks_factory,
     publishing_listener_factory,
-    resolve_deferred,
+    resolve_deferred_tool_call,
 )
 from actant.runtime.exceptions import ToolResolutionStaleError
 from actant.runtime.hooks import PublishingThreadHooks
@@ -176,13 +176,13 @@ async def test_listener_factory_subthread_dual_publishes() -> None:
     assert parent[0]["subagent"] == "researcher"
 
 
-# ─── resolve_deferred ───────────────────────────────────────────────
+# ─── resolve_deferred_tool_call ─────────────────────────────────────
 
 
-async def test_resolve_deferred_delegates_to_runtime() -> None:
-    """Thin wrapper passes all args through to runtime.resolve_tool."""
+async def test_resolve_deferred_tool_call_delegates_to_runtime() -> None:
+    """Thin wrapper passes all args to runtime deferred resolution."""
     runtime = AsyncMock()
-    await resolve_deferred(
+    await resolve_deferred_tool_call(
         runtime,
         agent_id="demo",
         thread_id="thread_1",
@@ -191,7 +191,7 @@ async def test_resolve_deferred_delegates_to_runtime() -> None:
         answer="ok",
         payload={"extra": 1},
     )
-    runtime.resolve_tool.assert_awaited_once_with(
+    runtime.resolve_deferred_tool_call.assert_awaited_once_with(
         "demo",
         "thread_1",
         "tc_1",
@@ -201,14 +201,14 @@ async def test_resolve_deferred_delegates_to_runtime() -> None:
     )
 
 
-async def test_resolve_deferred_propagates_stale_error() -> None:
+async def test_resolve_deferred_tool_call_propagates_stale_error() -> None:
     """When the runtime raises ToolResolutionStaleError (Temporal lost
     the activity), the wrapper propagates verbatim — apps catch it
     above this level."""
     runtime = AsyncMock()
-    runtime.resolve_tool.side_effect = ToolResolutionStaleError("tc_x", "gone")
+    runtime.resolve_deferred_tool_call.side_effect = ToolResolutionStaleError("tc_x", "gone")
     with pytest.raises(ToolResolutionStaleError):
-        await resolve_deferred(
+        await resolve_deferred_tool_call(
             runtime,
             agent_id="demo",
             thread_id="thread_1",

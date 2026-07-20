@@ -433,7 +433,7 @@ class TemporalRuntimeActivities:
         The activity body:
         1. Reads the tool_call record + ``activity.info()``.
         2. Stamps ``(workflow_id, activity_id)`` onto the record so the
-           runtime client's ``resolve_tool`` path can find this activity.
+           runtime client's ``resolve_deferred_tool_call`` path can find this activity.
         3. Calls ``activity.raise_complete_async()`` — Temporal SDK
            catches the sentinel and records the activity as "running,
            pending external completion." The activity DOES NOT return

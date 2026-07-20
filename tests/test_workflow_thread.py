@@ -392,7 +392,7 @@ async def test_wait_tool_parks_until_external_completion() -> None:
     ``(workflow_id, activity_id)`` onto the tool_call record and parks
     via ``raise_complete_async``. Test delivers the resolution by:
     1. Persisting the result to the record (mirrors what
-       ``TemporalRuntimeClient.resolve_tool`` does on the production path).
+       ``TemporalRuntimeClient.resolve_deferred_tool_call`` does in production).
     2. Calling ``client.get_async_activity_handle(...).complete(...)``
        to unblock the workflow's ``await``.
     """
@@ -436,7 +436,7 @@ async def test_wait_tool_parks_until_external_completion() -> None:
         assert record.temporal_activity_id is not None
 
         # Deliver the resolution: persist result + complete the activity.
-        # This mirrors what ``TemporalRuntimeClient.resolve_tool`` does in
+        # This mirrors what ``TemporalRuntimeClient.resolve_deferred_tool_call`` does in
         # production. (Direct calls here for explicit testing of the
         # Temporal mechanics.)
         await s.stores.tool_calls.update_status(

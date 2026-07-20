@@ -172,7 +172,7 @@ async def cancel_thread(thread_id: str, request: Request) -> None:
 @router.post(
     "/threads/{thread_id}/tool_calls/{tool_call_id}/resolve", status_code=204
 )
-async def resolve_tool(
+async def resolve_deferred_tool_call(
     thread_id: str,
     tool_call_id: str,
     body: ResolveToolBody,

@@ -1,4 +1,4 @@
-"""Tests for ``runtime.resolve_tool`` state reconciliation.
+"""Tests for deferred tool-call state reconciliation.
 
 When Temporal can't find the parked activity (workflow terminated, volume
 nuked in dev, activity timed out), the runtime should:
@@ -81,7 +81,7 @@ def stores() -> InMemoryRuntimeStores:
 async def runtime_client(stores: InMemoryRuntimeStores) -> TemporalRuntimeClient:
     ex = TemporalRuntimeClient(
         stores=stores,
-        agents={},  # resolve_tool doesn't need agent definitions
+        agents={},  # deferred resolution doesn't need agent definitions
         config=TemporalRuntimeConfig(),
     )
     # Bypass real Temporal connection; inject the fake client.
@@ -89,7 +89,7 @@ async def runtime_client(stores: InMemoryRuntimeStores) -> TemporalRuntimeClient
     return ex
 
 
-async def test_resolve_tool_reconciles_when_activity_not_found(
+async def test_deferred_resolution_reconciles_when_activity_not_found(
     runtime_client: TemporalRuntimeClient, stores: InMemoryRuntimeStores
 ) -> None:
     """The store should flip WAITING → FAILED with stale_activity reason,
@@ -102,7 +102,7 @@ async def test_resolve_tool_reconciles_when_activity_not_found(
     assert pre.status == ToolCallStatus.WAITING
 
     with pytest.raises(ToolResolutionStaleError) as excinfo:
-        await runtime_client.resolve_tool(
+        await runtime_client.resolve_deferred_tool_call(
             _AGENT, _THREAD, _TOOL_CALL_ID, approved=True, answer="ok"
         )
 
@@ -118,7 +118,7 @@ async def test_resolve_tool_reconciles_when_activity_not_found(
     assert "lost the pending activity" in str(post.result.get("detail", "")).lower()
 
 
-async def test_resolve_tool_non_notfound_rpc_error_propagates(
+async def test_deferred_resolution_non_notfound_rpc_error_propagates(
     runtime_client: TemporalRuntimeClient, stores: InMemoryRuntimeStores
 ) -> None:
     """Other Temporal errors (e.g. INTERNAL) shouldn't be silently swallowed
@@ -143,7 +143,7 @@ async def test_resolve_tool_non_notfound_rpc_error_propagates(
     await stores.tool_calls.save(record)
 
     with pytest.raises(temporalio.service.RPCError):
-        await runtime_client.resolve_tool(
+        await runtime_client.resolve_deferred_tool_call(
             _AGENT, _THREAD, "tc_internal_1", approved=True, answer="ok"
         )
 

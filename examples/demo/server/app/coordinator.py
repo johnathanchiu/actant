@@ -10,7 +10,7 @@ that `docs/coordinator-guide.md` points at. The shape is:
   `actant.runtime.coordinator`.
 - Implement `SubagentSpawner` for `TaskTool` to delegate work.
 - Funnel ALL deferred resolutions (user-driven AND
-  sub-thread-completion driven) through one `resolve_deferred` call
+  sub-thread-completion driven) through one `resolve_deferred_tool_call` call
   with state-divergence handling.
 
 NO subclassing of any actant base class. Pure composition.
@@ -34,7 +34,7 @@ from actant.runtime.coordinator import (
     SubThreadLink,
     SubThreadRegistry,
     publishing_hooks_factory,
-    resolve_deferred,
+    resolve_deferred_tool_call,
 )
 from actant.runtime.exceptions import ToolResolutionStaleError
 from actant.runtime.hooks import (
@@ -199,12 +199,12 @@ class DemoCoordinator:
         registered sub-thread, the wait belongs to the sub-agent (e.g.
         researcher's ask_user); otherwise it's a main-thread wait.
 
-        Funneled through `resolve_deferred` for state reconciliation —
+        Funneled through `resolve_deferred_tool_call` for state reconciliation —
         if Temporal lost the activity, `ToolResolutionStaleError`
         bubbles up (route layer turns it into 409 Conflict)."""
         link = self.registry.get(thread_id)
         agent_id = link.sub_agent_id if link is not None else AGENT_ID
-        await resolve_deferred(
+        await resolve_deferred_tool_call(
             self.runtime,
             agent_id=agent_id,
             thread_id=thread_id,
@@ -238,7 +238,7 @@ class DemoCoordinator:
         # records which (stamped at spawn time).
         parent_agent_id = str(link.metadata.get("parent_agent_id") or AGENT_ID)
         try:
-            await resolve_deferred(
+            await resolve_deferred_tool_call(
                 self.runtime,
                 agent_id=parent_agent_id,
                 thread_id=link.parent_thread_id,
@@ -248,7 +248,7 @@ class DemoCoordinator:
             )
         except ToolResolutionStaleError:
             # Parent's activity is gone (workflow cancelled / Temporal
-            # reset). resolve_deferred already marked the store FAILED;
+            # reset). resolve_deferred_tool_call already marked the store FAILED;
             # nothing more we can do.
             pass
 

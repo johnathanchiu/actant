@@ -120,7 +120,7 @@ class ToolCallStore(Protocol):
         activity_id: str,
     ) -> None:
         """Stamp the Temporal ``(workflow_id, activity_id)`` onto the
-        record so external callers (the runtime client's ``resolve_tool``
+        record so external callers (the runtime client's ``resolve_deferred_tool_call``
         path) can complete this activity asynchronously via
         ``client.complete_activity_by_id``. Set by
         ``await_external_resolution`` activity for WAIT-decision tools."""

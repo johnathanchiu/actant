@@ -45,8 +45,8 @@ ships four primitives:
 3. **`publishing_hooks_factory`** / **`publishing_listener_factory`** —
    build `AgentRuntime` factories that auto-dual-publish sub-thread
    events to the parent's SSE channel.
-4. **`resolve_deferred`** — thin wrapper over
-   `AgentRuntime.resolve_tool` that surfaces
+4. **`resolve_deferred_tool_call`** — thin wrapper over
+   `AgentRuntime.resolve_deferred_tool_call` that surfaces
    `ToolResolutionStaleError` when Temporal has lost the activity
    so apps don't keep WAITING state alive forever.
 
@@ -67,7 +67,7 @@ from actant.runtime.coordinator import (
     SubThreadRegistry,
     publishing_hooks_factory,
     publishing_listener_factory,
-    resolve_deferred,
+    resolve_deferred_tool_call,
 )
 from actant.runtime.exceptions import ToolResolutionStaleError
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
@@ -153,7 +153,7 @@ class MyCoordinator:
         # json.loads on the answer).
         envelope = {"text": final_text, "subagent": link.subagent_name}
         try:
-            await resolve_deferred(
+            await resolve_deferred_tool_call(
                 self.runtime,
                 agent_id="main",  # parent agent
                 thread_id=link.parent_thread_id,
@@ -175,7 +175,7 @@ class MyCoordinator:
         approved=None, answer="", payload=None,
     ):
         try:
-            await resolve_deferred(
+            await resolve_deferred_tool_call(
                 self.runtime,
                 agent_id=agent_id, thread_id=thread_id,
                 tool_call_id=tool_call_id,
@@ -197,7 +197,7 @@ class MyCoordinator:
 - Handle "activity not found" errors from Temporal yourself (the
   runtime reconciles + raises a typed error).
 - Build separate code paths for user-driven vs sub-thread-driven
-  resolves (one `resolve_deferred` entry, two callers).
+  resolves (one `resolve_deferred_tool_call` entry, two callers).
 
 ## What you still own
 

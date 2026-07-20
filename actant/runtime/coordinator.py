@@ -23,9 +23,9 @@ pattern is:
    - Implements a ``spawn_subagent`` method that registers a new
      :class:`SubThreadLink` BEFORE calling ``runtime.send_message``
      (so the hook factory sees the relationship synchronously).
-   - Implements a single ``resolve_deferred`` entry point (used by
+   - Implements a single ``resolve_deferred_tool_call`` entry point (used by
      both user-driven and sub-thread-completion resolves), funneling
-     through :func:`resolve_deferred` here for state reconciliation.
+     through :func:`resolve_deferred_tool_call` here for state reconciliation.
 
 See ``docs/coordinator-guide.md`` for the full pattern with code,
 and the ``examples/demo/`` directory in the actant repo for the canonical
@@ -59,7 +59,7 @@ __all__ = [
     "SubThreadRegistry",
     "publishing_hooks_factory",
     "publishing_listener_factory",
-    "resolve_deferred",
+    "resolve_deferred_tool_call",
 ]
 
 
@@ -205,7 +205,7 @@ def publishing_listener_factory(
     return factory
 
 
-async def resolve_deferred(
+async def resolve_deferred_tool_call(
     runtime: "AgentRuntime",
     *,
     agent_id: str,
@@ -217,14 +217,14 @@ async def resolve_deferred(
 ) -> None:
     """Resolve a deferred tool call with state reconciliation.
 
-    Thin wrapper over ``runtime.resolve_tool`` that exists to give
+    Thin wrapper over ``runtime.resolve_deferred_tool_call`` that gives
     apps ONE entry point for resolving deferreds — whether the
     source is user-driven (DeferredPanel POST → HTTP route →
     coordinator → this function) or sub-thread-completion driven
     (sub-thread hooks ``on_complete`` → coordinator → this function).
 
     Funneling both paths through here pays off when state diverges:
-    ``runtime.resolve_tool`` raises
+    ``runtime.resolve_deferred_tool_call`` raises
     :class:`actant.runtime.exceptions.ToolResolutionStaleError` if
     Temporal has lost the parked activity (see ``temporal/client.py``).
     The store is reconciled to FAILED before the error fires, so callers
@@ -233,10 +233,10 @@ async def resolve_deferred(
 
     Apps that need to do additional work BEFORE the resolve (re-register
     an agent definition, look up workspace context, etc) should NOT
-    extend this function — write your own ``coordinator.resolve_deferred``
+    extend this function — write your own ``coordinator.resolve_deferred_tool_call``
     that does the prep work and then calls THIS function.
     """
-    await runtime.resolve_tool(
+    await runtime.resolve_deferred_tool_call(
         agent_id,
         thread_id,
         tool_call_id,

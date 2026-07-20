@@ -13,7 +13,7 @@ class RuntimeError_(Exception):
 
 
 class ToolResolutionStaleError(RuntimeError_):
-    """Raised by ``runtime.resolve_tool`` when the parked Temporal
+    """Raised by ``runtime.resolve_deferred_tool_call`` when the parked Temporal
     activity for a deferred tool call no longer exists on the worker.
 
     This happens when:
@@ -22,14 +22,14 @@ class ToolResolutionStaleError(RuntimeError_):
     - The workflow that owned the activity was terminated or timed
       out independently.
     - A race condition between the activity completing and a stale
-      ``resolve_tool`` call beating its successor to delivery.
+      ``resolve_deferred_tool_call`` call beating its successor to delivery.
 
     The runtime updates the store to ``ToolCallStatus.FAILED`` with a
     diagnostic ``stale_activity`` result before raising so the
     application's next read of the tool-call record sees a terminal
     state instead of perpetually offering to resolve.
 
-    Catch this in application code (DemoCoordinator.resolve_deferred,
+    Catch this in application code (DemoCoordinator.resolve_deferred_tool_call,
     or whatever your equivalent is) and surface a useful message to
     the user: the parked operation is gone, they should start a new
     run instead of waiting.

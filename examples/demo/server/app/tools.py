@@ -112,7 +112,7 @@ class RequestApprovalTool(BaseDeclarativeTool):
     The runtime parks the tool call as a Temporal async activity (zero
     compute while waiting) and emits ``on_tool_waiting`` over SSE. The
     UI's deferred panel renders Approve / Deny buttons; clicking either
-    posts to ``resolve_tool`` with ``approved=true/false``, and
+    posts to ``resolve_deferred_tool_call`` with ``approved=true/false``, and
     ``on_resolve`` here turns that into a real ToolResult.
     """
 

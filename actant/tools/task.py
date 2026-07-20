@@ -14,7 +14,7 @@ Supports two modes:
   the executor's ``status=WAITING`` write lands first. The
   spawner kicks off a sub-thread on the host coordinator;
   the coordinator must arrange that the sub-thread's terminal
-  event calls ``resolve_deferred(parent_tool_call_id, ...)``
+  event calls ``resolve_deferred_tool_call(parent_tool_call_id, ...)``
   with a JSON-encoded result envelope. ``on_resolve`` then
   parses that envelope into the ``ToolResult`` the parent
   agent ultimately sees. Right for sub-thread delegations
@@ -55,7 +55,7 @@ class SubagentSpawner(Protocol):
 
     The host coordinator is responsible for ensuring that the
     sub-thread's terminal event eventually calls
-    ``resolve_deferred(parent_tool_call_id, approved, answer)``
+    ``resolve_deferred_tool_call(parent_tool_call_id, approved, answer)``
     with ``answer`` being a JSON-encoded result envelope the
     parent's ``on_resolve`` can parse.
     """

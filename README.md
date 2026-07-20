@@ -210,7 +210,7 @@ workflow and activity tasks across every worker polling the same task queue.
 await runtime.cancel_thread(agent.id, thread_id)
 
 # Resolve a deferred (WAIT) tool call
-await runtime.resolve_tool(
+await runtime.resolve_deferred_tool_call(
     agent.id, thread_id, tool_call_id,
     approved=True,
     answer="ok",
@@ -243,7 +243,7 @@ async def can_execute(self, call, invocation, context):
 ```
 
 The `admit_tool` activity records WAITING calls and emits an
-`on_tool_waiting` hook. Resolve via `runtime.resolve_tool`, which
+`on_tool_waiting` hook. Resolve via `runtime.resolve_deferred_tool_call`, which
 completes the parked Temporal async activity after persisting the
 resolved tool result.
 
