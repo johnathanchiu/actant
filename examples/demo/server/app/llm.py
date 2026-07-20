@@ -46,6 +46,12 @@ class DemoLLM:
             )
 
         if "focused research subagent" in system:
+            if "approval" in lowered:
+                return await self._tool_call(
+                    "request_approval",
+                    {"action": "allow the researcher to finish its delegated task"},
+                    listener,
+                )
             return await self._tool_call(
                 "task",
                 {
@@ -55,10 +61,23 @@ class DemoLLM:
                 listener,
             )
 
-        if "approval" in lowered:
+        if "approval" in lowered and not any(
+            word in lowered for word in ("delegate", "subagent", "research")
+        ):
             return await self._tool_call(
                 "request_approval",
                 {"action": "run the deterministic release-readiness check"},
+                listener,
+            )
+        if "mixed" in lowered or "parallel" in lowered:
+            return await self._tool_calls(
+                [
+                    ("get_current_time", {}),
+                    (
+                        "request_approval",
+                        {"action": "complete the mixed parallel tool group"},
+                    ),
+                ],
                 listener,
             )
         if "choose" in lowered or "question" in lowered:
@@ -71,11 +90,16 @@ class DemoLLM:
                 listener,
             )
         if any(word in lowered for word in ("delegate", "subagent", "research")):
+            message = (
+                "Request approval from the human, then return a concise confirmation."
+                if "approval" in lowered
+                else "Demonstrate nested durable delegation and return a concise result."
+            )
             return await self._tool_call(
                 "task",
                 {
                     "subagent": "researcher",
-                    "message": "Demonstrate nested durable delegation and return a concise result.",
+                    "message": message,
                 },
                 listener,
             )
@@ -98,21 +122,28 @@ class DemoLLM:
         arguments: dict[str, object],
         listener: "StreamListener | None",
     ) -> Message:
-        call_id = f"demo_{uuid.uuid4().hex[:12]}"
-        encoded = json.dumps(arguments)
-        if listener is not None:
-            await listener.on_tool_call_start(call_id, name)
-            await listener.on_tool_call_args_delta(call_id, encoded)
-            await listener.on_tool_call_args_complete(call_id)
-        return Message(
-            role="assistant",
-            tool_calls=[
+        return await self._tool_calls([(name, arguments)], listener)
+
+    async def _tool_calls(
+        self,
+        calls: list[tuple[str, dict[str, object]]],
+        listener: "StreamListener | None",
+    ) -> Message:
+        tool_calls: list[ToolCall] = []
+        for name, arguments in calls:
+            call_id = f"demo_{uuid.uuid4().hex[:12]}"
+            encoded = json.dumps(arguments)
+            if listener is not None:
+                await listener.on_tool_call_start(call_id, name)
+                await listener.on_tool_call_args_delta(call_id, encoded)
+                await listener.on_tool_call_args_complete(call_id)
+            tool_calls.append(
                 ToolCall(
                     id=call_id,
                     function=ToolCallFunction(name=name, arguments=encoded),
                 )
-            ],
-        )
+            )
+        return Message(role="assistant", tool_calls=tool_calls)
 
 
 def build_llm() -> tuple[LLMClient, str]:

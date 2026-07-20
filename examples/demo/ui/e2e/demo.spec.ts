@@ -40,3 +40,26 @@ test('exercises streaming, durable approval, questions, and nested subagents', a
   ).toBeVisible()
   await expect(page.getByText('Durable delegation verified', { exact: true })).toBeVisible()
 })
+
+test('holds mixed tool groups and surfaces nested subagent approval', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByText('connected', { exact: true })).toBeVisible()
+
+  await send(page, 'Run a mixed parallel tool group')
+  await expect(page.getByText('get_current_time', { exact: true })).toBeVisible()
+  await expect(page.getByText('approval needed', { exact: true })).toBeVisible()
+  await expect(
+    page.getByText('The durable tool call completed successfully.', { exact: false }),
+  ).toHaveCount(0)
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await expect(
+    page.getByText('The durable tool call completed successfully.', { exact: false }),
+  ).toBeVisible()
+
+  await send(page, 'Delegate an approval task to a subagent')
+  await expect(page.getByText('approval needed', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await expect(
+    page.getByRole('button', { name: 'task → researcher resolved' }),
+  ).toBeVisible()
+})

@@ -191,6 +191,35 @@ class _TerminalTool(BaseDeclarativeTool):
         return _TerminalInvocation(params)
 
 
+@dataclass
+class _ParallelProbe:
+    first_started: asyncio.Event
+    second_started: asyncio.Event
+    release: asyncio.Event
+
+
+class _ParallelInvocation(BaseToolInvocation[JSONObject, object]):
+    def __init__(self, params: JSONObject, started: asyncio.Event, release: asyncio.Event) -> None:
+        super().__init__(params)
+        self.started = started
+        self.release = release
+
+    async def execute(self) -> ToolResult:
+        self.started.set()
+        await self.release.wait()
+        return ToolResult.ok({"completed": True})
+
+
+class _ParallelTool(BaseDeclarativeTool):
+    def __init__(self, name: str, started: asyncio.Event, release: asyncio.Event) -> None:
+        super().__init__(name, make_tool_schema(name, "Parallel execution probe"))
+        self.started = started
+        self.release = release
+
+    async def build(self, params: JSONObject) -> _ParallelInvocation:
+        return _ParallelInvocation(params, self.started, self.release)
+
+
 @pytest.mark.asyncio
 async def test_tool_turn_allow_completes_and_continues() -> None:
     tool_call = _tool_call("echo", '{"x": 1}')
@@ -226,6 +255,56 @@ async def test_tool_turn_allow_completes_and_continues() -> None:
         assert roles == ["user", "assistant", "tool", "assistant"]
         record = await s.stores.tool_calls.get(tool_call.id)
         assert record.status == ToolCallStatus.COMPLETED
+
+        await handle.signal(AgentThreadWorkflow.cancel)
+        await asyncio.wait_for(handle.result(), timeout=5.0)
+
+    await _run(body, agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_calls_execute_concurrently() -> None:
+    probe = _ParallelProbe(asyncio.Event(), asyncio.Event(), asyncio.Event())
+    first = _tool_call("parallel_a")
+    second = _tool_call("parallel_b")
+    agent = _agent(
+        FakeLLM(
+            [
+                FakeResponse(tool_calls=[first, second]),
+                FakeResponse(text="both completed"),
+            ]
+        ),
+        tools=[
+            _ParallelTool("parallel_a", probe.first_started, probe.release),
+            _ParallelTool("parallel_b", probe.second_started, probe.release),
+        ],
+    )
+
+    async def body(s: _RunSetup, client) -> None:  # type: ignore[no-untyped-def]
+        handle = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=5),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="run both")],
+        )
+
+        # Both invocations must start before either is allowed to finish.
+        # A sequential executor deadlocks here and fails the timeout.
+        await asyncio.wait_for(
+            asyncio.gather(probe.first_started.wait(), probe.second_started.wait()),
+            timeout=5.0,
+        )
+        probe.release.set()
+
+        async def continued() -> bool:
+            messages = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
+            return any(message.content == "both completed" for message in messages)
+
+        await _wait_for(continued)
+        assert (await s.stores.tool_calls.get(first.id)).status == ToolCallStatus.COMPLETED
+        assert (await s.stores.tool_calls.get(second.id)).status == ToolCallStatus.COMPLETED
 
         await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
@@ -386,6 +465,90 @@ async def test_wait_tool_parks_until_external_completion() -> None:
         # Last assistant message should be the post-resolve continuation.
         assistants = [m for m in messages if m.role == "assistant"]
         assert assistants[-1].content == "approved!"
+
+        await handle.signal(AgentThreadWorkflow.cancel)
+        await asyncio.wait_for(handle.result(), timeout=5.0)
+
+    await _run(body, agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_mixed_allow_and_wait_group_continues_only_after_resolution() -> None:
+    allowed = _tool_call("echo", '{"value": "ready"}')
+    deferred = _tool_call("needs_approval")
+    agent = _agent(
+        FakeLLM(
+            [
+                FakeResponse(tool_calls=[allowed, deferred]),
+                FakeResponse(text="group continued exactly once"),
+            ]
+        ),
+        tools=[_EchoTool(), _ApprovalTool()],
+    )
+
+    async def body(s: _RunSetup, client) -> None:  # type: ignore[no-untyped-def]
+        handle = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=5),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="run mixed group")],
+        )
+
+        async def allowed_done_deferred_waiting() -> bool:
+            try:
+                allowed_record = await s.stores.tool_calls.get(allowed.id)
+                deferred_record = await s.stores.tool_calls.get(deferred.id)
+            except KeyError:
+                return False
+            return (
+                allowed_record.status == ToolCallStatus.COMPLETED
+                and deferred_record.status == ToolCallStatus.WAITING
+                and deferred_record.temporal_workflow_id is not None
+                and deferred_record.temporal_activity_id is not None
+            )
+
+        await _wait_for(allowed_done_deferred_waiting)
+        before = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
+        assert [message.role for message in before] == ["user", "assistant"]
+        assert not any(message.content == "group continued exactly once" for message in before)
+
+        deferred_record = await s.stores.tool_calls.get(deferred.id)
+        await s.stores.tool_calls.update_status(
+            deferred.id,
+            ToolCallStatus.COMPLETED,
+            result={"approved": True},
+        )
+        assert deferred_record.temporal_workflow_id is not None
+        assert deferred_record.temporal_activity_id is not None
+        activity_handle = client.get_async_activity_handle(
+            workflow_id=deferred_record.temporal_workflow_id,
+            activity_id=deferred_record.temporal_activity_id,
+        )
+        await activity_handle.complete(
+            ExecuteOutcome(
+                tool_call_id=deferred.id,
+                status=ExecuteStatus.COMPLETED.value,
+            )
+        )
+
+        async def continued() -> bool:
+            messages = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
+            return any(message.content == "group continued exactly once" for message in messages)
+
+        await _wait_for(continued)
+        after = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
+        assert [message.role for message in after] == [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "assistant",
+        ]
+        assert sum(
+            message.content == "group continued exactly once" for message in after
+        ) == 1
 
         await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
