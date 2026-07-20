@@ -40,7 +40,7 @@ The central invariant is:
 
 1. `actant/runtime/temporal/workflow.py`
    - `AgentThreadWorkflow.run`: lifetime of a thread.
-   - `AgentThreadWorkflow._do_run`: model-turn loop for one run.
+   - `AgentThreadWorkflow._do_run`: agent loop for one run.
    - `AgentThreadWorkflow._execute_tool_group`: the group barrier.
 2. `actant/runtime/temporal/activities.py`
    - External work and projection writes scheduled by the workflow.
@@ -66,18 +66,20 @@ client.
 ```text
 thread (one long-lived workflow)
 └── run (work caused by one drain of the inbox)
-    ├── turn 1 (one model invocation)
-    │   └── tool group
-    │       ├── tool call A
-    │       └── tool call B
-    ├── turn 2
-    └── ...
+    └── agent loop
+        ├── model turn 1 (one model invocation)
+        │   └── tool group
+        │       ├── tool call A
+        │       └── tool call B
+        ├── model turn 2
+        └── ...
 ```
 
 - A **thread** remains addressable between user messages.
 - A **run** starts after the workflow drains its inbox and ends on completion,
   exhaustion, failure, or cancellation.
-- A **turn** is one model call.
+- The **agent loop** is the model/tool cycle executed during that run.
+- A **model turn** is one model call.
 - A **tool group** contains every tool call emitted by the same assistant turn.
 
 All calls in a group share a `group_id`. Every persisted call also carries the
@@ -95,7 +97,7 @@ while thread_is_active:
     run_id = new_id()
     start_run(run_id)
 
-    while turns_remain:
+    while agent_loop_can_continue:
         turn = run_turn(messages_on_first_iteration_only)
         if turn.has_no_tool_calls:
             finish_run(COMPLETED)
@@ -126,7 +128,7 @@ For every tool call in one turn:
    BLOCK -> no second activity; admission already persisted a terminal result
 4. Await every scheduled execution/wait handle in completion order.
 5. Run finalize_tool_group once.
-6. Return control to the model-turn loop.
+6. Return control to the agent loop for its next model turn.
 ```
 
 Admission and execution use `workflow.as_completed`. Completion order does not

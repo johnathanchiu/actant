@@ -188,16 +188,17 @@ provides the durable reload path. In production, run workers independently from
 API/client processes and use shared durable stores. Temporal load-balances
 workflow and activity tasks across every worker polling the same task queue.
 
-## Workflow Anatomy
+## Execution Anatomy
 
 `AgentThreadWorkflow`:
 
-- **Outer loop** = thread lifetime. Parks on `wait_condition(inbox)`
-  until a user message arrives.
-- **Inner loop** = one run. Drains the inbox, runs turns until the
-  agent has nothing more to say, hits the per-run turn budget, or is
-  cancelled.
-- **Turn** = one `run_turn` activity invocation (one LLM call).
+- **Thread workflow** = the durable lifetime of one agent thread. It remains
+  addressable and parks on `wait_condition(inbox)` while idle.
+- **Run** = one activation caused by draining pending inbound messages.
+- **Agent loop** = the repeated model → tools → model cycle within that run. It
+  stops when the model returns no tool calls, the run budget is exhausted, the
+  run fails, or the thread is cancelled.
+- **Model turn** = one `run_turn` activity invocation (one model call).
 - **Tool fan-out** = parallel `admit_tool` activities, followed by
   `execute_tool` for allowed calls or `await_external_resolution` for
   deferred calls. Deferred calls park as Temporal async activities, not

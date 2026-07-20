@@ -15,7 +15,7 @@ or a delegated subagent.
 6. The application later calls `runtime.resolve_deferred_tool_call(...)`.
 7. Actant persists the resolution and completes the activity by its stable ID.
 8. The workflow wakes, finalizes the tool-result message, and continues the
-   normal turn loop.
+   normal agent loop.
 
 The workflow is durable during the pause. A web request, event-stream
 connection, or worker process does not need to stay alive.

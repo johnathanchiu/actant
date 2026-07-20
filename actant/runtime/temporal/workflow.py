@@ -8,7 +8,7 @@ message, cancel) flows through this workflow.
 The workflow is a thin orchestrator. It:
 
 1. Receives ``inbound`` signals (user messages) into an in-memory inbox.
-2. For each run: drains the inbox, fans out a turn loop until the LLM
+2. For each run: drains the inbox, runs the agent loop until the model
    stops emitting tool_calls or the turn budget is exhausted.
 3. For each turn's tool_calls: kicks off ``admit_tool`` activities,
    then for each non-blocked tool fires ``execute_tool`` (ALLOW) or
@@ -64,14 +64,14 @@ _PROJECTION_TIMEOUT = timedelta(seconds=30)
 class AgentThreadWorkflow:
     """The thread.
 
-    Outer loop = thread lifetime. Each iteration drains the inbox and
-    does one run until the run hits ``COMPLETED``, ``EXHAUSTED``,
-    ``FAILED``, or ``CANCELLED``. After a run finalizes, the workflow
-    parks on ``wait_condition`` until either a new ``inbound`` message
+    The workflow owns the durable lifetime of one agent thread. Each inbox
+    activation starts a run whose agent loop continues until ``COMPLETED``,
+    ``EXHAUSTED``, ``FAILED``, or ``CANCELLED``. After finalization, the thread
+    workflow parks on ``wait_condition`` until another ``inbound`` message
     arrives or the workflow is cancelled.
 
-    Exhaustion ends the inner run; the outer loop continues. The
-    thread stays alive waiting for the next user message.
+    Exhaustion ends only the current run. The thread remains alive and the next
+    inbound message starts a fresh run with a fresh budget.
     """
 
     def __init__(self) -> None:
@@ -241,7 +241,7 @@ class AgentThreadWorkflow:
                 )
             except Exception:
                 # RUN_TURN failed (LLM error, cancellation, etc.).
-                # Surface as FAILED and let the outer loop continue —
+                # Surface as FAILED and return to the thread lifecycle —
                 # next user message starts a fresh run. The thread
                 # stays alive.
                 return RunOutcome.FAILED
