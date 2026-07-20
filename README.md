@@ -336,6 +336,7 @@ just temporal-smoke        # full docker round-trip
 ```
 
 Release maintainers can follow the [release checklist](docs/releasing.md).
+User-facing changes are recorded in the [changelog](CHANGELOG.md).
 
 ## License
 
