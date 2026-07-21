@@ -35,22 +35,14 @@ class TemporalRuntimeConfig:
 
 # === Names ===
 #
-# Public identifiers for everything addressable by string. Downstream
-# users can import these to start workflows, send signals, query state,
-# or register custom activities without copying magic strings.
-
-
-class WorkflowName(StrEnum):
-    AGENT_THREAD = "AgentThreadWorkflow"
+# Stable identifiers for the Temporal APIs that still require names.
 
 
 class ActivityName(StrEnum):
     """Activity names registered on the worker.
 
-    Workflow code references activities by name (rather than by direct
-    function reference) because activity callables are bound methods on
-    a per-worker class. The strings here are the source of truth for
-    both ``@activity.defn(name=...)`` and ``execute_activity(...)``.
+    Workflows dispatch through typed method references. Explicit registered
+    names keep the Temporal wire contract stable if Python symbols move.
     """
 
     START_RUN = "start_run"
@@ -75,12 +67,6 @@ class SignalName(StrEnum):
     INBOUND = "inbound"
     CANCEL = "cancel"
     RESOLVE_TOOL = "resolve_tool"
-
-
-class QueryName(StrEnum):
-    """Workflow query names. Used by ``handle.query``."""
-
-    GET_STATE = "get_state"
 
 
 # === Outcomes ===

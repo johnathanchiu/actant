@@ -27,8 +27,10 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+with workflow.unsafe.imports_passed_through():
+    from actant.runtime.temporal.activities import TemporalRuntimeActivities
+
 from actant.runtime.temporal.types import (
-    ActivityName,
     AdmitDecision,
     AdmitInput,
     AdmitOutcome,
@@ -96,10 +98,7 @@ class AgentThreadWorkflow:
     def resolve_tool(self, resolution: DeferredToolResolution) -> None:
         """Record the first resolution for a tool; duplicates are harmless."""
         tool_call_id = resolution.tool_call_id
-        if (
-            tool_call_id in self._resolving_tool_ids
-            or tool_call_id in self._resolved_tool_ids
-        ):
+        if tool_call_id in self._resolving_tool_ids or tool_call_id in self._resolved_tool_ids:
             return
         self._tool_resolutions.setdefault(tool_call_id, resolution)
 
@@ -147,8 +146,8 @@ class AgentThreadWorkflow:
         self._current_run_id = run_id
         new_messages = self._drain_inbox()
 
-        await workflow.execute_activity(
-            ActivityName.START_RUN,
+        await workflow.execute_activity_method(
+            TemporalRuntimeActivities.start_run,
             StartRunInput(
                 agent_id=payload.agent_id,
                 thread_id=payload.thread_id,
@@ -158,8 +157,8 @@ class AgentThreadWorkflow:
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )
         outcome = await self._run_agent(payload, run_id, new_messages)
-        await workflow.execute_activity(
-            ActivityName.FINALIZE_RUN,
+        await workflow.execute_activity_method(
+            TemporalRuntimeActivities.finalize_run,
             FinalizeRunInput(
                 agent_id=payload.agent_id,
                 thread_id=payload.thread_id,
@@ -185,8 +184,8 @@ class AgentThreadWorkflow:
             turn_index = self._turn_count_total + 1
 
             try:
-                turn = await workflow.execute_activity(
-                    ActivityName.RUN_TURN,
+                turn = await workflow.execute_activity_method(
+                    TemporalRuntimeActivities.run_turn,
                     RunTurnInput(
                         agent_id=payload.agent_id,
                         thread_id=payload.thread_id,
@@ -195,7 +194,6 @@ class AgentThreadWorkflow:
                         turn_index=turn_index,
                         new_messages=new_messages,
                     ),
-                    result_type=TurnResult,
                     start_to_close_timeout=_RUN_TURN_TIMEOUT,
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
@@ -241,15 +239,14 @@ class AgentThreadWorkflow:
 
         # 1. Classify all tools in parallel.
         admit_handles = [
-            workflow.execute_activity(
-                ActivityName.ADMIT_TOOL,
+            workflow.start_activity_method(
+                TemporalRuntimeActivities.admit_tool,
                 AdmitInput(
                     agent_id=payload.agent_id,
                     thread_id=payload.thread_id,
                     run_id=run_id,
                     tool_call_id=spec.id,
                 ),
-                result_type=AdmitOutcome,
                 start_to_close_timeout=_TOOL_TIMEOUT,
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
@@ -268,15 +265,14 @@ class AgentThreadWorkflow:
             decision = admits[spec.id].decision
             if decision == AdmitDecision.ALLOW.value:
                 exec_handles.append(
-                    workflow.execute_activity(
-                        ActivityName.EXECUTE_TOOL,
+                    workflow.start_activity_method(
+                        TemporalRuntimeActivities.execute_tool,
                         ExecuteInput(
                             agent_id=payload.agent_id,
                             thread_id=payload.thread_id,
                             run_id=run_id,
                             tool_call_id=spec.id,
                         ),
-                        result_type=ExecuteOutcome,
                         start_to_close_timeout=_TOOL_TIMEOUT,
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
@@ -305,8 +301,8 @@ class AgentThreadWorkflow:
 
         # 4. Finalize the group — appends tool_result messages in
         #    sorted-by-id order, closing the transcript invariant.
-        await workflow.execute_activity(
-            ActivityName.FINALIZE_TOOL_GROUP,
+        await workflow.execute_activity_method(
+            TemporalRuntimeActivities.finalize_tool_group,
             group_id,
             start_to_close_timeout=_FINALIZE_TIMEOUT,
             retry_policy=RetryPolicy(maximum_attempts=2),
@@ -338,8 +334,8 @@ class AgentThreadWorkflow:
             resolution = self._tool_resolutions.pop(tool_call_id)
             self._resolving_tool_ids.add(tool_call_id)
 
-        outcome = await workflow.execute_activity(
-            ActivityName.RESOLVE_TOOL,
+        outcome = await workflow.execute_activity_method(
+            TemporalRuntimeActivities.resolve_tool,
             ResolveToolInput(
                 agent_id=payload.agent_id,
                 thread_id=payload.thread_id,
@@ -347,7 +343,6 @@ class AgentThreadWorkflow:
                 tool_call_id=tool_call_id,
                 resolution=resolution,
             ),
-            result_type=ExecuteOutcome,
             start_to_close_timeout=_TOOL_TIMEOUT,
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
@@ -359,8 +354,8 @@ class AgentThreadWorkflow:
         """Persist cancellation without leaving an open run or tool call."""
         if self._current_run_id is not None:
             await asyncio.shield(
-                workflow.execute_activity(
-                    ActivityName.FINALIZE_RUN,
+                workflow.execute_activity_method(
+                    TemporalRuntimeActivities.finalize_run,
                     FinalizeRunInput(
                         agent_id=payload.agent_id,
                         thread_id=payload.thread_id,
@@ -372,8 +367,8 @@ class AgentThreadWorkflow:
                 )
             )
         await asyncio.shield(
-            workflow.execute_activity(
-                ActivityName.APPLY_THREAD_CANCELLATION,
+            workflow.execute_activity_method(
+                TemporalRuntimeActivities.apply_thread_cancellation,
                 ApplyThreadCancellationInput(
                     agent_id=payload.agent_id,
                     thread_id=payload.thread_id,
@@ -384,18 +379,14 @@ class AgentThreadWorkflow:
 
     def _compact_history_if_needed(self, payload: ThreadInput) -> None:
         """Rotate Temporal history between agent runs, preserving thread state."""
-        if workflow.info().get_current_history_length() <= _history_rotation_threshold(
-            payload
-        ):
+        if workflow.info().get_current_history_length() <= _history_rotation_threshold(payload):
             return
         workflow.continue_as_new(
             ThreadInput(
                 agent_id=payload.agent_id,
                 thread_id=payload.thread_id,
                 max_turns_per_run=payload.max_turns_per_run,
-                external_resolution_timeout_seconds=(
-                    payload.external_resolution_timeout_seconds
-                ),
+                external_resolution_timeout_seconds=(payload.external_resolution_timeout_seconds),
                 carry_inbox=list(self._inbox),
                 history_size_threshold=payload.history_size_threshold,
                 turn_count_total=self._turn_count_total,
