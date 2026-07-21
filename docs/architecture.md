@@ -93,7 +93,11 @@ The following pseudocode mirrors `AgentThreadWorkflow` intentionally. Keep the
 documentation and method order aligned when changing the algorithm.
 
 ```python
-while await wait_for_agent_run():
+while True:
+    await wait_for_message_or_cancellation()
+    if cancelled:
+        break
+
     new_messages = drain_inbox()
     start_run()
 

@@ -40,7 +40,7 @@ group as a barrier:
 1. Admit all calls concurrently.
 2. Execute every `ALLOW` call without waiting for its siblings.
 3. Record every `BLOCK` call as a terminal result.
-4. Park every `WAIT` call using Temporal asynchronous activity completion.
+4. Suspend every `WAIT` call on a durable Temporal workflow condition.
 5. Accept external resolutions by the original tool-call identity.
 6. Finalize one deterministic tool-result group after every sibling is
    terminal.
@@ -74,11 +74,11 @@ messages, wait requests, and tool-call states easy for APIs and UIs to read.
 Hooks and stream listeners provide responsive live delivery, but correctness
 does not depend on a browser connection or on every event being received.
 
-When an external approval arrives, Actant persists the terminal result and
-completes the already-waiting Temporal activity by identity. It does not invoke
-the model from the approval endpoint, and it does not rerun the original
-deferred activity body. Temporal wakes the workflow when that durable handle is
-ready.
+When an external approval arrives, Actant signals the thread workflow by the
+original tool-call identity. Temporal records the signal and wakes the workflow,
+which schedules a short activity to persist the terminal result. The approval
+endpoint does not invoke the model, and no activity remains alive while the
+workflow is waiting.
 
 ## Subagents are not a special case
 
@@ -100,15 +100,18 @@ assemble them.
 
 | Framework | What it provides | What remains different |
 |---|---|---|
-| [Pydantic AI](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/) | Parallel tools, deferred requests/results, approvals, external tools, and several durable-execution integrations, including [Temporal](https://pydantic.dev/docs/ai/integrations/durable_execution/temporal/) | Its out-of-process deferred flow is expressed as ending a run, carrying message history and deferred requests/results, and beginning a follow-up run. Actant owns that durable continuation as its normal runtime contract. |
-| [LangGraph](https://docs.langchain.com/oss/python/langgraph/interrupts) | Durable checkpointers, parallel graph branches, multiple interrupts, subgraphs, and resume commands | Applications explicitly construct the graph and resumption flow. Interrupted nodes restart from their beginning, so code before an interrupt must be designed for re-execution. |
-| [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/human_in_the_loop/) | Parallel tool execution, serializable run state, partial approvals, and nested approval propagation | Durable distribution is supplied through a separate [Temporal, Restate, or Dapr integration](https://openai.github.io/openai-agents-python/running_agents/). Actant fixes the Temporal-backed lifecycle and projection model as one package contract. |
+| [Pydantic AI](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/) | Parallel tools, inline deferred handlers, out-of-process deferred requests/results, approvals, external tools, and several durable-execution integrations, including [Temporal](https://pydantic.dev/docs/ai/integrations/durable_execution/temporal/) | Its documented out-of-process UI flow ends a run and starts a follow-up run with message history and deferred results. Its Temporal integration durably offloads model and tool I/O, but applications still define the surrounding workflow. Actant supplies a long-lived thread workflow, resolution signals, projections, and tool-group barrier as one runtime contract. |
+| [LangGraph](https://docs.langchain.com/oss/python/langgraph/interrupts) | Durable checkpointers, high-level prebuilt agents, parallel graph branches, multiple interrupts, subgraphs, resume commands, and time-travel debugging | LangGraph is more general and configurable. Its graph/checkpoint/interrupt model is a feature when topology is product logic. Actant instead fixes one narrower agent-thread protocol, and interrupted LangGraph nodes restart from their beginning, so work before an interrupt must be safe to repeat. |
+| [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/human_in_the_loop/) | Parallel tool execution, serializable run state, partial approvals, streaming resume, and nested approval propagation | Durable distribution is an optional integration layer rather than the base run contract. Actant fixes the Temporal-backed lifecycle, tool-group barrier, and queryable projections as one package contract. |
 | [Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/integrations/durable-extension) | Durable graph workflows, fan-out/fan-in, request ports, sub-workflows, and recovery through Durable Task | It is a broader executor/workflow system. Actant is narrowly organized around the semantics of agent turns and their tool-call groups. |
 
-The practical distinction is the developer-facing abstraction. Other systems
-may expose graph topology, interrupt values, serialized run snapshots, deferred
-result objects, external events, or durable promises. Actant exposes an agent
-thread whose turns and tools already obey one durable orchestration protocol.
+These are not claims of exclusive capability. LangGraph is a better fit when
+explicit graph topology, checkpoint inspection, or time travel is the product;
+Pydantic AI and the OpenAI Agents SDK have broader model/tool ecosystems. The
+practical distinction is the developer-facing default. Other systems expose
+graph topology, interrupt values, serialized run snapshots, deferred result
+objects, or integration hooks. Actant exposes an agent thread whose turns and
+tools already obey one Temporal-backed orchestration protocol.
 
 ## Guarantees and boundaries
 

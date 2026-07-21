@@ -131,7 +131,10 @@ class AgentThreadWorkflow:
             self._inbox.extend(payload.carry_inbox)
 
         try:
-            while await self._wait_for_agent_run():
+            while True:
+                await self._wait_for_message_or_cancellation()
+                if self._cancelled:
+                    break
                 await self._run_next_agent_run(payload)
                 self._compact_history_if_needed(payload)
         except asyncio.CancelledError:
@@ -139,10 +142,9 @@ class AgentThreadWorkflow:
             raise
         return ThreadOutcome.CANCELLED.value
 
-    async def _wait_for_agent_run(self) -> bool:
+    async def _wait_for_message_or_cancellation(self) -> None:
         """Suspend the thread until a message arrives or it is cancelled."""
         await workflow.wait_condition(lambda: bool(self._inbox) or self._cancelled)
-        return not self._cancelled
 
     async def _run_next_agent_run(self, payload: ThreadInput) -> None:
         """Open, execute, and finalize one agent run for the queued inbox."""
