@@ -4,8 +4,6 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
-
 ## 0.3.2 - 2026-07-21
 
 ### Changed
@@ -84,7 +82,6 @@ affect users.
 - Optional OpenAI, Anthropic, Gemini, and Qwen provider adapters.
 - Deterministic FastAPI and React demo with streaming and approval flows.
 
-[Unreleased]: https://github.com/johnathanchiu/actant/compare/v0.3.2...HEAD
 [0.3.2]: https://github.com/johnathanchiu/actant/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/johnathanchiu/actant/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/johnathanchiu/actant/compare/v0.2.0...v0.3.0
