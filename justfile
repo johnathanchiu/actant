@@ -11,7 +11,7 @@ sync:
     uv python install {{python_version}}
     uv sync --python {{python_version}} --extra dev --extra providers
 
-# Manage the packaged local Temporal server (`just server start --detach`).
+# Manage the packaged local Temporal server (`just server start`).
 server command *args="":
     uv run actant server {{command}} {{args}}
 

@@ -50,8 +50,11 @@ pip install "actant[gemini]"     # optional provider
 Start a local Temporal development server:
 
 ```bash
-actant server start --detach
+actant server start
 ```
+
+The server stays attached so its logs and lifecycle remain visible. Pass
+`--detach` only when you intentionally want it to run in the background.
 
 ## Quickstart
 

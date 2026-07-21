@@ -23,13 +23,14 @@ configuration to the corresponding provider adapter.
 The installed CLI can manage a Docker-backed Temporal server for development:
 
 ```bash
-actant server start --detach
-actant server status
+actant server start
 ```
 
 It listens on `localhost:7233`, with the Temporal UI at
-`http://localhost:8233`. Use `actant server stop` to stop it while retaining
-its data, or `actant server reset` to stop it and delete that data.
+`http://localhost:8233`. It stays attached by default so you can see its logs
+and stop it with `Ctrl-C`. Pass `--detach` to run it in the background; then use
+`actant server status` to inspect it and `actant server stop` to stop it while
+retaining its data. `actant server reset` stops it and deletes that data.
 
 This command is a local convenience, not the production deployment model.
 Production clients and workers should connect to an independently managed
@@ -40,7 +41,7 @@ For local overrides, `server start` accepts `--port`, `--ui-port`, and
 project, or compatible command:
 
 ```bash
-actant server start --detach \
+actant server start \
   --compose-file ./temporal.yml \
   --project-name my-temporal \
   --compose-command "podman compose"

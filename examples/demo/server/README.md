@@ -7,7 +7,7 @@ HTTP/SSE API.
 ## Prerequisites
 
 1. A local Temporal cluster (from the repo root:
-   `actant server start --detach --port 27233 --ui-port 28233`).
+   `actant server start --port 27233 --ui-port 28233`).
 2. Optionally, a live provider and model selection:
 
    ```bash

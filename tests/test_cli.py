@@ -5,6 +5,25 @@ import subprocess
 from actant import cli
 
 
+def test_server_start_runs_attached_by_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    recorded: dict[str, object] = {}
+
+    def fake_run(args, *, env=None, **kwargs):  # type: ignore[no-untyped-def]
+        recorded["args"] = list(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_run_compose", fake_run)
+
+    assert cli.main(["server", "start"]) == 0
+    assert recorded["args"] == [
+        "up",
+        "--remove-orphans",
+        "temporal-postgres",
+        "temporal",
+        "temporal-ui",
+    ]
+
+
 def test_server_start_detached_forwards_ports(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     recorded: dict[str, object] = {}
 
