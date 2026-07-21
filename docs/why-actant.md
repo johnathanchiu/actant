@@ -113,6 +113,15 @@ graph topology, interrupt values, serialized run snapshots, deferred result
 objects, or integration hooks. Actant exposes an agent thread whose turns and
 tools already obey one Temporal-backed orchestration protocol.
 
+One concrete default differs from LangChain's prebuilt HITL middleware. Its
+[documented execution lifecycle](https://docs.langchain.com/oss/python/langchain/human-in-the-loop#execution-lifecycle)
+interrupts after the model response and before the batch's tool calls execute
+when any call needs review. Actant admits calls independently: allowed siblings
+can finish while another sibling waits, while the next model turn remains behind
+the complete-group barrier. Raw LangGraph can model the same behavior with
+custom parallel branches; Actant supplies it without making that graph topology
+application code.
+
 ## Guarantees and boundaries
 
 Actant is precise about what it can and cannot guarantee:
