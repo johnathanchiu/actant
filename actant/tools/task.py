@@ -26,16 +26,19 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
 from actant.core import JSONObject, JSONValue
 from actant.tools.admission import (
+    ToolCallView,
     ToolDecision,
     ToolResolution,
     ToolWaitRequest,
+    TurnContextView,
 )
 from actant.tools.base import (
     BaseToolInvocation,
+    ToolInvocation,
     ToolResult,
     ToolSchema,
     make_tool_schema,
@@ -169,7 +172,12 @@ class TaskTool:
     # ``on_resolve`` structurally; expose both and gate their behavior on
     # ``self.deferred`` so synchronous TaskTool instances use ALLOW.
 
-    async def can_execute(self, call: Any, invocation: Any, context: Any) -> ToolDecision:
+    async def can_execute(
+        self,
+        call: ToolCallView,
+        invocation: ToolInvocation | None,
+        context: TurnContextView | None,
+    ) -> ToolDecision:
         del invocation, context
         if not self.deferred:
             return ToolDecision.allow()
@@ -183,7 +191,7 @@ class TaskTool:
             return ToolDecision.block(reason=f"Unknown subagent {subagent!r}; valid: {valid}")
         if not isinstance(message, str) or not message.strip():
             return ToolDecision.block(reason="`message` is required")
-        ctx: JSONObject = args.get("context") if isinstance(args.get("context"), dict) else {}  # type: ignore[assignment]
+        ctx = _context_payload(args.get("context"))
 
         # Spawn synchronously: the sub-thread's earliest possible
         # terminal event is at least one LLM round trip away, so the
@@ -231,7 +239,11 @@ class TaskTool:
             )
         )
 
-    async def on_resolve(self, call: Any, resolution: ToolResolution) -> ToolResult:
+    async def on_resolve(
+        self,
+        call: ToolCallView,
+        resolution: ToolResolution,
+    ) -> ToolResult:
         del call
         if not self.deferred:
             # Shouldn't happen in sync mode (no WAIT was returned), but

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 from actant.core import JSONObject
 from actant.runtime.events import (
@@ -80,7 +79,7 @@ class SubThreadLink:
     parent_tool_call_id: str
     sub_agent_id: str
     subagent_name: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: JSONObject = field(default_factory=dict)
 
 
 class SubThreadRegistry:

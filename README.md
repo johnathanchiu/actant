@@ -160,6 +160,31 @@ exposes `state()`, `messages()`, `waiting_tools()`, and typed live `events()`.
 Use `OpenAIProvider`, `AnthropicProvider`, `GeminiProvider`, or `QwenProvider`
 in place of `FakeLLM`. Actant never chooses a model ID for you.
 
+## Tools and approvals
+
+Annotated functions become tools directly:
+
+```python
+from actant import tool
+
+
+@tool
+async def weather(city: str) -> dict[str, str]:
+    """Get the current weather for a city."""
+    return {"city": city, "forecast": "sunny"}
+
+
+@tool(approval=lambda args: f"Publish {args['title']}?")
+async def publish(title: str) -> dict[str, str]:
+    """Publish an update."""
+    return {"published": title}
+```
+
+Register them with `ToolRegistry([weather, publish])`. Actant derives the JSON
+schema from annotations. Approval tools enter the same durable WAIT state as
+advanced deferred tools and execute only after `thread.resolve(...,
+approved=True)`.
+
 ## Demo
 
 The included FastAPI + React viewer demonstrates streaming, approvals,
@@ -178,7 +203,7 @@ Open `http://localhost:5173`.
 - [Core concepts](docs/concepts.md)
 - [Runtime architecture](docs/architecture.md)
 - [Runtime and deployment](docs/actant-runtime-guide.md)
-- [Tools and admission](docs/tools-guide.md)
+- [Tools and approvals](docs/tools-guide.md)
 - [Pauses and deferred work](docs/pauses-and-resume.md)
 - [Subagents](docs/subagents.md)
 - [Application coordinators](docs/coordinator-guide.md)

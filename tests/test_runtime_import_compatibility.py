@@ -1,5 +1,6 @@
 """Public runtime imports resolve to the reorganized implementation."""
 
+from actant import FunctionTool, tool
 from actant.runtime import (
     AgentRuntime,
     RunCompletion,
@@ -16,6 +17,8 @@ from actant.runtime.temporal.client import TemporalRuntimeClient as CanonicalCli
 from actant.runtime.temporal.types import TemporalRuntimeConfig as CanonicalConfig
 from actant.runtime.temporal.worker import TemporalRuntimeWorker as CanonicalWorker
 from actant.runtime.thread import ThreadHandle as CanonicalThreadHandle
+from actant.tools import FunctionTool as CanonicalFunctionTool
+from actant.tools import tool as canonical_tool
 
 
 def test_public_runtime_imports_resolve_to_canonical_types() -> None:
@@ -26,3 +29,5 @@ def test_public_runtime_imports_resolve_to_canonical_types() -> None:
     assert RunCompletion is CanonicalCompletion
     assert RunCompletionHandler is CanonicalCompletionHandler
     assert ThreadHandle is CanonicalThreadHandle
+    assert FunctionTool is CanonicalFunctionTool
+    assert tool is canonical_tool

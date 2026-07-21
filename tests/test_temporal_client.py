@@ -36,6 +36,7 @@ from actant.tools.base import (
 )
 from actant.tools.calls import ToolCallStatus
 from actant.tools.registry import ToolRegistry
+from actant.tools import tool
 
 _AGENT = "test_agent"
 _THREAD = "test_thread"
@@ -226,6 +227,57 @@ async def test_temporal_client_resolves_deferred_tool_call() -> None:
         assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
         assert messages[-1].content == "approved!"
 
+        await s.runtime.cancel_thread(_AGENT, _THREAD)
+
+    await _run(body, agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_function_tool_approval_uses_the_existing_deferred_workflow() -> None:
+    tool_call = _tool_call("publish", '{"title":"Launch"}')
+    publications: list[str] = []
+
+    @tool(approval=lambda args: f"Publish {args['title']}?")
+    async def publish(title: str) -> dict[str, str]:
+        """Publish an update."""
+        publications.append(title)
+        return {"published": title}
+
+    agent = _agent(
+        FakeLLM([FakeResponse(tool_calls=[tool_call]), FakeResponse(text="published")]),
+        tools=[publish],
+    )
+
+    async def body(s: _RunSetup) -> None:
+        await s.runtime.send_message(_AGENT, _THREAD, "publish the launch")
+
+        async def is_waiting() -> bool:
+            try:
+                return (
+                    await s.stores.tool_calls.get(tool_call.id)
+                ).status is ToolCallStatus.WAITING
+            except KeyError:
+                return False
+
+        await _wait_for(is_waiting)
+        assert publications == []
+        await s.runtime.resolve_tool_call(
+            _AGENT,
+            _THREAD,
+            tool_call.id,
+            approved=True,
+        )
+
+        async def is_complete() -> bool:
+            return (await s.stores.tool_calls.get(tool_call.id)).status is ToolCallStatus.COMPLETED
+
+        await _wait_for(is_complete)
+        record = await s.stores.tool_calls.get(tool_call.id)
+        assert record.result == {
+            "result": {"published": "Launch"},
+            "tool_call_id": tool_call.id,
+        }
+        assert publications == ["Launch"]
         await s.runtime.cancel_thread(_AGENT, _THREAD)
 
     await _run(body, agent=agent)

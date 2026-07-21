@@ -4,17 +4,108 @@ Tools are the app-owned capabilities an agent can call during a turn. Actant
 provides the protocol, execution lifecycle, admission hooks, and result shape.
 The product owns the actual behavior.
 
-## Basic Tool Shape
+## Function tools
 
-A tool has:
+For most tools, decorate an annotated sync or async function:
 
-- `name`
-- JSON schema exposed to the model
-- `build(params)` returning a `ToolInvocation`
-- `execute()` returning a `ToolResult`
+```python
+from typing import Annotated
 
-Use `BaseDeclarativeTool`, `BaseToolInvocation`, and `make_tool_schema` for the
-common case:
+from pydantic import Field
+
+from actant import tool
+
+
+@tool
+async def weather(
+    city: Annotated[str, Field(description="City to check")],
+    days: int = 1,
+) -> dict[str, object]:
+    """Get a weather forecast."""
+    return {"city": city, "days": days, "forecast": "sunny"}
+```
+
+Actant uses the function name, docstring, annotations, defaults, and Pydantic
+field metadata to build the model-facing JSON schema. Arguments are validated
+before execution. Async functions are awaited; sync functions run in a worker
+thread so they do not block the activity event loop.
+
+Native return values are wrapped in `ToolResult.ok(...)`. Return an explicit
+`ToolResult` when you need an error, metadata, or content blocks.
+
+```python
+from actant.tools import ToolResult
+
+
+@tool
+async def load_report(report_id: str) -> ToolResult:
+    """Load a report."""
+    if not report_id:
+        return ToolResult.fail("report_id is required")
+    return ToolResult.ok({"report_id": report_id}, source="warehouse")
+```
+
+Register tools on the agent:
+
+```python
+agent = AgentDefinition(
+    id="assistant",
+    name="Assistant",
+    persona="...",
+    llm=llm,
+    tools=ToolRegistry([weather, load_report]),
+    tool_allowlist={"weather", "load_report"},
+)
+```
+
+## Approvals
+
+Add a static or argument-aware approval prompt:
+
+```python
+@tool(approval=lambda args: f"Publish {args['title']}?")
+async def publish(title: str) -> dict[str, str]:
+    """Publish an update."""
+    return {"published": title}
+```
+
+The call enters the normal durable WAIT state. The function has not executed
+at that point. Resolve it through the thread handle:
+
+```python
+await thread.resolve(tool_call_id, approved=True)
+```
+
+Approval executes the function only when `approved=True`. Rejection produces a
+failed tool result, releases the tool-group barrier, and lets the agent handle
+that result normally.
+
+For custom admission, pass a callback returning `ToolDecision`:
+
+```python
+from actant.tools import ToolDecision
+
+
+async def admit_publish(args):
+    if args["title"] == "draft":
+        return ToolDecision.block("Drafts cannot be published")
+    return ToolDecision.allow()
+
+
+@tool(admission=admit_publish)
+async def publish(title: str) -> dict[str, str]:
+    """Publish an update."""
+    return {"published": title}
+```
+
+Custom callbacks may also return `ToolDecision.wait(...)`. Add a `resolve=`
+callback when the external answer itself should produce the tool result. Use a
+class-based tool when admission needs the full tool-call or turn context.
+
+## Advanced declarative tools
+
+Implement the underlying protocol directly when a tool needs custom invocation
+state, full admission context, or specialized resolution behavior:
 
 ```python
 from actant.core import JSONObject
@@ -35,33 +126,15 @@ class EchoTool(BaseDeclarativeTool):
         super().__init__(
             "echo",
             make_tool_schema(
-                name="echo",
-                description="Echo a message.",
-                parameters={
-                    "message": {
-                        "type": "string",
-                        "description": "Message to echo.",
-                    },
-                },
+                "echo",
+                "Echo a message.",
+                parameters={"message": {"type": "string"}},
                 required=["message"],
             ),
         )
 
     async def build(self, params: JSONObject) -> EchoInvocation:
         return EchoInvocation(params)
-```
-
-Register tools on the agent:
-
-```python
-agent = AgentDefinition(
-    id="assistant",
-    name="Assistant",
-    persona="...",
-    llm=llm,
-    tools=ToolRegistry([EchoTool()]),
-    tool_allowlist={"echo"},
-)
 ```
 
 ## ToolResult
@@ -111,7 +184,7 @@ return ToolResult(
 Products may interpret metadata and content blocks to emit artifacts, render UI
 previews, or feed future agent turns.
 
-## Admission: Allow, Block, Wait
+## Advanced admission: Allow, Block, Wait
 
 Most tools do not need admission logic. If a tool must ask for approval or wait
 for an external condition, implement `can_execute`.
@@ -166,18 +239,13 @@ Avoid:
 - doing app authorization inside the model prompt instead of the product API
 - writing duplicate conversation messages from inside tools
 
-## Deferred Resolution
+## Deferred resolution
 
 If a tool waits, the product resolves it through the runtime facade:
 
 ```python
-await runtime.resolve_tool_call(
-    agent_id,
-    thread_id,
-    tool_call_id,
-    approved=True,
-    answer="Approved",
-)
+thread = runtime.thread(agent_id, thread_id)
+await thread.resolve(tool_call_id, approved=True, answer="Approved")
 ```
 
 Do not update tool-call rows yourself or continue the model inline from the
@@ -188,11 +256,12 @@ See [pauses and deferred work](pauses-and-resume.md) for details.
 
 ## Testing Tools
 
-Unit-test the invocation directly:
+Unit-test a function tool directly:
 
 ```python
-result = await EchoInvocation({"message": "hi"}).execute()
-assert result.output == {"echo": "hi"}
+invocation = await weather.build({"city": "Paris", "days": 2})
+result = await invocation.execute()
+assert result.output["city"] == "Paris"
 ```
 
 Integration-test through `AgentRuntime` when you need to verify:

@@ -13,12 +13,12 @@ the client never polls or coordinates activity handles.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 import temporalio.client
 import temporalio.exceptions  # re-exported for callers that catch typed errors
 
 from actant.agents import AgentDefinition
+from actant.core import JSONObject
 from actant.runtime.exceptions import ToolCallNotFoundError, ToolCallNotWaitingError
 from actant.runtime.temporal.activities import (
     HookFactory,
@@ -110,7 +110,7 @@ class TemporalRuntimeClient:
         *,
         approved: bool | None = None,
         answer: str = "",
-        payload: dict[str, Any] | None = None,
+        payload: JSONObject | None = None,
     ) -> None:
         """Signal a waiting thread workflow with an external tool result."""
         try:

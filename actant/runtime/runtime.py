@@ -11,10 +11,10 @@ reference — those live on the worker process started via
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
 from uuid import UUID
 
 from actant.agents import AgentDefinition
+from actant.core import JSONObject
 from actant.llm.messages import Message
 from actant.runtime.events.lifecycle import AgentThreadHooks
 from actant.runtime.events.publisher import EventSource
@@ -78,7 +78,7 @@ class AgentRuntime:
         *,
         approved: bool | None = None,
         answer: str = "",
-        payload: dict[str, Any] | None = None,
+        payload: JSONObject | None = None,
     ) -> None:
         await self._client.resolve_tool_call(
             agent_id,

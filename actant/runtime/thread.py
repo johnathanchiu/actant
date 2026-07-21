@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
+from actant.core import JSONObject
 from actant.llm.messages import Message
 from actant.runtime.events.publisher import EventSource
 from actant.runtime.events.types import ThreadEvent
@@ -35,7 +36,7 @@ class ThreadRuntime(Protocol):
         *,
         approved: bool | None = None,
         answer: str = "",
-        payload: dict[str, Any] | None = None,
+        payload: JSONObject | None = None,
     ) -> None: ...
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None: ...
@@ -61,7 +62,7 @@ class ThreadHandle:
         *,
         approved: bool | None = None,
         answer: str = "",
-        payload: dict[str, Any] | None = None,
+        payload: JSONObject | None = None,
     ) -> None:
         """Resolve one waiting tool call on this thread."""
         await self.runtime.resolve_tool_call(
