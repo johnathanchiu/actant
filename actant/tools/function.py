@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
+from string import Formatter
 from typing import TypeAlias, TypeVar, cast, get_type_hints, overload
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
@@ -65,6 +66,8 @@ class FunctionTool:
         self.admission = admission
         self.resolve = resolve
         self._params_model = _parameter_model(function, self.name)
+        if isinstance(approval, str):
+            _validate_approval_template(approval, set(self._params_model.model_fields))
         self._schema: ToolSchema = {
             "type": "function",
             "function": {
@@ -101,8 +104,10 @@ class FunctionTool:
             else self._validated_params(call.args)
         )
         if self.approval is not None:
-            prompt = await _maybe_await(
-                self.approval(params) if callable(self.approval) else self.approval
+            prompt = (
+                await _maybe_await(self.approval(params))
+                if callable(self.approval)
+                else self.approval.format_map(params)
             )
             return ToolDecision.wait(
                 ToolWaitRequest(kind="approval", prompt=prompt, payload={"args": call.args})
@@ -210,6 +215,18 @@ def _parameter_model(function: ToolFunction, tool_name: str) -> type[BaseModel]:
         __config__=ConfigDict(extra="forbid"),
         **fields,  # pyright: ignore[reportArgumentType]
     )
+
+
+def _validate_approval_template(template: str, parameter_names: set[str]) -> None:
+    for _literal, field_name, _format_spec, _conversion in Formatter().parse(template):
+        if field_name is None:
+            continue
+        if not field_name:
+            raise ValueError("Approval templates must use named fields such as `{title}`")
+        if "." in field_name or "[" in field_name:
+            raise ValueError("Approval templates may reference only direct tool parameters")
+        if field_name not in parameter_names:
+            raise ValueError(f"Approval template references unknown tool parameter {field_name!r}")
 
 
 async def _invoke_resolution(

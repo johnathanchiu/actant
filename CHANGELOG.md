@@ -6,6 +6,14 @@ affect users.
 
 ## Unreleased
 
+## 0.3.2 - 2026-07-21
+
+### Changed
+
+- Added validated approval prompt templates such as
+  `@tool(approval="Publish {title}?")`, keeping callable approval policies as
+  an advanced escape hatch.
+
 ## 0.3.1 - 2026-07-21
 
 ### Changed
@@ -76,7 +84,8 @@ affect users.
 - Optional OpenAI, Anthropic, Gemini, and Qwen provider adapters.
 - Deterministic FastAPI and React demo with streaming and approval flows.
 
-[Unreleased]: https://github.com/johnathanchiu/actant/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/johnathanchiu/actant/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/johnathanchiu/actant/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/johnathanchiu/actant/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/johnathanchiu/actant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/johnathanchiu/actant/compare/v0.1.0...v0.2.0

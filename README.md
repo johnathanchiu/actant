@@ -163,7 +163,7 @@ async def weather(city: str) -> dict[str, str]:
     return {"city": city, "forecast": "sunny"}
 
 
-@tool(approval=lambda args: f"Publish {args['title']}?")
+@tool(approval="Publish {title}?")
 async def publish(title: str) -> dict[str, str]:
     """Publish an update."""
     return {"published": title}

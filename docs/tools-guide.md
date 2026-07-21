@@ -60,10 +60,10 @@ agent = AgentDefinition(
 
 ## Approvals
 
-Add a static or argument-aware approval prompt:
+Add an approval prompt using the function's parameter names:
 
 ```python
-@tool(approval=lambda args: f"Publish {args['title']}?")
+@tool(approval="Publish {title}?")
 async def publish(title: str) -> dict[str, str]:
     """Publish an update."""
     return {"published": title}
@@ -78,7 +78,12 @@ await thread.resolve(tool_call_id, approved=True)
 
 Approval executes the function only when `approved=True`. Rejection produces a
 failed tool result, releases the tool-group barrier, and lets the agent handle
-that result normally.
+that result normally. Template fields are checked against the function
+signature when the tool is defined. Use doubled braces (`{{` and `}}`) for
+literal braces.
+
+For policy that cannot be expressed as a template, `approval` may instead be a
+sync or async callback receiving the validated argument dictionary.
 
 For custom admission, pass a callback returning `ToolDecision`:
 

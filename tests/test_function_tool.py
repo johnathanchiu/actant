@@ -91,7 +91,7 @@ async def test_explicit_tool_result_is_preserved() -> None:
 async def test_approval_waits_then_executes_only_when_approved() -> None:
     executions: list[str] = []
 
-    @tool(approval=lambda args: f"Check weather for {args['city']}?")
+    @tool(approval="Check weather for {city}?")
     async def weather(city: str) -> str:
         """Get weather."""
         executions.append(city)
@@ -163,3 +163,14 @@ def test_tool_rejects_ambiguous_or_untyped_definitions() -> None:
         @tool
         def untyped(value):
             return value
+
+
+def test_approval_template_rejects_unknown_or_indirect_fields() -> None:
+    async def candidate(title: str) -> str:
+        return title
+
+    with pytest.raises(ValueError, match="unknown tool parameter 'missing'"):
+        FunctionTool(candidate, approval="Publish {missing}?")
+
+    with pytest.raises(ValueError, match="only direct tool parameters"):
+        FunctionTool(candidate, approval="Publish {title.upper}?")

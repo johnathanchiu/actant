@@ -237,7 +237,7 @@ async def test_function_tool_approval_uses_the_existing_deferred_workflow() -> N
     tool_call = _tool_call("publish", '{"title":"Launch"}')
     publications: list[str] = []
 
-    @tool(approval=lambda args: f"Publish {args['title']}?")
+    @tool(approval="Publish {title}?")
     async def publish(title: str) -> dict[str, str]:
         """Publish an update."""
         publications.append(title)
