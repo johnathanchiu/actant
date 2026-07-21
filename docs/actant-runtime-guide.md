@@ -149,7 +149,7 @@ history. Cancellation is durable and projection cleanup is idempotent.
 ## Resolve deferred tools
 
 ```python
-await runtime.resolve_deferred_tool_call(
+await runtime.resolve_tool_call(
     "assistant",
     thread_id,
     tool_call_id,
@@ -158,9 +158,8 @@ await runtime.resolve_deferred_tool_call(
 )
 ```
 
-Resolution completes the Temporal async activity that the workflow is already
-awaiting. See [pauses and deferred work](pauses-and-resume.md) for the full
-lifecycle.
+Resolution durably signals the owning thread workflow. See
+[pauses and deferred work](pauses-and-resume.md) for the full lifecycle.
 
 ## Workflow lifecycle
 

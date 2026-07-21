@@ -131,6 +131,29 @@ async def test_update_status_to_waiting_records_prompt_and_wait_request() -> Non
 
 
 @pytest.mark.asyncio
+async def test_finish_waiting_is_an_atomic_first_writer_wins_transition() -> None:
+    stores = InMemoryRuntimeStores()
+    await stores.tool_calls.save(_record(status=ToolCallStatus.WAITING))
+
+    first = await stores.tool_calls.finish_waiting(
+        "tc_1",
+        ToolCallStatus.COMPLETED,
+        result={"approved": True},
+    )
+    duplicate = await stores.tool_calls.finish_waiting(
+        "tc_1",
+        ToolCallStatus.FAILED,
+        result={"approved": False},
+    )
+
+    assert first is True
+    assert duplicate is False
+    record = await stores.tool_calls.get("tc_1")
+    assert record.status is ToolCallStatus.COMPLETED
+    assert record.result == {"approved": True}
+
+
+@pytest.mark.asyncio
 async def test_update_status_keeps_optional_fields_none_by_default() -> None:
     """A plain status update doesn't accidentally clear prior result/
     prompt/wait_request — only sets them when explicitly provided."""

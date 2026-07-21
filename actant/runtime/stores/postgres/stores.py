@@ -7,7 +7,8 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -369,21 +370,28 @@ class SQLAlchemyToolCallStore:
                     tc.wait_request = cast(dict[str, object], wait_request)
                 tc.updated_at = datetime.now(UTC)
 
-    async def set_temporal_handle(
+    async def finish_waiting(
         self,
         tc_id: str,
+        status: ToolCallStatus,
         *,
-        workflow_id: str,
-        activity_id: str,
-    ) -> None:
+        result: object,
+    ) -> bool:
         async with self.session_factory() as session:
             async with session.begin():
-                tc = await session.get(ActantToolCallModel, tc_id)
-                if tc is None:
-                    raise KeyError(tc_id)
-                tc.temporal_workflow_id = workflow_id
-                tc.temporal_activity_id = activity_id
-                tc.updated_at = datetime.now(UTC)
+                outcome = await session.execute(
+                    update(ActantToolCallModel)
+                    .where(
+                        ActantToolCallModel.tool_call_id == tc_id,
+                        ActantToolCallModel.status == ToolCallStatus.WAITING.value,
+                    )
+                    .values(
+                        status=status.value,
+                        result=result,
+                        updated_at=datetime.now(UTC),
+                    )
+                )
+                return cast(CursorResult[object], outcome).rowcount == 1
 
     async def get(self, tc_id: str) -> ToolCallRecord:
         async with self.session_factory() as session:

@@ -15,13 +15,8 @@ Each tool-related activity has a single, focused job:
   result. Returns ``ExecuteOutcome``. Infallible — any unexpected
   exception is mapped to ``status=failed, result={"error": "..."}``.
 
-- ``await_external_resolution``: handles WAIT-decision tools via
-  Temporal's async-activity-completion. Stamps ``(workflow_id,
-  activity_id)`` onto the tool_call record so an external caller can
-  later complete this activity via ``client.complete_activity_by_id``;
-  then returns by raising ``raise_complete_async``. The activity stays
-  "running" (consuming zero compute) until the external completion
-  lands with the result.
+- ``resolve_tool``: transforms a resolution signal and persists the result.
+  It runs only after the workflow is awakened by an external resolution.
 
 The activity boundary is where exceptions get converted to structured
 outcomes — workflow code never has to wrap activity calls in
@@ -49,13 +44,13 @@ from actant.runtime.temporal.types import (
     AdmitInput,
     AdmitOutcome,
     ApplyThreadCancellationInput,
-    AwaitExternalResolutionInput,
     ExecuteInput,
     ExecuteOutcome,
     ExecuteStatus,
     FinalizeRunInput,
     RunOutcome,
     RunTurnInput,
+    ResolveToolInput,
     StartRunInput,
     ToolCallSpec,
     TurnResult,
@@ -69,6 +64,8 @@ from actant.tools.admission import (
     ToolCanExecute,
     ToolDecision,
     ToolDecisionKind,
+    ToolResolution,
+    ToolResolve,
 )
 from actant.tools.base import Tool, ToolInvocation, ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
@@ -112,7 +109,7 @@ class TemporalRuntimeActivities:
             self.run_turn,
             self.admit_tool,
             self.execute_tool,
-            self.await_external_resolution,
+            self.resolve_tool,
             self.finalize_tool_group,
             self.finalize_run,
             self.apply_thread_cancellation,
@@ -426,48 +423,77 @@ class TemporalRuntimeActivities:
             pass
         return ExecuteOutcome(tool_call_id=tool_call_id, status=ExecuteStatus.FAILED.value)
 
-    # === await_external_resolution ===
+    # === resolve_tool ===
 
-    @activity.defn(name=ActivityName.AWAIT_EXTERNAL_RESOLUTION)
-    async def await_external_resolution(
-        self, payload: AwaitExternalResolutionInput
-    ) -> ExecuteOutcome:
-        """Handle a WAIT-decision tool via async activity completion.
+    @activity.defn(name=ActivityName.RESOLVE_TOOL)
+    async def resolve_tool(self, payload: ResolveToolInput) -> ExecuteOutcome:
+        """Persist one externally resolved tool outcome.
 
-        The activity body:
-        1. Reads the tool_call record + ``activity.info()``.
-        2. Stamps ``(workflow_id, activity_id)`` onto the record so the
-           runtime client's ``resolve_deferred_tool_call`` path can find this activity.
-        3. Calls ``activity.raise_complete_async()`` — Temporal SDK
-           catches the sentinel and records the activity as "running,
-           pending external completion." The activity DOES NOT return
-           normally here; the workflow's ``await`` on this activity's
-           handle remains suspended.
-
-        When an external caller invokes
-        ``client.complete_activity_by_id(workflow_id, activity_id, result)``,
-        Temporal delivers the result and the workflow's await unblocks.
-
-        Note: this function's declared return type is ``ExecuteOutcome``
-        for documentation purposes — the actual result delivered to the
-        workflow comes from the external completion call, not from this
-        function body. The body never returns normally; it always raises
-        ``CompleteAsyncError``.
+        This is normal, short-lived work. The workflow itself performs the
+        durable wait and schedules this activity only after a resolution signal
+        arrives (or its durable timer expires).
         """
-        info = activity.info()
-        if info.workflow_id is None:
-            raise ApplicationError("missing workflow_id for async activity completion")
-        await self.stores.tool_calls.set_temporal_handle(
-            payload.tool_call_id,
-            workflow_id=info.workflow_id,
-            activity_id=info.activity_id,
+        record = await self.stores.tool_calls.get(payload.tool_call_id)
+        if record.status in {
+            ToolCallStatus.COMPLETED,
+            ToolCallStatus.BLOCKED,
+            ToolCallStatus.FAILED,
+        }:
+            return _outcome_from_record(record)
+        if record.status is not ToolCallStatus.WAITING:
+            return await self._execute_failed(
+                record.id, f"Tool call is {record.status.value}, not waiting"
+            )
+
+        if payload.resolution is None:
+            result = ToolResult.fail("Deferred tool resolution timed out")
+        else:
+            resolution = ToolResolution(
+                approved=payload.resolution.approved,
+                answer=payload.resolution.answer,
+                payload=payload.resolution.payload,
+            )
+            result = await self._apply_tool_resolution(payload.agent_id, record, resolution)
+
+        result.tool_call_id = record.id
+        status = ToolCallStatus.COMPLETED if result.is_success() else ToolCallStatus.FAILED
+        finished = await self.stores.tool_calls.finish_waiting(
+            record.id,
+            status,
+            result=result.to_dict(),
         )
-        # Hand off to async completion. Temporal SDK catches the raised
-        # sentinel and records the activity as still running.
-        activity.raise_complete_async()
-        # Unreachable — raise_complete_async always raises. Annotated
-        # for type-checkers and to satisfy the return type.
-        raise AssertionError("raise_complete_async() did not raise")
+        if not finished:
+            return _outcome_from_record(await self.stores.tool_calls.get(record.id))
+        thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
+        await self._hooks(thread).on_tool_resolved(record.id, result, record.turn_id)
+        return ExecuteOutcome(
+            tool_call_id=record.id,
+            status=(
+                ExecuteStatus.COMPLETED if result.is_success() else ExecuteStatus.FAILED
+            ).value,
+            terminal=bool(result.metadata.get("terminal")),
+        )
+
+    async def _apply_tool_resolution(
+        self,
+        agent_id: str,
+        record: ToolCallRecord,
+        resolution: ToolResolution,
+    ) -> ToolResult:
+        agent = self.agents.get(agent_id)
+        if agent is not None:
+            tool = agent.tools.get(record.name)
+            if tool is not None and callable(getattr(tool, "on_resolve", None)):
+                try:
+                    return await cast(ToolResolve, tool).on_resolve(record, resolution)
+                except Exception as exc:  # noqa: BLE001
+                    return ToolResult.fail(f"on_resolve failed: {exc}")
+        output: dict[str, object] = {
+            "approved": resolution.approved,
+            "answer": resolution.answer,
+        }
+        output.update(resolution.payload)
+        return ToolResult.ok(output)
 
     # === finalize_tool_group ===
 
@@ -476,13 +502,10 @@ class TemporalRuntimeActivities:
         """Append tool_result messages for a fully-terminal tool group.
 
         Ordering is sorted by tool_call id so every replica/replay
-        produces the same canonical transcript. Fires
-        ``on_tool_resolved`` for tools that originally returned WAIT
-        (signals "the deferred tool's external resolution has landed").
-        ``on_tool_result`` is NOT fired here — that already fired in
+        produces the same canonical transcript. ``on_tool_result`` is NOT fired here —
+        that already fired in
         ``admit_tool`` (BLOCK path) or ``execute_tool`` (ALLOW path) or
-        was the result of the external completion of
-        ``await_external_resolution``.
+        was persisted by ``resolve_tool``.
 
         Defense in depth: any record without a ``result`` (which would
         violate the activity-boundary contract) gets a fallback
@@ -492,10 +515,6 @@ class TemporalRuntimeActivities:
         records = await self.stores.tool_calls.get_group(group_id)
         if not records:
             return
-        first = records[0]
-        thread = await self.stores.threads.get_or_create(first.agent_id, first.thread_id)
-        hooks = self._hooks(thread)
-
         for record in sorted(records, key=lambda r: r.id):
             result_dict = (
                 record.result if isinstance(record.result, dict) else {"error": "No result"}
@@ -508,10 +527,6 @@ class TemporalRuntimeActivities:
                 record.name,
                 result_dict,
             )
-            if record.wait_request is not None:
-                await hooks.on_tool_resolved(
-                    record.id, _result_from_record(record), record.turn_id
-                )
 
     # === finalize_run ===
 
@@ -689,6 +704,17 @@ def _result_from_record(record: ToolCallRecord) -> ToolResult:
     if isinstance(error, str):
         return ToolResult(tool_call_id=record.id, error=error, metadata=metadata)
     return ToolResult(tool_call_id=record.id, output=raw.get("result"), metadata=metadata)
+
+
+def _outcome_from_record(record: ToolCallRecord) -> ExecuteOutcome:
+    result = _result_from_record(record)
+    return ExecuteOutcome(
+        tool_call_id=record.id,
+        status=(
+            ExecuteStatus.COMPLETED if result.is_success() else ExecuteStatus.FAILED
+        ).value,
+        terminal=bool(result.metadata.get("terminal")),
+    )
 
 
 def _run_status_for_outcome(outcome: str) -> RunStatus:

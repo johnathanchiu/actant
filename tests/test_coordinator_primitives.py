@@ -4,24 +4,16 @@ Covers:
 - SubThreadRegistry round-trip + lookup
 - publishing_hooks_factory: top-level threads vs sub-threads
 - publishing_listener_factory: same
-- resolve_deferred_tool_call: thin wrapper passes args through; surfaces
-  ToolResolutionStaleError when runtime reconciles a stale activity
 """
 
 from __future__ import annotations
-
-from unittest.mock import AsyncMock
-
-import pytest
 
 from actant.runtime.coordinator import (
     SubThreadLink,
     SubThreadRegistry,
     publishing_hooks_factory,
     publishing_listener_factory,
-    resolve_deferred_tool_call,
 )
-from actant.runtime.exceptions import ToolResolutionStaleError
 from actant.runtime.events.lifecycle import PublishingThreadHooks
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
 from actant.runtime.types.threads import AgentThread
@@ -174,45 +166,3 @@ async def test_listener_factory_subthread_dual_publishes() -> None:
     assert len(parent) == 1
     assert parent[0]["parent_thread_id"] == "thread_y"
     assert parent[0]["subagent"] == "researcher"
-
-
-# ─── resolve_deferred_tool_call ─────────────────────────────────────
-
-
-async def test_resolve_deferred_tool_call_delegates_to_runtime() -> None:
-    """Thin wrapper passes all args to runtime deferred resolution."""
-    runtime = AsyncMock()
-    await resolve_deferred_tool_call(
-        runtime,
-        agent_id="demo",
-        thread_id="thread_1",
-        tool_call_id="tc_1",
-        approved=True,
-        answer="ok",
-        payload={"extra": 1},
-    )
-    runtime.resolve_deferred_tool_call.assert_awaited_once_with(
-        "demo",
-        "thread_1",
-        "tc_1",
-        approved=True,
-        answer="ok",
-        payload={"extra": 1},
-    )
-
-
-async def test_resolve_deferred_tool_call_propagates_stale_error() -> None:
-    """When the runtime raises ToolResolutionStaleError (Temporal lost
-    the activity), the wrapper propagates verbatim — apps catch it
-    above this level."""
-    runtime = AsyncMock()
-    runtime.resolve_deferred_tool_call.side_effect = ToolResolutionStaleError("tc_x", "gone")
-    with pytest.raises(ToolResolutionStaleError):
-        await resolve_deferred_tool_call(
-            runtime,
-            agent_id="demo",
-            thread_id="thread_1",
-            tool_call_id="tc_x",
-            approved=True,
-            answer="ok",
-        )

@@ -126,8 +126,6 @@ class ActantToolCallModel(ActantRuntimeBase):
     prompt: Mapped[str | None] = mapped_column(Text)
     wait_request: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     result: Mapped[object | None] = mapped_column(JSONB)
-    temporal_workflow_id: Mapped[str | None] = mapped_column(Text)
-    temporal_activity_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

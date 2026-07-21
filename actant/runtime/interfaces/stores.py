@@ -112,18 +112,14 @@ class ToolCallStore(Protocol):
         wait_request: JSONObject | None = None,
     ) -> None: ...
 
-    async def set_temporal_handle(
+    async def finish_waiting(
         self,
         tc_id: str,
+        status: ToolCallStatus,
         *,
-        workflow_id: str,
-        activity_id: str,
-    ) -> None:
-        """Stamp the Temporal ``(workflow_id, activity_id)`` onto the
-        record so external callers (the runtime client's ``resolve_deferred_tool_call``
-        path) can complete this activity asynchronously via
-        ``client.complete_activity_by_id``. Set by
-        ``await_external_resolution`` activity for WAIT-decision tools."""
+        result: object,
+    ) -> bool:
+        """Atomically finish a WAITING call; return whether this caller won."""
         ...
 
     async def get(self, tc_id: str) -> ToolCallRecord: ...

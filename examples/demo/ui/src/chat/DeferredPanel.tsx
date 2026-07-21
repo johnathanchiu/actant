@@ -23,9 +23,9 @@ type Props = {
 }
 
 type Pending = {
-  /** Which thread owns the parked tool call. For sub-agent waits this
+  /** Which thread owns the waiting tool call. For sub-agent waits this
    * is the sub-thread id, not the main thread. The resolve POST must
-   * target this thread or the runtime won't find the parked activity. */
+   * target this thread so the runtime signals the owning workflow. */
   threadId: string
   call: ToolCallEntry
   kind: 'approval' | 'question' | 'generic'

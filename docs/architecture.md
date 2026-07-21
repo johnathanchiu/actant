@@ -123,9 +123,9 @@ For every tool call in one turn:
 2. Await all admission outcomes in completion order.
 3. For each outcome:
    ALLOW -> schedule execute_tool
-   WAIT  -> schedule await_external_resolution
+   WAIT  -> suspend until a resolve_tool signal arrives
    BLOCK -> no second activity; admission already persisted a terminal result
-4. Await every scheduled execution/wait handle in completion order.
+4. Await every tool outcome in completion order.
 5. Run finalize_tool_group once.
 6. Return control to the agent run for its next agent turn.
 ```
@@ -148,22 +148,21 @@ next agent turn:                                  start
 The allowed call does not wait for the deferred call before executing. The
 agent does wait before starting another agent turn.
 
-## Deferred activity completion
+## Deferred resolution
 
-`await_external_resolution` uses Temporal asynchronous activity completion:
+Deferred tools use a durable workflow signal and condition:
 
-1. The activity records its Temporal activity identity on the tool-call
-   projection.
-2. It asks Temporal to leave the activity logically incomplete.
-3. The activity invocation returns control to the worker; no Python task or
-   worker slot must remain occupied while a person or subagent responds.
-4. `AgentRuntime.resolve_deferred_tool_call` validates the persisted waiting call and
-   completes that Temporal activity by identity.
-5. Temporal records the result and wakes the workflow.
-6. The group barrier closes only when all sibling handles have also completed.
+1. Admission persists `WAITING` and publishes the wait request.
+2. The workflow suspends on `workflow.wait_condition`; no Python task or
+   worker slot remains occupied.
+3. `AgentRuntime.resolve_tool_call` signals the owning thread workflow.
+4. Temporal records the signal durably and wakes the workflow.
+5. A short `resolve_tool` activity transforms and persists the result.
+6. The group barrier closes only when every sibling outcome is terminal.
 
-The activity identity is routing information, not a second scheduler. Temporal
-history remains authoritative for whether workflow execution may continue.
+Signals may arrive before the workflow reaches its condition. Temporal retains
+them in workflow history, so deferred resolution has no registration race and
+requires no polling.
 
 ## Activity contracts
 
@@ -177,7 +176,7 @@ therefore needs an explicit idempotency expectation.
 | `run_turn` | Produce one agent turn | Message reads/writes, model call, live events | `turn_id` identifies the logical turn; model calls are not inherently idempotent |
 | `admit_tool` | Classify one call | Tool construction/policy, tool-call write, event | `tool_call_id`; terminal failure conversion at activity boundary |
 | `execute_tool` | Run one allowed call | Arbitrary tool side effect, tool-call write, event | Tool implementations own external idempotency; automatic retries are disabled |
-| `await_external_resolution` | Park a deferred call | Store Temporal identity, async completion | `tool_call_id`; external resolution reconciles stale handles |
+| `resolve_tool` | Apply an external resolution | Tool-call write, resolved event | `tool_call_id`; first workflow signal wins |
 | `finalize_tool_group` | Append tool results | Message writes, resolved events | `group_id`; message stores must prevent duplicate materialization |
 | `finalize_run` | Close run projection | Run/thread writes, completion event | `run_id`; terminal writes are repeatable |
 | `apply_thread_cancellation` | Repair open projected state | Run/thread/tool/message writes | Thread identity; explicitly idempotent |
@@ -208,14 +207,14 @@ would see an invalid assistant/tool-message sequence.
 
 ### Temporal workflow state
 
-Authoritative for execution: inbox contents, current run, cancellation, the
-scheduled activity handles, and whether the group barrier has closed. Workflow
+Authoritative for execution: inbox contents, current run, cancellation,
+pending resolution signals, and whether the group barrier has closed. Workflow
 code must stay deterministic because Temporal reconstructs it by replay.
 
 ### Projection-store state
 
 Authoritative for product reads: threads, runs, messages, tool-call status,
-wait requests, and activity routing identity. APIs and viewers query these
+wait requests, and results. APIs and viewers query these
 stores instead of replaying workflow history.
 
 Projection state describes execution; it must not independently decide that a
@@ -256,7 +255,7 @@ consumption.
 commands to Temporal:
 
 - `send_message`
-- `resolve_deferred_tool_call`
+- `resolve_tool_call`
 - `cancel_thread`
 - `get_state`
 

@@ -9,12 +9,11 @@ or a delegated subagent.
 1. The model requests a tool.
 2. The tool's `can_execute` returns `ToolDecision.wait(...)`.
 3. Actant persists the call as waiting and emits `on_tool_waiting`.
-4. The workflow schedules `await_external_resolution`.
-5. That activity switches to Temporal async completion, so no Python worker is
-   held while the call is parked.
-6. The application later calls `runtime.resolve_deferred_tool_call(...)`.
-7. Actant persists the resolution and completes the activity by its stable ID.
-8. The workflow wakes, finalizes the tool-result message, and continues the
+4. The workflow suspends on a durable condition, so no Python worker is held.
+5. The application later calls `runtime.resolve_tool_call(...)`.
+6. Temporal records the resolution signal and wakes the workflow.
+7. Actant transforms and persists the resolution in a short activity.
+8. The workflow finalizes the tool-result message and continues the
    agent run.
 
 The workflow is durable during the pause. A web request, event-stream
@@ -43,7 +42,7 @@ in a wait request that will be exposed to clients.
 ## Resolving a wait
 
 ```python
-await runtime.resolve_deferred_tool_call(
+await runtime.resolve_tool_call(
     "assistant",
     thread_id,
     tool_call_id,
@@ -57,17 +56,14 @@ Resolution re-enters the existing workflow; it must not call the model directly
 from the HTTP endpoint. Tools may implement `on_resolve` to translate the
 external `ToolResolution` into the `ToolResult` the model receives.
 
-## Timeouts and stale resolutions
+## Timeouts
 
 `TemporalRuntimeConfig.external_resolution_timeout_seconds` bounds how long an
 external resolution may remain pending. Choose it from product semantics, not
 HTTP timeout conventions. Human approvals may reasonably wait for days.
 
-If Temporal no longer has the parked activity, resolution raises
-`ToolResolutionStaleError` after reconciling the projection. Multi-agent apps
-should funnel resolution through
-`actant.runtime.coordinator.resolve_deferred_tool_call`
-and surface a refreshable conflict to the caller.
+The timeout is a durable Temporal timer. It consumes no worker compute and
+marks the unresolved tool failed when it expires.
 
 ## Cancellation
 

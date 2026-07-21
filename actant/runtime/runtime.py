@@ -2,7 +2,7 @@
 
 ``AgentRuntime`` is the public client-side facade. It connects to a
 Temporal cluster (via ``TemporalRuntimeClient``) and exposes thread
-operations: ``send_message``, ``cancel_thread``, ``resolve_deferred_tool_call``,
+operations: ``send_message``, ``resolve_tool_call``, ``cancel_thread``,
 ``get_state``. Application code never holds an orchestrator or worker
 reference — those live on the worker process started via
 ``TemporalRuntimeWorker``.
@@ -63,7 +63,7 @@ class AgentRuntime:
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
         await self._client.cancel_thread(agent_id, thread_id)
 
-    async def resolve_deferred_tool_call(
+    async def resolve_tool_call(
         self,
         agent_id: str,
         thread_id: str,
@@ -73,7 +73,7 @@ class AgentRuntime:
         answer: str = "",
         payload: dict[str, Any] | None = None,
     ) -> None:
-        await self._client.resolve_deferred_tool_call(
+        await self._client.resolve_tool_call(
             agent_id,
             thread_id,
             tool_call_id,

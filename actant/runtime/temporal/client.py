@@ -5,27 +5,18 @@ One workflow per ``(agent_id, thread_id)``. ``send_message`` issues a
 signalled on every subsequent message — Temporal owns durable inbox
 delivery, ordering, and single-writer semantics.
 
-Deferred tool resolution does NOT use a workflow signal. Instead, the
-workflow fires an ``await_external_resolution`` activity for any tool
-that returned WAIT from its admission decision; that activity stamps
-``(workflow_id, activity_id)`` onto the tool_call record and parks via
-``activity.raise_complete_async``. ``resolve_deferred_tool_call`` looks up that
-handle from the record and delivers the result via
-``client.complete_activity_by_id`` — the workflow's ``await`` on the
-activity handle unblocks naturally with the result.
+Deferred tool resolutions are durable workflow signals. Temporal records a
+resolution even if the workflow has not reached its wait condition yet, so
+the client never polls or coordinates activity handles.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
 import temporalio.client
 import temporalio.exceptions  # re-exported for callers that catch typed errors
-import temporalio.service
-
-from actant.runtime.exceptions import ToolResolutionStaleError
 
 from actant.agents import AgentDefinition
 from actant.runtime.temporal.activities import (
@@ -34,8 +25,7 @@ from actant.runtime.temporal.activities import (
     MessagePreprocessor,
 )
 from actant.runtime.temporal.types import (
-    ExecuteOutcome,
-    ExecuteStatus,
+    DeferredToolResolution,
     InboundMessage,
     SignalName,
     TemporalRuntimeConfig,
@@ -44,19 +34,7 @@ from actant.runtime.temporal.types import (
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.interfaces.stores import RuntimeStores
-from actant.tools.admission import ToolResolution, ToolResolve
-from actant.tools.base import ToolResult
-from actant.tools.calls import ToolCallRecord, ToolCallStatus
-
-# admit_tool fires on_tool_waiting (which emits the FE-visible
-# ``deferred`` SSE event) BEFORE the workflow dispatches
-# await_external_resolution, which is what stamps the temporal handle.
-# A scripted or fast-clicking caller can race that gap and call
-# resolve_deferred_tool_call while temporal_workflow_id is still null. We poll briefly
-# for the handle to land before failing — the handle write happens within
-# tens of ms in practice, so a short bounded wait avoids the surprising
-# 500 without papering over a real misconfiguration.
-_HANDLE_WAIT_BACKOFF_S: tuple[float, ...] = (0.05, 0.1, 0.2, 0.4, 0.8)
+from actant.tools.calls import ToolCallStatus
 
 
 class TemporalRuntimeClient:
@@ -72,12 +50,8 @@ class TemporalRuntimeClient:
         message_preprocessor: MessagePreprocessor | None = None,
         config: object | None = None,
     ) -> None:
-        # Stores + agents are used here for deferred resolution so the
-        # client can look up the tool's on_resolve transform and persist
-        # the resolved result before completing the activity. The hook
-        # factories are unused on the client side; they live on the
-        # worker process via TemporalRuntimeWorker. AgentRuntime wires
-        # the same dependencies into both ends without branching.
+        # Stores validate public commands; agents provide per-agent turn limits.
+        # Hooks and listeners execute only in the worker process.
         self.stores = stores
         self.agents = agents
         self.hooks_factory = hooks_factory
@@ -129,7 +103,7 @@ class TemporalRuntimeClient:
             return self.config.max_turns_per_run
         return max(1, agent.max_turns_per_thread)
 
-    async def resolve_deferred_tool_call(
+    async def resolve_tool_call(
         self,
         agent_id: str,
         thread_id: str,
@@ -139,129 +113,31 @@ class TemporalRuntimeClient:
         answer: str = "",
         payload: dict[str, Any] | None = None,
     ) -> None:
-        """Deliver an external resolution for a deferred tool call.
-
-        The deferred tool's ``await_external_resolution`` activity is
-        currently parked in async-completion state. This method:
-
-        1. Looks up the tool from the agent registry, runs ``on_resolve``
-           (if defined) to transform the resolution payload into a
-           ``ToolResult``. Tools without ``on_resolve`` get the default
-           ``{"approved", "answer", **payload}`` shape.
-        2. Persists the result onto the tool_call record (status +
-           result) so ``finalize_tool_group`` later reads a terminal
-           record with a real result.
-        3. Completes the parked activity via ``complete_activity_by_id``
-           with an ``ExecuteOutcome``. The workflow's ``await`` unblocks.
-
-        Used by external integrations (HTTP APIs, approval UIs) when an
-        out-of-band resolution arrives.
-        """
-        del thread_id  # unused — record carries the temporal handle directly
-        existing = await self.stores.tool_calls.get(tool_call_id)
-        if existing.status in {
+        """Signal a waiting thread workflow with an external tool result."""
+        record = await self.stores.tool_calls.get(tool_call_id)
+        if record.status in {
             ToolCallStatus.COMPLETED,
             ToolCallStatus.BLOCKED,
             ToolCallStatus.FAILED,
         }:
-            # A previous attempt persisted the logical result but may have lost
-            # Temporal's acknowledgement. Redeliver without invoking
-            # ``on_resolve`` again. NOT_FOUND is success here: it means the
-            # original delivery already woke the activity (or the workflow has
-            # since closed), and the terminal projection is authoritative.
-            if (
-                existing.temporal_workflow_id is not None
-                and existing.temporal_activity_id is not None
-            ):
-                await self._redeliver_terminal_resolution(existing)
             return
-        record = await self._await_temporal_handle(tool_call_id)
-
-        resolution = ToolResolution(
-            approved=approved, answer=answer, payload=payload or {}
-        )
-        result = await self._apply_on_resolve(agent_id, record, resolution)
-        result.tool_call_id = tool_call_id
-
-        status = (
-            ToolCallStatus.COMPLETED if result.is_success() else ToolCallStatus.FAILED
-        )
-        await self.stores.tool_calls.update_status(
-            tool_call_id, status, result=result.to_dict()
-        )
-
-        client = await self._get_client()
-        if record.temporal_workflow_id is None or record.temporal_activity_id is None:
-            raise RuntimeError(f"tool call {tool_call_id} is missing Temporal activity handle")
-        handle = client.get_async_activity_handle(
-            workflow_id=record.temporal_workflow_id,
-            run_id=None,
-            activity_id=record.temporal_activity_id,
-        )
-        outcome = ExecuteOutcome(
-            tool_call_id=tool_call_id,
-            status=(
-                ExecuteStatus.COMPLETED if result.is_success() else ExecuteStatus.FAILED
-            ).value,
-            terminal=bool(result.metadata.get("terminal")),
-        )
-        try:
-            await handle.complete(outcome)
-        except temporalio.service.RPCError as exc:
-            # NotFound = the workflow / activity is gone (Temporal volume
-            # reset, workflow terminated, activity timed out). The store
-            # still reports WAITING — that's stale state. Reconcile by
-            # marking the tool call FAILED with a diagnostic reason, then
-            # surface a typed error so callers can distinguish this from
-            # a generic Temporal hiccup.
-            is_not_found = (
-                exc.status == temporalio.service.RPCStatusCode.NOT_FOUND
-                or "cannot find pending activity" in str(exc).lower()
+        if record.status is not ToolCallStatus.WAITING:
+            raise RuntimeError(
+                f"tool call {tool_call_id!r} is {record.status.value}, not waiting"
             )
-            if not is_not_found:
-                # Keep the terminal projection. A retry redelivers this exact
-                # outcome without repeating application resolution logic.
-                raise
-            reason = f"Temporal lost the pending activity: {exc}"
-            stale_result = {
-                "error": "stale_activity",
-                "tool_call_id": tool_call_id,
-                "detail": reason,
-            }
-            await self.stores.tool_calls.update_status(
-                tool_call_id, ToolCallStatus.FAILED, result=stale_result
-            )
-            raise ToolResolutionStaleError(tool_call_id, reason) from exc
-
-    async def _redeliver_terminal_resolution(self, record: ToolCallRecord) -> None:
-        """Retry an ambiguously acknowledged async-activity completion."""
-        assert record.temporal_workflow_id is not None
-        assert record.temporal_activity_id is not None
+        if record.agent_id != agent_id or record.thread_id != thread_id:
+            raise RuntimeError(f"tool call {tool_call_id!r} does not belong to this thread")
         client = await self._get_client()
-        handle = client.get_async_activity_handle(
-            workflow_id=record.temporal_workflow_id,
-            run_id=None,
-            activity_id=record.temporal_activity_id,
+        handle = client.get_workflow_handle(self._workflow_id(agent_id, thread_id))
+        await handle.signal(
+            AgentThreadWorkflow.resolve_tool,
+            DeferredToolResolution(
+                tool_call_id=tool_call_id,
+                approved=approved,
+                answer=answer,
+                payload=payload or {},
+            ),
         )
-        metadata = record.result.get("metadata") if isinstance(record.result, dict) else None
-        outcome = ExecuteOutcome(
-            tool_call_id=record.id,
-            status=(
-                ExecuteStatus.COMPLETED
-                if record.status is ToolCallStatus.COMPLETED
-                else ExecuteStatus.FAILED
-            ).value,
-            terminal=bool(metadata.get("terminal")) if isinstance(metadata, dict) else False,
-        )
-        try:
-            await handle.complete(outcome)
-        except temporalio.service.RPCError as exc:
-            if (
-                exc.status == temporalio.service.RPCStatusCode.NOT_FOUND
-                or "cannot find pending activity" in str(exc).lower()
-            ):
-                return
-            raise
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
         client = await self._get_client()
@@ -273,69 +149,6 @@ class TemporalRuntimeClient:
         handle = client.get_workflow_handle(self._workflow_id(agent_id, thread_id))
         result = await handle.query(AgentThreadWorkflow.get_state)
         return result
-
-    # === internal ===
-
-    async def _await_temporal_handle(self, tool_call_id: str) -> ToolCallRecord:
-        """Read the tool_call record, waiting briefly for the temporal
-        handle to land if the admission emitted the deferred event but
-        await_external_resolution hasn't stamped the activity_id yet.
-
-        Bounded by ``_HANDLE_WAIT_BACKOFF_S``; if the handle never
-        lands (e.g. the admission was actually BLOCK / ALLOW, or the
-        workflow died) we raise the same RuntimeError as before so
-        callers get a clear failure rather than hanging.
-        """
-        record = await self.stores.tool_calls.get(tool_call_id)
-        if record.temporal_workflow_id is not None and record.temporal_activity_id is not None:
-            return record
-        # Only wait if the admission was WAIT. ALLOW / BLOCK / COMPLETED
-        # never get a handle and never will, so retrying just hides bugs.
-        if record.status != ToolCallStatus.WAITING:
-            raise RuntimeError(
-                f"resolve_deferred_tool_call: tool_call {tool_call_id!r} has no temporal "
-                "activity handle (was the admission decision actually WAIT?)"
-            )
-        for delay in _HANDLE_WAIT_BACKOFF_S:
-            await asyncio.sleep(delay)
-            record = await self.stores.tool_calls.get(tool_call_id)
-            if (
-                record.temporal_workflow_id is not None
-                and record.temporal_activity_id is not None
-            ):
-                return record
-            if record.status != ToolCallStatus.WAITING:
-                # Status changed under us (cancelled, completed) —
-                # surface the same error rather than racing a stale
-                # complete_activity_by_id call.
-                break
-        raise RuntimeError(
-            f"resolve_deferred_tool_call: tool_call {tool_call_id!r} has no temporal "
-            "activity handle (was the admission decision actually WAIT?)"
-        )
-
-    async def _apply_on_resolve(
-        self,
-        agent_id: str,
-        record: ToolCallRecord,
-        resolution: ToolResolution,
-    ) -> ToolResult:
-        agent = self.agents.get(agent_id)
-        if agent is not None:
-            tool = agent.tools.get(record.name)
-            if tool is not None and callable(getattr(tool, "on_resolve", None)):
-                try:
-                    return await cast(ToolResolve, tool).on_resolve(record, resolution)
-                except Exception as exc:  # noqa: BLE001
-                    return ToolResult.fail(f"on_resolve failed: {exc}")
-        # Default deferred-resolve shape — record the raw resolution.
-        payload_dict: dict[str, object] = {
-            "approved": resolution.approved,
-            "answer": resolution.answer,
-        }
-        if resolution.payload:
-            payload_dict.update(resolution.payload)
-        return ToolResult.ok(payload_dict)
 
     async def _get_client(self) -> temporalio.client.Client:
         if self._client is None:

@@ -15,7 +15,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from actant.runtime.exceptions import ToolResolutionStaleError
 
 from app.agents import AGENT_ID, RESEARCHER_AGENT_ID, SUMMARIZER_AGENT_ID
 from app.coordinator import DemoCoordinator
@@ -172,32 +171,20 @@ async def cancel_thread(thread_id: str, request: Request) -> None:
 @router.post(
     "/threads/{thread_id}/tool_calls/{tool_call_id}/resolve", status_code=204
 )
-async def resolve_deferred_tool_call(
+async def resolve_tool_call(
     thread_id: str,
     tool_call_id: str,
     body: ResolveToolBody,
     request: Request,
 ) -> None:
     coord = get_coordinator(request)
-    try:
-        await coord.resolve_user_deferred(
-            thread_id=thread_id,
-            tool_call_id=tool_call_id,
-            approved=body.approved,
-            answer=body.answer,
-            payload=body.payload,
-        )
-    except ToolResolutionStaleError as exc:
-        # The store has been reconciled to FAILED — there's no parked
-        # activity to resolve. Tell the client they should refresh.
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "stale_tool_call",
-                "tool_call_id": exc.tool_call_id,
-                "reason": exc.reason,
-            },
-        ) from exc
+    await coord.resolve_user_deferred(
+        thread_id=thread_id,
+        tool_call_id=tool_call_id,
+        approved=body.approved,
+        answer=body.answer,
+        payload=body.payload,
+    )
 
 
 @router.get("/threads/{thread_id}/events")

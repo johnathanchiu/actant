@@ -10,21 +10,14 @@ The workflow is a thin orchestrator. It:
 1. Receives ``inbound`` signals (user messages) into an in-memory inbox.
 2. For each agent run: drains the inbox and advances through turns until the model
    stops emitting tool_calls or the turn budget is exhausted.
-3. For each turn's tool_calls: kicks off ``admit_tool`` activities,
-   then for each non-blocked tool fires ``execute_tool`` (ALLOW) or
-   ``await_external_resolution`` (WAIT). Drains via ``as_completed``.
+3. For each turn's tool_calls: admits every tool, then executes ALLOW tools
+   and durably suspends WAIT tools until a resolution signal arrives.
 4. Finalizes each tool group via ``finalize_tool_group`` (writes the
    tool_result messages — the transcript invariant lives there).
 
-Critically, the workflow itself contains no try/except around activity
-execution and no synchronization primitive for deferred tools. All
-exception-to-outcome conversion happens inside activities (each
-activity is infallible at its boundary). Deferred tools use Temporal's
-async-activity-completion: ``await_external_resolution`` raises
-``raise_complete_async`` from inside the activity body, the workflow
-keeps awaiting the activity handle, and an external caller delivers
-the result via ``client.complete_activity_by_id``. The workflow
-suspends durably during the wait — zero compute consumed.
+Activities report outcomes. Signals report external events. Only this workflow
+advances the agent run. Deferred waits use ``workflow.wait_condition``: no
+activity, worker thread, or polling loop remains active while a human decides.
 """
 
 from __future__ import annotations
@@ -40,13 +33,15 @@ from actant.runtime.temporal.types import (
     AdmitInput,
     AdmitOutcome,
     ApplyThreadCancellationInput,
-    AwaitExternalResolutionInput,
+    DeferredToolResolution,
     ExecuteInput,
     ExecuteOutcome,
+    ExecuteStatus,
     FinalizeRunInput,
     InboundMessage,
     RunOutcome,
     RunTurnInput,
+    ResolveToolInput,
     StartRunInput,
     ThreadInput,
     ThreadOutcome,
@@ -79,6 +74,9 @@ class AgentThreadWorkflow:
         self._cancelled = False
         self._turn_count_total = 0
         self._current_run_id: str | None = None
+        self._tool_resolutions: dict[str, DeferredToolResolution] = {}
+        self._resolving_tool_ids: set[str] = set()
+        self._resolved_tool_ids: set[str] = set()
         # Populated by ``run()`` so ``get_state`` can echo the workflow's
         # logical identity without parsing workflow_id strings.
         self._agent_id: str = ""
@@ -93,6 +91,17 @@ class AgentThreadWorkflow:
     @workflow.signal
     def cancel(self) -> None:
         self._cancelled = True
+
+    @workflow.signal
+    def resolve_tool(self, resolution: DeferredToolResolution) -> None:
+        """Record the first resolution for a tool; duplicates are harmless."""
+        tool_call_id = resolution.tool_call_id
+        if (
+            tool_call_id in self._resolving_tool_ids
+            or tool_call_id in self._resolved_tool_ids
+        ):
+            return
+        self._tool_resolutions.setdefault(tool_call_id, resolution)
 
     # === Queries ===
 
@@ -268,7 +277,7 @@ class AgentThreadWorkflow:
         payload: ThreadInput,
         turn: TurnResult,
     ) -> bool:
-        """Admit, execute / await-external-resolution, finalize.
+        """Admit, execute or resolve in parallel, then finalize once.
 
         Tool-level failures are absorbed inside activities (each is
         infallible at its boundary), so this method has no try/except.
@@ -300,11 +309,9 @@ class AgentThreadWorkflow:
             outcome = await fut
             admits[outcome.tool_call_id] = outcome
 
-        # 2. For each non-block tool, fan out the right activity.
-        #    ALLOW → execute_tool (runs inline)
-        #    WAIT  → await_external_resolution (async-completion;
-        #            workflow suspends durably until external completion)
-        #    BLOCK → admit already persisted the failed result; nothing more here.
+        # 2. Each non-blocked tool produces one outcome. ALLOW tools execute
+        #    normally. WAIT tools suspend inside the workflow until their
+        #    resolution signal arrives. BLOCK tools are already terminal.
         exec_handles = []
         for spec in turn.tool_calls:
             decision = admits[spec.id].decision
@@ -325,26 +332,18 @@ class AgentThreadWorkflow:
                 )
             elif decision == AdmitDecision.WAIT.value:
                 exec_handles.append(
-                    workflow.execute_activity(
-                        ActivityName.AWAIT_EXTERNAL_RESOLUTION,
-                        AwaitExternalResolutionInput(
-                            agent_id=payload.agent_id,
-                            thread_id=payload.thread_id,
+                    asyncio.create_task(
+                        self._resolve_tool(
+                            payload,
                             run_id=run_id,
                             tool_call_id=spec.id,
-                        ),
-                        result_type=ExecuteOutcome,
-                        start_to_close_timeout=timedelta(
-                            seconds=payload.external_resolution_timeout_seconds
-                        ),
-                        retry_policy=RetryPolicy(maximum_attempts=1),
+                        )
                     )
                 )
             # else BLOCK — nothing to await
 
-        # 3. Drain — for await_external_resolution handles, the
-        #    workflow effectively suspends durably until the external
-        #    completion lands. Zero compute consumed during the wait.
+        # 3. This is the durable tool-group barrier. Temporal wakes the
+        #    workflow only for activity completions, signals, timers, or cancel.
         terminal_tool = False
         for fut in workflow.as_completed(exec_handles):
             outcome = await fut  # result already persisted by activity body
@@ -362,6 +361,52 @@ class AgentThreadWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
         return terminal_tool
+
+    async def _resolve_tool(
+        self,
+        payload: ThreadInput,
+        *,
+        run_id: str,
+        tool_call_id: str,
+    ) -> ExecuteOutcome:
+        """Suspend until one external resolution arrives, then persist it."""
+        try:
+            await workflow.wait_condition(
+                lambda: (
+                    tool_call_id in self._tool_resolutions or self._cancelled
+                ),
+                timeout=timedelta(
+                    seconds=payload.external_resolution_timeout_seconds
+                ),
+                timeout_summary=f"resolve-tool-{tool_call_id}",
+            )
+        except asyncio.TimeoutError:
+            resolution = None
+        else:
+            if self._cancelled:
+                return ExecuteOutcome(
+                    tool_call_id=tool_call_id,
+                    status=ExecuteStatus.FAILED.value,
+                )
+            resolution = self._tool_resolutions.pop(tool_call_id)
+            self._resolving_tool_ids.add(tool_call_id)
+
+        outcome = await workflow.execute_activity(
+            ActivityName.RESOLVE_TOOL,
+            ResolveToolInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                tool_call_id=tool_call_id,
+                resolution=resolution,
+            ),
+            result_type=ExecuteOutcome,
+            start_to_close_timeout=_TOOL_TIMEOUT,
+            retry_policy=RetryPolicy(maximum_attempts=1),
+        )
+        self._resolving_tool_ids.discard(tool_call_id)
+        self._resolved_tool_ids.add(tool_call_id)
+        return outcome
 
     def _drain_inbox(self) -> list[InboundMessage]:
         msgs = list(self._inbox)

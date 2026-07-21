@@ -188,19 +188,15 @@ async def test_temporal_client_resolves_deferred_tool_call() -> None:
     async def body(s: _RunSetup) -> None:
         await s.runtime.send_message(_AGENT, _THREAD, "please approve")
 
-        async def waiting_with_handle() -> bool:
+        async def is_waiting() -> bool:
             try:
                 record = await s.stores.tool_calls.get(tool_call.id)
             except KeyError:
                 return False
-            return (
-                record.status == ToolCallStatus.WAITING
-                and record.temporal_workflow_id is not None
-                and record.temporal_activity_id is not None
-            )
+            return record.status == ToolCallStatus.WAITING
 
-        await _wait_for(waiting_with_handle)
-        await s.runtime.resolve_deferred_tool_call(
+        await _wait_for(is_waiting)
+        await s.runtime.resolve_tool_call(
             _AGENT,
             _THREAD,
             tool_call.id,
@@ -233,3 +229,109 @@ async def test_temporal_client_resolves_deferred_tool_call() -> None:
         await s.runtime.cancel_thread(_AGENT, _THREAD)
 
     await _run(body, agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resolutions_use_the_first_signal() -> None:
+    tool_call = _tool_call("needs_approval")
+    agent = _agent(
+        FakeLLM([FakeResponse(tool_calls=[tool_call]), FakeResponse(text="done")]),
+        tools=[_ApprovalTool()],
+    )
+
+    async def body(s: _RunSetup) -> None:
+        await s.runtime.send_message(_AGENT, _THREAD, "please approve")
+
+        async def is_waiting() -> bool:
+            try:
+                return (
+                    await s.stores.tool_calls.get(tool_call.id)
+                ).status is ToolCallStatus.WAITING
+            except KeyError:
+                return False
+
+        await _wait_for(is_waiting)
+        await s.runtime.resolve_tool_call(
+            _AGENT, _THREAD, tool_call.id, approved=True, answer="first"
+        )
+        await s.runtime.resolve_tool_call(
+            _AGENT, _THREAD, tool_call.id, approved=False, answer="second"
+        )
+
+        async def is_terminal() -> bool:
+            return (
+                await s.stores.tool_calls.get(tool_call.id)
+            ).status is ToolCallStatus.COMPLETED
+
+        await _wait_for(is_terminal)
+        record = await s.stores.tool_calls.get(tool_call.id)
+        assert isinstance(record.result, dict)
+        assert record.result["result"]["approved"] is True
+        assert record.result["result"]["answer"] == "first"
+
+        await s.runtime.cancel_thread(_AGENT, _THREAD)
+
+    await _run(body, agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_resolution_is_durable_while_no_worker_is_running() -> None:
+    tool_call = _tool_call("needs_approval")
+    agent = _agent(
+        FakeLLM([FakeResponse(tool_calls=[tool_call]), FakeResponse(text="resumed")]),
+        tools=[_ApprovalTool()],
+    )
+    stores = InMemoryRuntimeStores()
+    task_queue = f"test-restart-{uuid.uuid4().hex[:8]}"
+    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+
+    async with await WorkflowEnvironment.start_local() as env:
+        runtime = TemporalRuntimeClient(
+            stores=stores,
+            agents={agent.id: agent},
+            config=TemporalRuntimeConfig(
+                address=env.client.service_client.config.target_host,
+                namespace=env.client.namespace,
+                task_queue=task_queue,
+            ),
+        )
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=activities.all,
+        ):
+            await runtime.send_message(_AGENT, _THREAD, "please approve")
+
+            async def is_waiting() -> bool:
+                try:
+                    return (
+                        await stores.tool_calls.get(tool_call.id)
+                    ).status is ToolCallStatus.WAITING
+                except KeyError:
+                    return False
+
+            await _wait_for(is_waiting)
+
+        # No worker is polling the task queue here. Temporal still accepts and
+        # stores the signal; no Actant code has to remain alive.
+        await runtime.resolve_tool_call(
+            _AGENT, _THREAD, tool_call.id, approved=True, answer="offline"
+        )
+        assert (await stores.tool_calls.get(tool_call.id)).status is ToolCallStatus.WAITING
+
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=activities.all,
+        ):
+            async def resumed() -> bool:
+                messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
+                return any(message.content == "resumed" for message in messages)
+
+            await _wait_for(resumed)
+            assert (
+                await stores.tool_calls.get(tool_call.id)
+            ).status is ToolCallStatus.COMPLETED
+            await runtime.cancel_thread(_AGENT, _THREAD)

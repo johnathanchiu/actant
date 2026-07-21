@@ -153,6 +153,4 @@ def tool_call_from_row(row: ActantToolCallModel) -> ToolCallRecord:
         prompt=row.prompt,
         wait_request=cast(JSONObject | None, row.wait_request),
         result=row.result,
-        temporal_workflow_id=row.temporal_workflow_id,
-        temporal_activity_id=row.temporal_activity_id,
     )

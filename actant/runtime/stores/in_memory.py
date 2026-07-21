@@ -124,16 +124,19 @@ class InMemoryToolCallStore:
         if wait_request is not None:
             tc.wait_request = wait_request
 
-    async def set_temporal_handle(
+    async def finish_waiting(
         self,
         tc_id: str,
+        status: ToolCallStatus,
         *,
-        workflow_id: str,
-        activity_id: str,
-    ) -> None:
+        result: object,
+    ) -> bool:
         tc = self._records[tc_id]
-        tc.temporal_workflow_id = workflow_id
-        tc.temporal_activity_id = activity_id
+        if tc.status is not ToolCallStatus.WAITING:
+            return False
+        tc.status = status
+        tc.result = result
+        return True
 
     async def get(self, tc_id: str) -> ToolCallRecord:
         return self._records[tc_id]

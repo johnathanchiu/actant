@@ -9,9 +9,7 @@ that `docs/coordinator-guide.md` points at. The shape is:
 - Wire AgentRuntime with the registry-aware factories from
   `actant.runtime.coordinator`.
 - Implement `SubagentSpawner` for `TaskTool` to delegate work.
-- Funnel ALL deferred resolutions (user-driven AND
-  sub-thread-completion driven) through one `resolve_deferred_tool_call` call
-  with state-divergence handling.
+- Funnel all deferred resolutions through `AgentRuntime.resolve_tool_call`.
 
 NO subclassing of any actant base class. Pure composition.
 """
@@ -35,9 +33,7 @@ from actant.runtime.coordinator import (
     SubThreadLink,
     SubThreadRegistry,
     publishing_hooks_factory,
-    resolve_deferred_tool_call,
 )
-from actant.runtime.exceptions import ToolResolutionStaleError
 from actant.runtime.events import (
     AgentThreadHooks,
     PublishingStreamListener,
@@ -54,7 +50,6 @@ from actant.runtime.stores.postgres import (
 )
 from actant.runtime.types.threads import AgentThread
 from actant.tools.calls import ToolCallStatus
-from actant.tools.base import ToolResult
 from actant.tools.task import TaskTool
 
 from app.agents import (
@@ -191,33 +186,18 @@ class DemoCoordinator:
         registered sub-thread, the wait belongs to the sub-agent (e.g.
         researcher's ask_user); otherwise it's a main-thread wait.
 
-        Funneled through `resolve_deferred_tool_call` for state reconciliation —
-        if Temporal lost the activity, `ToolResolutionStaleError`
-        bubbles up (route layer turns it into 409 Conflict)."""
+        Funneled through `resolve_tool_call`, which durably signals the
+        owning thread workflow."""
         link = self.registry.get(thread_id)
         agent_id = link.sub_agent_id if link is not None else AGENT_ID
-        await resolve_deferred_tool_call(
-            self.runtime,
-            agent_id=agent_id,
-            thread_id=thread_id,
-            tool_call_id=tool_call_id,
+        await self.runtime.resolve_tool_call(
+            agent_id,
+            thread_id,
+            tool_call_id,
             approved=approved,
             answer=answer,
             payload=payload,
         )
-        # The durable record is terminal as soon as the resolution lands,
-        # even though the workflow correctly remains behind the group barrier.
-        # Publish that persisted partial progress immediately so the demo can
-        # show calls resolving independently. ``finalize_tool_group`` emits the
-        # same idempotent lifecycle event once the whole group is ready.
-        record = await self.stores.tool_calls.get(tool_call_id)
-        thread = await self.stores.threads.get(agent_id, thread_id)
-        result = (
-            ToolResult.ok(record.result)
-            if record.status is ToolCallStatus.COMPLETED
-            else ToolResult.fail(str(record.result))
-        )
-        await self.hooks_factory(thread).on_tool_resolved(tool_call_id, result, record.turn_id)
 
     async def handle_run_completion(self, completion: RunCompletion) -> None:
         """Resolve a parent task after a persisted child run completes.
@@ -249,21 +229,14 @@ class DemoCoordinator:
             "text": text,
             "subagent": subagent if isinstance(subagent, str) else completion.agent_id,
         }
-        try:
-            await resolve_deferred_tool_call(
-                self.runtime,
-                agent_id=parent_call.agent_id,
-                thread_id=thread.parent_thread_id,
-                tool_call_id=parent_call.id,
-                approved=completion.succeeded,
-                answer=json.dumps(envelope),
-            )
-        except ToolResolutionStaleError:
-            # The helper already reconciled the projection. Treat stale parent
-            # activity identity as a completed repair, not a retryable failure.
-            pass
-        finally:
-            self.registry.pop(completion.thread_id)
+        await self.runtime.resolve_tool_call(
+            parent_call.agent_id,
+            thread.parent_thread_id,
+            parent_call.id,
+            approved=completion.succeeded,
+            answer=json.dumps(envelope),
+        )
+        self.registry.pop(completion.thread_id)
 
     # ─── Shutdown ───────────────────────────────────────────────────
 

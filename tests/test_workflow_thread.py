@@ -27,8 +27,7 @@ from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime.temporal.activities import TemporalRuntimeActivities
 from actant.runtime.temporal.types import (
-    ExecuteOutcome,
-    ExecuteStatus,
+    DeferredToolResolution,
     InboundMessage,
     ThreadInput,
 )
@@ -362,7 +361,7 @@ async def test_terminal_tool_completes_without_followup_llm_turn() -> None:
     await _run(body, agent=agent)
 
 
-# === tool turn (WAIT → external resolution via complete_activity_by_id) ===
+# === tool turn (WAIT → durable resolution signal) ===
 
 
 class _ApprovalInvocation(BaseToolInvocation[JSONObject, object]):
@@ -388,17 +387,8 @@ class _ApprovalTool(BaseDeclarativeTool):
 
 
 @pytest.mark.asyncio
-async def test_wait_tool_parks_until_external_completion() -> None:
-    """WAIT-decision tools are handled via async activity completion.
-
-    The workflow fires ``await_external_resolution`` which stamps
-    ``(workflow_id, activity_id)`` onto the tool_call record and parks
-    via ``raise_complete_async``. Test delivers the resolution by:
-    1. Persisting the result to the record (mirrors what
-       ``TemporalRuntimeClient.resolve_deferred_tool_call`` does in production).
-    2. Calling ``client.get_async_activity_handle(...).complete(...)``
-       to unblock the workflow's ``await``.
-    """
+async def test_wait_tool_suspends_until_resolution_signal() -> None:
+    """A durable signal wakes a suspended deferred-tool coroutine."""
     tool_call = _tool_call("needs_approval")
     agent = _agent(
         FakeLLM(
@@ -420,42 +410,17 @@ async def test_wait_tool_parks_until_external_completion() -> None:
             start_signal_args=[InboundMessage(content="please approve")],
         )
 
-        async def has_temporal_handle() -> bool:
+        async def is_waiting() -> bool:
             try:
                 rec = await s.stores.tool_calls.get(tool_call.id)
             except KeyError:
                 return False
-            return (
-                rec.status == ToolCallStatus.WAITING
-                and rec.temporal_workflow_id is not None
-                and rec.temporal_activity_id is not None
-            )
+            return rec.status == ToolCallStatus.WAITING
 
-        # Wait for await_external_resolution to park: status=WAITING +
-        # temporal handle stamped.
-        await _wait_for(has_temporal_handle)
-        record = await s.stores.tool_calls.get(tool_call.id)
-        assert record.temporal_workflow_id is not None
-        assert record.temporal_activity_id is not None
-
-        # Deliver the resolution: persist result + complete the activity.
-        # This mirrors what ``TemporalRuntimeClient.resolve_deferred_tool_call`` does in
-        # production. (Direct calls here for explicit testing of the
-        # Temporal mechanics.)
-        await s.stores.tool_calls.update_status(
-            tool_call.id,
-            ToolCallStatus.COMPLETED,
-            result={"approved": True, "answer": "ok"},
-        )
-        async_handle = client.get_async_activity_handle(
-            workflow_id=record.temporal_workflow_id,
-            activity_id=record.temporal_activity_id,
-        )
-        await async_handle.complete(
-            ExecuteOutcome(
-                tool_call_id=tool_call.id,
-                status=ExecuteStatus.COMPLETED.value,
-            )
+        await _wait_for(is_waiting)
+        await handle.signal(
+            AgentThreadWorkflow.resolve_tool,
+            DeferredToolResolution(tool_call.id, approved=True, answer="ok"),
         )
 
         async def has_second_assistant() -> bool:
@@ -468,6 +433,49 @@ async def test_wait_tool_parks_until_external_completion() -> None:
         # Last assistant message should be the post-resolve continuation.
         assistants = [m for m in messages if m.role == "assistant"]
         assert assistants[-1].content == "approved!"
+
+        await handle.signal(AgentThreadWorkflow.cancel)
+        await asyncio.wait_for(handle.result(), timeout=5.0)
+
+    await _run(body, agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_wait_tool_timeout_is_a_durable_workflow_timer() -> None:
+    tool_call = _tool_call("needs_approval")
+    agent = _agent(
+        FakeLLM(
+            [
+                FakeResponse(tool_calls=[tool_call]),
+                FakeResponse(text="continued after timeout"),
+            ]
+        ),
+        tools=[_ApprovalTool()],
+    )
+
+    async def body(s: _RunSetup, client) -> None:  # type: ignore[no-untyped-def]
+        handle = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(
+                _AGENT,
+                _THREAD,
+                max_turns_per_run=5,
+                external_resolution_timeout_seconds=0,
+            ),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="wait")],
+        )
+
+        async def continued() -> bool:
+            messages = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
+            return any(message.content == "continued after timeout" for message in messages)
+
+        await _wait_for(continued)
+        record = await s.stores.tool_calls.get(tool_call.id)
+        assert record.status is ToolCallStatus.FAILED
+        assert "timed out" in str(record.result).lower()
 
         await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
@@ -508,8 +516,6 @@ async def test_mixed_allow_and_wait_group_continues_only_after_resolution() -> N
             return (
                 allowed_record.status == ToolCallStatus.COMPLETED
                 and deferred_record.status == ToolCallStatus.WAITING
-                and deferred_record.temporal_workflow_id is not None
-                and deferred_record.temporal_activity_id is not None
             )
 
         await _wait_for(allowed_done_deferred_waiting)
@@ -517,23 +523,9 @@ async def test_mixed_allow_and_wait_group_continues_only_after_resolution() -> N
         assert [message.role for message in before] == ["user", "assistant"]
         assert not any(message.content == "group continued exactly once" for message in before)
 
-        deferred_record = await s.stores.tool_calls.get(deferred.id)
-        await s.stores.tool_calls.update_status(
-            deferred.id,
-            ToolCallStatus.COMPLETED,
-            result={"approved": True},
-        )
-        assert deferred_record.temporal_workflow_id is not None
-        assert deferred_record.temporal_activity_id is not None
-        activity_handle = client.get_async_activity_handle(
-            workflow_id=deferred_record.temporal_workflow_id,
-            activity_id=deferred_record.temporal_activity_id,
-        )
-        await activity_handle.complete(
-            ExecuteOutcome(
-                tool_call_id=deferred.id,
-                status=ExecuteStatus.COMPLETED.value,
-            )
+        await handle.signal(
+            AgentThreadWorkflow.resolve_tool,
+            DeferredToolResolution(deferred.id, approved=True),
         )
 
         async def continued() -> bool:

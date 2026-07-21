@@ -23,9 +23,8 @@ pattern is:
    - Implements a ``spawn_subagent`` method that registers a new
      :class:`SubThreadLink` BEFORE calling ``runtime.send_message``
      (so the hook factory sees the relationship synchronously).
-   - Implements a single ``resolve_deferred_tool_call`` entry point (used by
-     both user-driven and sub-thread-completion resolves), funneling
-     through :func:`resolve_deferred_tool_call` here for state reconciliation.
+   - Routes both user-driven and sub-thread-completion resolutions through
+     ``runtime.resolve_tool_call``.
 
 See ``docs/coordinator-guide.md`` for the full pattern with code,
 and the ``examples/demo/`` directory in the actant repo for the canonical
@@ -36,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from actant.core import JSONObject
 from actant.runtime.events import (
@@ -48,10 +47,6 @@ from actant.runtime.events import (
 from actant.runtime.events import EventPublisher
 from actant.runtime.types.threads import AgentThread
 
-if TYPE_CHECKING:
-    from actant.runtime.runtime import AgentRuntime
-
-
 __all__ = [
     "HookFactory",
     "ListenerFactory",
@@ -59,7 +54,6 @@ __all__ = [
     "SubThreadRegistry",
     "publishing_hooks_factory",
     "publishing_listener_factory",
-    "resolve_deferred_tool_call",
 ]
 
 
@@ -202,44 +196,3 @@ def publishing_listener_factory(
         )
 
     return factory
-
-
-async def resolve_deferred_tool_call(
-    runtime: "AgentRuntime",
-    *,
-    agent_id: str,
-    thread_id: str,
-    tool_call_id: str,
-    approved: bool | None = None,
-    answer: str = "",
-    payload: dict[str, Any] | None = None,
-) -> None:
-    """Resolve a deferred tool call with state reconciliation.
-
-    Thin wrapper over ``runtime.resolve_deferred_tool_call`` that gives
-    apps ONE entry point for resolving deferreds — whether the
-    source is user-driven (DeferredPanel POST → HTTP route → coordinator →
-    this function) or sub-thread-completion driven (retryable run-completion
-    handler → coordinator → this function).
-
-    Funneling both paths through here pays off when state diverges:
-    ``runtime.resolve_deferred_tool_call`` raises
-    :class:`actant.runtime.exceptions.ToolResolutionStaleError` if
-    Temporal has lost the parked activity (see ``temporal/client.py``).
-    The store is reconciled to FAILED before the error fires, so callers
-    can catch the typed error and surface a useful message without
-    leaving stale WAITING state behind.
-
-    Apps that need to do additional work BEFORE the resolve (re-register
-    an agent definition, look up workspace context, etc) should NOT
-    extend this function — write your own ``coordinator.resolve_deferred_tool_call``
-    that does the prep work and then calls THIS function.
-    """
-    await runtime.resolve_deferred_tool_call(
-        agent_id,
-        thread_id,
-        tool_call_id,
-        approved=approved,
-        answer=answer,
-        payload=payload,
-    )

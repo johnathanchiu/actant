@@ -118,7 +118,7 @@ async function main() {
           const body = resolveBodyFor(mode, ev.data.wait_kind, ev.data.wait_payload)
           // Sub-thread waits resolve via the SUB thread's URL (the
           // resolve route's `thread_id` segment is what tells the
-          // coordinator which agent's runtime owns the parked activity).
+          // coordinator which agent owns the waiting tool call).
           const resolveThreadId = ev.thread_id
           console.log(
             `+${pad(Date.now() - t0)}ms (auto-resolve thread=${resolveThreadId.slice(0, 16)}) ${JSON.stringify(body)}`,

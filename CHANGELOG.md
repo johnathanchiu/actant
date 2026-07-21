@@ -6,6 +6,14 @@ affect users.
 
 ## Unreleased
 
+### Changed
+
+- Replaced deferred async-activity completion with durable workflow signals
+  and conditions. Human waits now require no application polling or waiting
+  activity, and only the workflow may advance an agent run.
+- Renamed the public resolution command to `AgentRuntime.resolve_tool_call`.
+- Simplified tool-call projections by removing Temporal activity routing IDs.
+
 ## 0.2.0 - 2026-07-20
 
 ### Added

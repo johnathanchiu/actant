@@ -171,7 +171,7 @@ Avoid:
 If a tool waits, the product resolves it through the runtime facade:
 
 ```python
-await runtime.resolve_deferred_tool_call(
+await runtime.resolve_tool_call(
     agent_id,
     thread_id,
     tool_call_id,
@@ -181,8 +181,9 @@ await runtime.resolve_deferred_tool_call(
 ```
 
 Do not update tool-call rows yourself or continue the model inline from the
-approval endpoint. `resolve_deferred_tool_call` persists the resolution and completes the
-parked Temporal activity, allowing the existing workflow to resume normally.
+approval endpoint. `resolve_tool_call` signals the workflow, which persists the
+resolution and releases the durable tool-group barrier, allowing the existing
+workflow to resume normally.
 See [pauses and deferred work](pauses-and-resume.md) for details.
 
 ## Testing Tools

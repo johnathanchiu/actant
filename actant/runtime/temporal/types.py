@@ -28,12 +28,8 @@ class TemporalRuntimeConfig:
     # Replay walks every event so very long histories slow workflow tasks
     # down. 5_000 is a starting point; tune via load test.
     history_size_threshold: int = 5_000
-    # How long ``await_external_resolution`` activities are allowed to
-    # remain pending before Temporal considers them dead. Deferred tools
-    # (human approval, async coordination) need a generous bound — set
-    # to whatever the longest legitimate human-in-the-loop wait could
-    # take. The workflow consumes zero compute during the wait so this
-    # is purely a "mark dead and surface to operator" timeout.
+    # How long a workflow may remain durably suspended for an external
+    # tool resolution. The workflow consumes no worker compute while waiting.
     external_resolution_timeout_seconds: int = 7 * 24 * 60 * 60  # 7 days
 
 
@@ -61,7 +57,7 @@ class ActivityName(StrEnum):
     RUN_TURN = "run_turn"
     ADMIT_TOOL = "admit_tool"
     EXECUTE_TOOL = "execute_tool"
-    AWAIT_EXTERNAL_RESOLUTION = "await_external_resolution"
+    RESOLVE_TOOL = "resolve_tool"
     FINALIZE_TOOL_GROUP = "finalize_tool_group"
     FINALIZE_RUN = "finalize_run"
     APPLY_THREAD_CANCELLATION = "apply_thread_cancellation"
@@ -72,15 +68,13 @@ class SignalName(StrEnum):
     ``handle.signal``. The strings match the ``@workflow.signal``
     method names on ``AgentThreadWorkflow``.
 
-    Deferred tool resolution does NOT go through a workflow signal —
-    it lands directly on the ``await_external_resolution`` activity via
-    Temporal's async-activity-completion path
-    (``client.complete_activity_by_id``). The workflow doesn't even
-    know about pending resolutions; it just awaits its activity handles.
+    Deferred tool resolutions arrive as durable signals. Temporal records
+    them even when the workflow has not reached its wait condition yet.
     """
 
     INBOUND = "inbound"
     CANCEL = "cancel"
+    RESOLVE_TOOL = "resolve_tool"
 
 
 class QueryName(StrEnum):
@@ -109,8 +103,7 @@ class AdmitDecision(StrEnum):
 
     ``ALLOW`` → workflow fires ``execute_tool``.
     ``BLOCK`` → terminal; admit already persisted the failed result.
-    ``WAIT`` → workflow fires ``await_external_resolution``; an external
-    caller will deliver the result via ``complete_activity_by_id``.
+    ``WAIT`` → workflow suspends until a durable resolution signal arrives.
     """
 
     ALLOW = "allow"
@@ -119,7 +112,7 @@ class AdmitDecision(StrEnum):
 
 
 class ExecuteStatus(StrEnum):
-    """Output of ``execute_tool`` and ``await_external_resolution``."""
+    """Output of ``execute_tool`` and ``resolve_tool``."""
 
     COMPLETED = "completed"
     FAILED = "failed"
@@ -242,8 +235,8 @@ class ExecuteInput:
 
 @dataclass(frozen=True)
 class ExecuteOutcome:
-    """Structured output of ``execute_tool`` and
-    ``await_external_resolution``. Activity is infallible — any
+    """Structured output of ``execute_tool`` and ``resolve_tool``.
+    Activities are infallible — any
     unexpected exception is mapped to ``status=FAILED`` with the
     error captured in ``result``."""
 
@@ -253,21 +246,27 @@ class ExecuteOutcome:
 
 
 @dataclass(frozen=True)
-class AwaitExternalResolutionInput:
-    """Input for the ``await_external_resolution`` activity.
+class DeferredToolResolution:
+    """External input delivered durably to a thread workflow."""
 
-    The activity persists ``(workflow_id, activity_id)`` from
-    ``activity.info()`` onto the tool_call record so external callers
-    (HTTP APIs, approval UIs) can later complete this activity with a
-    result via ``client.complete_activity_by_id``. The activity body
-    calls ``raise_complete_async`` and returns; the activity remains
-    "running" in Temporal until the external completion lands.
+    tool_call_id: str
+    approved: bool | None = None
+    answer: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolveToolInput:
+    """Persist a deferred tool result after its workflow is awakened.
+
+    ``resolution=None`` represents expiration of the durable workflow wait.
     """
 
     agent_id: str
     thread_id: str
     run_id: str
     tool_call_id: str
+    resolution: DeferredToolResolution | None
 
 
 @dataclass(frozen=True)

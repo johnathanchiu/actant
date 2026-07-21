@@ -407,7 +407,7 @@ test('surfaces a SUB-thread ask_user (researcher delegated ask_user)', () => {
 
 test('resolving a sub-thread wait POSTs against the SUB thread id, not main', async () => {
   // The resolve route's thread_id is what the coordinator uses to
-  // derive which agent owns the parked activity. For sub-thread
+  // derive which agent owns the waiting tool call. For sub-thread
   // waits this MUST be the sub id; otherwise the main agent's
   // runtime is asked to resolve a tool call it doesn't own.
   const onResolve = mock(

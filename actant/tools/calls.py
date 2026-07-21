@@ -32,10 +32,3 @@ class ToolCallRecord:
     prompt: str | None = None
     wait_request: JSONObject | None = None
     result: object | None = None
-    # Set when the tool's ``can_execute`` returns ``WAIT`` and the
-    # workflow fires ``await_external_resolution`` for it. The activity
-    # stamps these from ``activity.info()`` so external callers can
-    # find the activity later via ``client.complete_activity_by_id``
-    # to deliver the resolution.
-    temporal_workflow_id: str | None = None
-    temporal_activity_id: str | None = None

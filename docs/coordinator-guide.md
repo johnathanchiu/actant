@@ -37,7 +37,7 @@ simpler thread model.
 ## What actant DOES provide
 
 [`actant.runtime.coordinator`](../actant/runtime/coordinator.py)
-ships four primitives:
+ships three primitives:
 
 1. **`SubThreadLink`** — dataclass capturing a single parent ↔ sub
    relationship.
@@ -45,10 +45,6 @@ ships four primitives:
 3. **`publishing_hooks_factory`** / **`publishing_listener_factory`** —
    build `AgentRuntime` factories that auto-dual-publish sub-thread
    events to the parent's SSE channel.
-4. **`resolve_deferred_tool_call`** — thin wrapper over
-   `AgentRuntime.resolve_deferred_tool_call` that surfaces
-   `ToolResolutionStaleError` when Temporal has lost the activity
-   so apps don't keep WAITING state alive forever.
 
 Plus a related framework fix:
 
@@ -67,9 +63,7 @@ from actant.runtime.coordinator import (
     SubThreadRegistry,
     publishing_hooks_factory,
     publishing_listener_factory,
-    resolve_deferred_tool_call,
 )
-from actant.runtime.exceptions import ToolResolutionStaleError
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
 from actant.tools.task import TaskTool
 
@@ -170,20 +164,13 @@ class MyCoordinator:
             completion.outcome,
         )
         envelope = {"text": final_text, "subagent": completion.agent_id}
-        try:
-            await resolve_deferred_tool_call(
-                self.runtime,
-                agent_id=parent_call.agent_id,
-                thread_id=child.parent_thread_id,
-                tool_call_id=parent_call.id,
-                approved=completion.succeeded,
-                answer=json.dumps(envelope),
-            )
-        except ToolResolutionStaleError:
-            # Parent's activity is gone (workflow cancelled / Temporal
-            # reset). The store is already marked FAILED — nothing
-            # more to do.
-            pass
+        await self.runtime.resolve_tool_call(
+            parent_call.agent_id,
+            child.parent_thread_id,
+            parent_call.id,
+            approved=completion.succeeded,
+            answer=json.dumps(envelope),
+        )
 
     # Worker wiring is separate from AgentRuntime's client role.
     # worker = TemporalRuntimeWorker(
@@ -205,22 +192,14 @@ class MyCoordinator:
         answer="",
         payload=None,
     ):
-        try:
-            await resolve_deferred_tool_call(
-                self.runtime,
-                agent_id=agent_id,
-                thread_id=thread_id,
-                tool_call_id=tool_call_id,
-                approved=approved,
-                answer=answer,
-                payload=payload,
-            )
-        except ToolResolutionStaleError as exc:
-            # Surface a clean error upward. The store is reconciled;
-            # the UI should pull fresh thread state.
-            raise RuntimeError(
-                f"This deferred tool call is no longer pending: {exc.reason}"
-            ) from exc
+        await self.runtime.resolve_tool_call(
+            agent_id,
+            thread_id,
+            tool_call_id,
+            approved=approved,
+            answer=answer,
+            payload=payload,
+        )
 ```
 
 ## What you DON'T have to do
@@ -229,10 +208,8 @@ class MyCoordinator:
   `RunCompletionHandler` owns retryable completion integration.
 - Maintain a side-channel map of "is this thread a sub-thread"
   (the registry IS that map; the factories consult it).
-- Handle "activity not found" errors from Temporal yourself (the
-  runtime reconciles + raises a typed error).
 - Build separate code paths for user-driven vs sub-thread-driven
-  resolves (one `resolve_deferred_tool_call` entry, two callers).
+  resolves (one `resolve_tool_call` entry, two callers).
 
 ## What you still own
 
