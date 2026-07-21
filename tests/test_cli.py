@@ -42,6 +42,9 @@ def test_server_start_detached_forwards_ports(monkeypatch, capsys) -> None:  # t
         "args": [
             "up",
             "--detach",
+            "--wait",
+            "--wait-timeout",
+            "60",
             "--remove-orphans",
             "temporal-postgres",
             "temporal",

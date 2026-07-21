@@ -67,30 +67,13 @@ from contextlib import suppress
 from uuid import uuid4
 
 from actant import AgentDefinition
-from actant.llm.messages import Message
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime import AgentRuntime, TemporalRuntimeConfig, TemporalRuntimeWorker
-from actant.runtime.events import AgentThreadHooks, StreamListener
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools import ToolRegistry
 
-responses: asyncio.Queue[Message | Exception] = asyncio.Queue()
 stores = InMemoryRuntimeStores()
 config = TemporalRuntimeConfig(address="localhost:7233")
-
-
-class Hooks(AgentThreadHooks):
-    async def on_assistant_message(self, message: Message) -> None:
-        if not message.tool_calls:
-            await responses.put(message)
-
-    async def on_error(self, error: Exception) -> None:
-        await responses.put(error)
-
-
-class Stream(StreamListener):
-    async def on_text_delta(self, delta: str) -> None:
-        print(delta, end="", flush=True)
 
 
 agent = AgentDefinition(
@@ -110,24 +93,29 @@ agent = AgentDefinition(
 agents = {agent.id: agent}
 
 runtime = AgentRuntime(stores=stores, agents=agents, temporal=config)
-worker = TemporalRuntimeWorker(
-    stores=stores,
-    agents=agents,
-    config=config,
-    hooks_factory=lambda _thread: Hooks(),
-    listener_factory=lambda _thread: Stream(),
-)
+worker = TemporalRuntimeWorker(stores=stores, agents=agents, config=config)
+
+
+async def observe(thread):
+    async for event in thread.events():
+        if event.type == "text_delta" and event.text:
+            print(event.text, end="", flush=True)
+        elif event.type == "assistant_message":
+            return event.text
+        elif event.type == "error":
+            raise RuntimeError(str(event.data.get("message", "agent failed")))
 
 
 async def main() -> None:
     worker_task = asyncio.create_task(worker.run())
     try:
+        thread = runtime.thread(agent.id, uuid4())
+        observer_task = asyncio.create_task(observe(thread))
+        await asyncio.sleep(0)  # start the live subscription before sending
         print("Streaming: ", end="", flush=True)
-        await runtime.send_message(agent.id, uuid4().hex, "hello")
-        response = await asyncio.wait_for(responses.get(), timeout=60)
-        if isinstance(response, Exception):
-            raise response
-        print(f"\nFinal: {response.content}")
+        await thread.send("hello")
+        response = await asyncio.wait_for(observer_task, timeout=60)
+        print(f"\nFinal: {response}")
     finally:
         worker_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -140,9 +128,10 @@ asyncio.run(main())
 # Final: Hello from Actant.
 ```
 
-`send_message()` durably submits work and returns immediately. `StreamListener`
-receives live deltas, hooks receive persisted lifecycle events, and the message
-store provides durable reload.
+`thread.send()` durably submits work and returns immediately. `thread.events()`
+provides typed live deltas and lifecycle events; `thread.messages()` provides
+the persisted reload path. Custom hooks and listeners remain available for
+advanced worker-side callbacks.
 
 The runtime has three write-side entry points:
 

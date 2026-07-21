@@ -159,7 +159,7 @@ def _server(args: argparse.Namespace) -> int:
         if not args.no_ui:
             compose_args.append("temporal-ui")
         if args.detach:
-            compose_args.insert(1, "--detach")
+            compose_args[1:1] = ["--detach", "--wait", "--wait-timeout", "60"]
         result = run(
             compose_args,
             env={

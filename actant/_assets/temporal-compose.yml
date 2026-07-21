@@ -26,6 +26,22 @@ services:
       POSTGRES_PWD: temporal
     ports:
       - "${ACTANT_TEMPORAL_PORT:-7233}:7233"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "temporal",
+          "operator",
+          "namespace",
+          "describe",
+          "--namespace",
+          "default",
+          "--address",
+          "temporal:7233",
+        ]
+      interval: 1s
+      timeout: 5s
+      retries: 60
 
   temporal-ui:
     image: "${ACTANT_TEMPORAL_UI_IMAGE:-temporalio/ui:2.34.0}"

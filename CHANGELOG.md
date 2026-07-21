@@ -6,6 +6,15 @@ affect users.
 
 ## Unreleased
 
+## 0.3.1 - 2026-07-21
+
+### Changed
+
+- Updated the main quickstart to use thread-scoped typed events and automatic
+  worker publishing instead of custom hook and stream-listener classes.
+- Made detached local-server startup wait until Temporal's `default` namespace
+  is ready, preventing immediate clients from racing container initialization.
+
 ## 0.3.0 - 2026-07-21
 
 ### Added
@@ -67,7 +76,8 @@ affect users.
 - Optional OpenAI, Anthropic, Gemini, and Qwen provider adapters.
 - Deterministic FastAPI and React demo with streaming and approval flows.
 
-[Unreleased]: https://github.com/johnathanchiu/actant/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/johnathanchiu/actant/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/johnathanchiu/actant/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/johnathanchiu/actant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/johnathanchiu/actant/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/johnathanchiu/actant/releases/tag/v0.1.0
