@@ -87,6 +87,8 @@ function ChatPane({
   onMessageSent,
   scrollRef,
 }: ChatPaneProps) {
+  const visibleModel =
+    agent?.model === 'demo/deterministic' ? null : (agent?.model ?? null)
   const {
     entries,
     subThreads,
@@ -131,12 +133,12 @@ function ChatPane({
             ) : historyError ? (
               <ErrorStage title="Could not load thread history." detail={historyError} />
             ) : (
-              <EmptyStage model={agent?.model ?? null} tools={agent?.tools ?? []} />
+              <EmptyStage />
             )
           ) : (
             <MessageList
               entries={entries}
-              model={agent?.model ?? null}
+              model={visibleModel}
               scrollRef={scrollRef}
               subThreads={subThreads}
             />

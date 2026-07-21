@@ -6,15 +6,17 @@ async function send(page: Page, text: string) {
   await page.getByRole('button', { name: 'Send' }).click()
 }
 
+async function recordingPause(page: Page, milliseconds = 1_000) {
+  if (process.env.ACTANT_RECORD_VIDEO === '1') {
+    await page.waitForTimeout(milliseconds)
+  }
+}
+
 test('exercises streaming, durable approval, questions, and nested subagents', async ({
   page,
 }) => {
   await page.goto('/')
   await expect(page.getByText('connected', { exact: true })).toBeVisible()
-  await expect(
-    page.getByText('demo/deterministic', { exact: true }),
-  ).toBeVisible()
-
   await send(page, 'Show me an approval')
   await expect(page.getByText('approval needed', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Approve' }).click()
@@ -77,6 +79,7 @@ test('has a natural deferred question and parallel weather tools', async ({
 }) => {
   await page.goto('/')
   await expect(page.getByText('connected', { exact: true })).toBeVisible()
+  await recordingPause(page)
 
   await send(page, 'Help me choose a pizza for tonight')
   await expect(page.getByText('agent is asking', { exact: true })).toBeVisible()
@@ -85,16 +88,19 @@ test('has a natural deferred question and parallel weather tools', async ({
       exact: true,
     }),
   ).toBeVisible()
+  await recordingPause(page, 1_500)
   await page.getByRole('button', { name: 'Surprise me' }).click()
   await expect(
     page.getByText('Done — the result came back', { exact: false }),
   ).toBeVisible()
+  await recordingPause(page)
 
   await send(page, 'What is the weather in New York, London, and Tokyo?')
   await expect(page.getByRole('button', { name: /^get_weather/ })).toHaveCount(
     3,
   )
   await expect(page.getByText(/Share New York.*weather service/)).toBeVisible()
+  await recordingPause(page, 1_500)
   await page.getByRole('button', { name: 'Approve' }).click()
   await expect(page.getByText(/Share London.*weather service/)).toBeVisible({
     timeout: 15_000,
@@ -102,6 +108,7 @@ test('has a natural deferred question and parallel weather tools', async ({
   await expect(
     page.getByText('Done — the result came back', { exact: false }),
   ).toHaveCount(1)
+  await recordingPause(page, 1_200)
   await page.getByRole('button', { name: 'Approve' }).click()
   await expect(page.getByText(/Share Tokyo.*weather service/)).toBeVisible({
     timeout: 15_000,
@@ -109,10 +116,12 @@ test('has a natural deferred question and parallel weather tools', async ({
   await expect(
     page.getByText('Done — the result came back', { exact: false }),
   ).toHaveCount(1)
+  await recordingPause(page, 1_200)
   await page.getByRole('button', { name: 'Approve' }).click()
   await expect(
     page.getByText('Done — the result came back', { exact: false }),
   ).toHaveCount(2, { timeout: 15_000 })
+  await recordingPause(page, 2_000)
 })
 
 test('continues the same thread after cancelling a partially resolved group', async ({
