@@ -32,12 +32,6 @@ package:
     uv build --clear
     uvx twine check dist/*
 
-# Start Temporal and run the executor smoke test.
-temporal-smoke:
-    just sync
-    just server start --detach
-    uv run --extra dev --extra providers python scripts/temporal_smoke.py
-
 # Install demo dependencies (Python server + JS UI).
 demo-sync:
     cd examples/demo/server && uv sync
