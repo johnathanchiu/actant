@@ -112,9 +112,7 @@ class SubThreadRegistry:
         time so the registry only holds active sub-threads."""
         return self._links.pop(sub_thread_id, None)
 
-    def find_by_parent_tool_call(
-        self, parent_tool_call_id: str
-    ) -> SubThreadLink | None:
+    def find_by_parent_tool_call(self, parent_tool_call_id: str) -> SubThreadLink | None:
         """Look up a sub-thread by the tool call that spawned it.
         Useful when the parent's deferred resolution flow needs to
         find the sub-thread it's waiting on."""

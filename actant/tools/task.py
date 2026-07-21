@@ -45,9 +45,7 @@ from actant.tools.base import (
 class SubagentInvoker(Protocol):
     """Sync mode: ``invoke`` returns a complete ``ToolResult``."""
 
-    async def invoke(
-        self, name: str, message: str, context: JSONObject
-    ) -> ToolResult: ...
+    async def invoke(self, name: str, message: str, context: JSONObject) -> ToolResult: ...
 
 
 class SubagentSpawner(Protocol):
@@ -131,8 +129,7 @@ class TaskTool:
     def schema(self) -> ToolSchema:
         if self.subagent_choices:
             choice_lines = "\n".join(
-                f"  - {n}: {self.subagent_descriptions.get(n, '')}"
-                for n in self.subagent_choices
+                f"  - {n}: {self.subagent_descriptions.get(n, '')}" for n in self.subagent_choices
             )
             description = (
                 "Delegate a focused, well-scoped task to a specialist subagent. "
@@ -172,9 +169,7 @@ class TaskTool:
     # ``on_resolve`` structurally; expose both and gate their behavior on
     # ``self.deferred`` so synchronous TaskTool instances use ALLOW.
 
-    async def can_execute(
-        self, call: Any, invocation: Any, context: Any
-    ) -> ToolDecision:
+    async def can_execute(self, call: Any, invocation: Any, context: Any) -> ToolDecision:
         del invocation, context
         if not self.deferred:
             return ToolDecision.allow()
@@ -185,9 +180,7 @@ class TaskTool:
             return ToolDecision.block(reason="`subagent` is required")
         if self.subagent_choices and subagent not in self.subagent_choices:
             valid = ", ".join(self.subagent_choices)
-            return ToolDecision.block(
-                reason=f"Unknown subagent {subagent!r}; valid: {valid}"
-            )
+            return ToolDecision.block(reason=f"Unknown subagent {subagent!r}; valid: {valid}")
         if not isinstance(message, str) or not message.strip():
             return ToolDecision.block(reason="`message` is required")
         ctx: JSONObject = args.get("context") if isinstance(args.get("context"), dict) else {}  # type: ignore[assignment]
@@ -243,9 +236,7 @@ class TaskTool:
         if not self.deferred:
             # Shouldn't happen in sync mode (no WAIT was returned), but
             # be defensive: just echo the resolution back.
-            return ToolResult.ok(
-                {"approved": resolution.approved, "answer": resolution.answer}
-            )
+            return ToolResult.ok({"approved": resolution.approved, "answer": resolution.answer})
         if resolution.approved is False:
             return ToolResult.fail(resolution.answer or "Subagent task failed")
         if not resolution.answer:
@@ -269,11 +260,7 @@ class TaskInvocation(BaseToolInvocation[JSONObject, object]):
 
     def get_description(self) -> str:
         subagent = self.params.get("subagent")
-        return (
-            f"Delegate task to {subagent}"
-            if isinstance(subagent, str)
-            else "Delegate task"
-        )
+        return f"Delegate task to {subagent}" if isinstance(subagent, str) else "Delegate task"
 
     async def execute(self) -> ToolResult:
         if self._invoker is None:

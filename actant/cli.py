@@ -25,18 +25,14 @@ def _add_server_overrides(parser: argparse.ArgumentParser, *, inherited: bool) -
     parser.add_argument(
         "--project-name",
         default=(
-            default
-            if inherited
-            else os.getenv("ACTANT_SERVER_PROJECT", _DEFAULT_COMPOSE_PROJECT)
+            default if inherited else os.getenv("ACTANT_SERVER_PROJECT", _DEFAULT_COMPOSE_PROJECT)
         ),
         help="override the Compose project name (ACTANT_SERVER_PROJECT)",
     )
     parser.add_argument(
         "--compose-command",
         default=(
-            default
-            if inherited
-            else os.getenv("ACTANT_SERVER_COMPOSE_COMMAND", "docker compose")
+            default if inherited else os.getenv("ACTANT_SERVER_COMPOSE_COMMAND", "docker compose")
         ),
         help=(
             "override the Compose command, such as 'podman compose' "

@@ -132,9 +132,7 @@ class ToolCallStore(Protocol):
         self, thread_id: str, turn_id: str
     ) -> list[ToolCallRecord]: ...
 
-    async def get_open_for_thread(
-        self, agent_id: str, thread_id: str
-    ) -> list[ToolCallRecord]: ...
+    async def get_open_for_thread(self, agent_id: str, thread_id: str) -> list[ToolCallRecord]: ...
 
 
 class RuntimeStores(Protocol):

@@ -226,9 +226,7 @@ async def test_cancel_writes_placeholder_for_waiting_tool_calls() -> None:
             for tc in m.tool_calls
         }
         tool_result_ids = {
-            m.tool_call_id
-            for m in messages
-            if m.role == "tool" and m.tool_call_id is not None
+            m.tool_call_id for m in messages if m.role == "tool" and m.tool_call_id is not None
         }
         assert tool_call_ids == tool_result_ids, (
             f"orphans found: {tool_call_ids - tool_result_ids}"

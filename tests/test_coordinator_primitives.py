@@ -60,9 +60,7 @@ def test_registry_find_by_parent_tool_call() -> None:
 def test_registry_register_is_idempotent() -> None:
     reg = SubThreadRegistry()
     link_v1 = SubThreadLink("sub_1", "thread_a", "tc_1", "researcher")
-    link_v2 = SubThreadLink(
-        "sub_1", "thread_a", "tc_1", "researcher", subagent_name="researcher"
-    )
+    link_v2 = SubThreadLink("sub_1", "thread_a", "tc_1", "researcher", subagent_name="researcher")
     reg.register(link_v1)
     reg.register(link_v2)  # overwrite
     assert reg.get("sub_1") is link_v2

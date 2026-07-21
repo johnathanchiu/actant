@@ -259,9 +259,7 @@ async def test_duplicate_resolutions_use_the_first_signal() -> None:
         )
 
         async def is_terminal() -> bool:
-            return (
-                await s.stores.tool_calls.get(tool_call.id)
-            ).status is ToolCallStatus.COMPLETED
+            return (await s.stores.tool_calls.get(tool_call.id)).status is ToolCallStatus.COMPLETED
 
         await _wait_for(is_terminal)
         record = await s.stores.tool_calls.get(tool_call.id)
@@ -326,14 +324,13 @@ async def test_resolution_is_durable_while_no_worker_is_running() -> None:
             workflows=[AgentThreadWorkflow],
             activities=activities.all,
         ):
+
             async def resumed() -> bool:
                 messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
                 return any(message.content == "resumed" for message in messages)
 
             await _wait_for(resumed)
-            assert (
-                await stores.tool_calls.get(tool_call.id)
-            ).status is ToolCallStatus.COMPLETED
+            assert (await stores.tool_calls.get(tool_call.id)).status is ToolCallStatus.COMPLETED
             await runtime.cancel_thread(_AGENT, _THREAD)
 
 

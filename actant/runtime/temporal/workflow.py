@@ -323,12 +323,8 @@ class AgentThreadWorkflow:
         """Suspend until one external resolution arrives, then persist it."""
         try:
             await workflow.wait_condition(
-                lambda: (
-                    tool_call_id in self._tool_resolutions or self._cancelled
-                ),
-                timeout=timedelta(
-                    seconds=payload.external_resolution_timeout_seconds
-                ),
+                lambda: tool_call_id in self._tool_resolutions or self._cancelled,
+                timeout=timedelta(seconds=payload.external_resolution_timeout_seconds),
                 timeout_summary=f"resolve-tool-{tool_call_id}",
             )
         except asyncio.TimeoutError:

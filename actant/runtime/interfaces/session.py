@@ -16,9 +16,7 @@ class SessionStore(Protocol):
         multimodal (text + asset blocks)."""
         ...
 
-    async def save_assistant_message(
-        self, thread_id: str, parts: list[MessagePart]
-    ) -> str: ...
+    async def save_assistant_message(self, thread_id: str, parts: list[MessagePart]) -> str: ...
 
     async def update_tool_result(
         self, thread_id: str, tool_call_id: str, result: dict[str, object]

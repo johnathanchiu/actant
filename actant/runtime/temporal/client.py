@@ -81,9 +81,7 @@ class TemporalRuntimeClient:
             agent_id=agent_id,
             thread_id=thread_id,
             max_turns_per_run=agent_max_turns,
-            external_resolution_timeout_seconds=(
-                self.config.external_resolution_timeout_seconds
-            ),
+            external_resolution_timeout_seconds=(self.config.external_resolution_timeout_seconds),
             history_size_threshold=self.config.history_size_threshold,
         )
         await client.start_workflow(

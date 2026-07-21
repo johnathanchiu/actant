@@ -410,9 +410,7 @@ def _stream_keys(obj: object) -> list[str]:
 
 def _stream_tool_call_id(item: object) -> str:
     return (
-        getattr(item, "call_id", None)
-        or getattr(item, "id", None)
-        or f"call_{uuid.uuid4().hex}"
+        getattr(item, "call_id", None) or getattr(item, "id", None) or f"call_{uuid.uuid4().hex}"
     )
 
 

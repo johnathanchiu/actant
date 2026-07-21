@@ -35,9 +35,7 @@ def test_server_start_detached_forwards_ports(monkeypatch, capsys) -> None:  # t
 
     monkeypatch.setattr(cli, "_run_compose", fake_run)
 
-    result = cli.main(
-        ["server", "start", "--detach", "--port", "17233", "--ui-port", "18233"]
-    )
+    result = cli.main(["server", "start", "--detach", "--port", "17233", "--ui-port", "18233"])
 
     assert result == 0
     assert recorded == {

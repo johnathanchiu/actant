@@ -62,9 +62,7 @@ class RateLimiter:
                 self._evict(now)
                 tokens_in_window = sum(t for _, t in self._token_window)
                 requests_in_window = len(self._request_window)
-                fits_tokens = (
-                    tokens_in_window + estimated <= self._config.tokens_per_minute
-                )
+                fits_tokens = tokens_in_window + estimated <= self._config.tokens_per_minute
                 fits_requests = requests_in_window < self._config.requests_per_minute
                 if fits_tokens and fits_requests:
                     self._token_window.append((now, estimated))
@@ -96,10 +94,7 @@ class RateLimiter:
     ) -> float:
         # Find the earliest entry whose expiry would free enough budget.
         target = now
-        if (
-            tokens_in_window + estimated > self._config.tokens_per_minute
-            and self._token_window
-        ):
+        if tokens_in_window + estimated > self._config.tokens_per_minute and self._token_window:
             need = (tokens_in_window + estimated) - self._config.tokens_per_minute
             cumulative = 0
             for ts, t in self._token_window:
@@ -107,10 +102,7 @@ class RateLimiter:
                 if cumulative >= need:
                     target = max(target, ts)
                     break
-        if (
-            requests_in_window >= self._config.requests_per_minute
-            and self._request_window
-        ):
+        if requests_in_window >= self._config.requests_per_minute and self._request_window:
             target = max(target, self._request_window[0])
         # Wait until the target entry is older than the window, plus
         # a small slack so we re-check on the right side of the edge.

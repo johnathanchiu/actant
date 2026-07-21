@@ -541,9 +541,7 @@ async def test_mixed_allow_and_wait_group_continues_only_after_resolution() -> N
             "tool",
             "assistant",
         ]
-        assert sum(
-            message.content == "group continued exactly once" for message in after
-        ) == 1
+        assert sum(message.content == "group continued exactly once" for message in after) == 1
 
         await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
@@ -673,9 +671,7 @@ async def test_run_completion_handler_receives_persisted_boundary() -> None:
     completions: list[RunCompletion] = []
 
     async def handle(completion: RunCompletion) -> None:
-        thread = await setup.stores.threads.get(
-            completion.agent_id, completion.thread_id
-        )
+        thread = await setup.stores.threads.get(completion.agent_id, completion.thread_id)
         assert thread.active_run_id is None
         completions.append(completion)
 

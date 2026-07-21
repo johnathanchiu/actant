@@ -148,9 +148,7 @@ async def list_sub_threads(thread_id: str, request: Request) -> list[dict[str, A
 
 
 @router.post("/threads/{thread_id}/messages", status_code=202)
-async def send_message(
-    thread_id: str, body: SendMessageBody, request: Request
-) -> dict[str, str]:
+async def send_message(thread_id: str, body: SendMessageBody, request: Request) -> dict[str, str]:
     coord = get_coordinator(request)
     run_id = await coord.runtime.send_message(AGENT_ID, thread_id, body.content)
     return {"run_id": run_id, "thread_id": thread_id}
@@ -169,9 +167,7 @@ async def cancel_thread(thread_id: str, request: Request) -> None:
     await coord.runtime.cancel_thread(AGENT_ID, thread_id)
 
 
-@router.post(
-    "/threads/{thread_id}/tool_calls/{tool_call_id}/resolve", status_code=204
-)
+@router.post("/threads/{thread_id}/tool_calls/{tool_call_id}/resolve", status_code=204)
 async def resolve_tool_call(
     thread_id: str,
     tool_call_id: str,
@@ -222,9 +218,7 @@ def _preview_for_messages(messages: list[Any]) -> str:
             text = content.strip()
         elif isinstance(content, list):
             text = " ".join(
-                str(block.get("text", "")).strip()
-                for block in content
-                if isinstance(block, dict)
+                str(block.get("text", "")).strip() for block in content if isinstance(block, dict)
             ).strip()
         else:
             continue

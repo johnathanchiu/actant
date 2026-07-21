@@ -101,9 +101,7 @@ def parts_to_messages(parts: list[MessagePart]) -> list[Message]:
                     ),
                     thought_signature=part.signature,
                     extra_content=(
-                        {"google": {"thought_signature": part.signature}}
-                        if part.signature
-                        else {}
+                        {"google": {"thought_signature": part.signature}} if part.signature else {}
                     ),
                 )
             )

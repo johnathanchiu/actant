@@ -5,9 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import TypeAlias
 
-JSONValue: TypeAlias = (
-    str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
-)
+JSONValue: TypeAlias = str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
 JSONObject: TypeAlias = dict[str, JSONValue]
 
 

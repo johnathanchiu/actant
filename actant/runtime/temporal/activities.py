@@ -168,9 +168,7 @@ class TemporalRuntimeActivities:
             )
             await hooks.on_user_message(msg.content)
 
-        messages = await self.stores.messages.list_for_thread(
-            payload.agent_id, payload.thread_id
-        )
+        messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
         if self.message_preprocessor is not None:
             messages = await self.message_preprocessor(messages)
         context = TurnContext(
@@ -710,9 +708,7 @@ def _outcome_from_record(record: ToolCallRecord) -> ExecuteOutcome:
     result = _result_from_record(record)
     return ExecuteOutcome(
         tool_call_id=record.id,
-        status=(
-            ExecuteStatus.COMPLETED if result.is_success() else ExecuteStatus.FAILED
-        ).value,
+        status=(ExecuteStatus.COMPLETED if result.is_success() else ExecuteStatus.FAILED).value,
         terminal=bool(result.metadata.get("terminal")),
     )
 

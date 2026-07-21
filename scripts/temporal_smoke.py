@@ -21,9 +21,7 @@ async def wait_for_temporal(config: TemporalRuntimeConfig) -> None:
         except Exception as exc:  # pragma: no cover - diagnostic path
             last_error = exc
             await asyncio.sleep(1)
-    raise RuntimeError(
-        f"Temporal did not become ready at {config.address}"
-    ) from last_error
+    raise RuntimeError(f"Temporal did not become ready at {config.address}") from last_error
 
 
 async def main() -> None:
@@ -44,9 +42,7 @@ async def main() -> None:
 
     worker = TemporalRuntimeWorker(stores=stores, agents=agents, config=config)
     worker_task = asyncio.create_task(worker.run())
-    runtime = AgentRuntime(
-        stores=stores, agents=agents, temporal=config
-    )
+    runtime = AgentRuntime(stores=stores, agents=agents, temporal=config)
 
     try:
         await asyncio.sleep(0.5)
