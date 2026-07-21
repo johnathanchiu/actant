@@ -56,6 +56,11 @@ Resolution re-enters the existing workflow; it must not call the model directly
 from the HTTP endpoint. Tools may implement `on_resolve` to translate the
 external `ToolResolution` into the `ToolResult` the model receives.
 
+Resolution is idempotent after a call becomes terminal. A missing or
+wrong-thread ID raises `ToolCallNotFoundError`; an existing call that is not
+waiting raises `ToolCallNotWaitingError`. HTTP adapters should normally map
+those to `404` and `409` respectively.
+
 ## Timeouts
 
 `TemporalRuntimeConfig.external_resolution_timeout_seconds` bounds how long an

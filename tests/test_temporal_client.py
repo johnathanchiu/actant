@@ -335,3 +335,54 @@ async def test_resolution_is_durable_while_no_worker_is_running() -> None:
                 await stores.tool_calls.get(tool_call.id)
             ).status is ToolCallStatus.COMPLETED
             await runtime.cancel_thread(_AGENT, _THREAD)
+
+
+@pytest.mark.asyncio
+async def test_continue_as_new_preserves_thread_state_between_agent_runs() -> None:
+    agent = _agent(FakeLLM([FakeResponse(text="one"), FakeResponse(text="two")]))
+    stores = InMemoryRuntimeStores()
+    task_queue = f"test-continue-{uuid.uuid4().hex[:8]}"
+    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+
+    async with await WorkflowEnvironment.start_local() as env:
+        runtime = TemporalRuntimeClient(
+            stores=stores,
+            agents={agent.id: agent},
+            config=TemporalRuntimeConfig(
+                address=env.client.service_client.config.target_host,
+                namespace=env.client.namespace,
+                task_queue=task_queue,
+                history_size_threshold=1,
+            ),
+        )
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=activities.all,
+        ):
+            await runtime.send_message(_AGENT, _THREAD, "first")
+
+            async def first_run_rotated() -> bool:
+                try:
+                    state = await runtime.get_state(_AGENT, _THREAD)
+                except Exception:  # continue-as-new transition is momentarily unqueryable
+                    return False
+                return state.current_run_id is None and state.turn_count_total == 1
+
+            await _wait_for(first_run_rotated)
+            await runtime.send_message(_AGENT, _THREAD, "second")
+
+            async def second_run_finished() -> bool:
+                state = await runtime.get_state(_AGENT, _THREAD)
+                return state.current_run_id is None and state.turn_count_total == 2
+
+            await _wait_for(second_run_finished)
+            messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
+            assert [(message.role, message.content) for message in messages] == [
+                ("user", "first"),
+                ("assistant", "one"),
+                ("user", "second"),
+                ("assistant", "two"),
+            ]
+            await runtime.cancel_thread(_AGENT, _THREAD)

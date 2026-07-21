@@ -122,114 +122,65 @@ class AgentThreadWorkflow:
     async def run(self, payload: ThreadInput) -> str:
         self._agent_id = payload.agent_id
         self._thread_id = payload.thread_id
+        self._turn_count_total = payload.turn_count_total
         # Carry-forward inbox lands here on continue_as_new.
         if payload.carry_inbox:
             self._inbox.extend(payload.carry_inbox)
 
         try:
-            while not self._cancelled:
-                await workflow.wait_condition(lambda: bool(self._inbox) or self._cancelled)
-                if self._cancelled:
-                    break
-
-                run_id = workflow.uuid4().hex
-                self._current_run_id = run_id
-                msgs = self._drain_inbox()  # Policy B: all queued → one run
-
-                await workflow.execute_activity(
-                    ActivityName.START_RUN,
-                    StartRunInput(
-                        agent_id=payload.agent_id,
-                        thread_id=payload.thread_id,
-                        run_id=run_id,
-                        max_turns=payload.max_turns_per_run,
-                    ),
-                    start_to_close_timeout=_PROJECTION_TIMEOUT,
-                )
-
-                outcome = await self._execute_run(payload, run_id, msgs)
-
-                await workflow.execute_activity(
-                    ActivityName.FINALIZE_RUN,
-                    FinalizeRunInput(
-                        agent_id=payload.agent_id,
-                        thread_id=payload.thread_id,
-                        run_id=run_id,
-                        outcome=outcome.value,
-                        turn_count=self._turn_count_total,
-                    ),
-                    start_to_close_timeout=_PROJECTION_TIMEOUT,
-                )
-                self._current_run_id = None
-
-                if workflow.info().get_current_history_length() > _continue_as_new_threshold(
-                    payload
-                ):
-                    workflow.continue_as_new(
-                        ThreadInput(
-                            agent_id=payload.agent_id,
-                            thread_id=payload.thread_id,
-                            max_turns_per_run=payload.max_turns_per_run,
-                            external_resolution_timeout_seconds=(
-                                payload.external_resolution_timeout_seconds
-                            ),
-                            history_size_threshold=payload.history_size_threshold,
-                            carry_inbox=list(self._inbox),
-                        )
-                    )
-
-            return (
-                ThreadOutcome.STOPPED.value
-                if not self._cancelled
-                else ThreadOutcome.CANCELLED.value
-            )
+            while await self._wait_for_agent_run():
+                await self._run_next_agent_run(payload)
+                self._compact_history_if_needed(payload)
         except asyncio.CancelledError:
-            # Workflow cancellation. Best-effort projection cleanup so a
-            # cancelled session is observable in stores even if no run was
-            # active at the moment of cancel.
-            #
-            # ``finalize_run`` only fires when there's an active run —
-            # ``apply_thread_cancellation`` always fires and is idempotent
-            # (covers the cancel-between-runs case where finalize_run
-            # would have nothing to do). Both write the same terminal
-            # state for thread + open tool_calls; calling them in series
-            # is safe because each is idempotent on the same row.
-            if self._current_run_id is not None:
-                await asyncio.shield(
-                    workflow.execute_activity(
-                        ActivityName.FINALIZE_RUN,
-                        FinalizeRunInput(
-                            agent_id=payload.agent_id,
-                            thread_id=payload.thread_id,
-                            run_id=self._current_run_id,
-                            outcome=RunOutcome.CANCELLED.value,
-                            turn_count=self._turn_count_total,
-                        ),
-                        start_to_close_timeout=_PROJECTION_TIMEOUT,
-                    )
-                )
-            await asyncio.shield(
-                workflow.execute_activity(
-                    ActivityName.APPLY_THREAD_CANCELLATION,
-                    ApplyThreadCancellationInput(
-                        agent_id=payload.agent_id,
-                        thread_id=payload.thread_id,
-                    ),
-                    start_to_close_timeout=_PROJECTION_TIMEOUT,
-                )
-            )
+            await self._record_cancellation(payload)
             raise
+        return ThreadOutcome.CANCELLED.value
 
-    async def _execute_run(
+    async def _wait_for_agent_run(self) -> bool:
+        """Suspend the thread until a message arrives or it is cancelled."""
+        await workflow.wait_condition(lambda: bool(self._inbox) or self._cancelled)
+        return not self._cancelled
+
+    async def _run_next_agent_run(self, payload: ThreadInput) -> None:
+        """Open, execute, and finalize one agent run for the queued inbox."""
+        run_id = workflow.uuid4().hex
+        self._current_run_id = run_id
+        new_messages = self._drain_inbox()
+
+        await workflow.execute_activity(
+            ActivityName.START_RUN,
+            StartRunInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                max_turns=payload.max_turns_per_run,
+            ),
+            start_to_close_timeout=_PROJECTION_TIMEOUT,
+        )
+        outcome = await self._run_agent(payload, run_id, new_messages)
+        await workflow.execute_activity(
+            ActivityName.FINALIZE_RUN,
+            FinalizeRunInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                outcome=outcome.value,
+                turn_count=self._turn_count_total,
+            ),
+            start_to_close_timeout=_PROJECTION_TIMEOUT,
+        )
+        self._current_run_id = None
+
+    async def _run_agent(
         self,
         payload: ThreadInput,
         run_id: str,
-        msgs: list[InboundMessage],
+        new_messages: list[InboundMessage],
     ) -> RunOutcome:
-        turns_left = payload.max_turns_per_run
-        first_msgs = msgs
+        """Run agent turns until a stop condition or the turn budget."""
+        turns_remaining = payload.max_turns_per_run
 
-        while turns_left > 0 and not self._cancelled:
+        while turns_remaining > 0 and not self._cancelled:
             turn_id = workflow.uuid4().hex
             turn_index = self._turn_count_total + 1
 
@@ -242,7 +193,7 @@ class AgentThreadWorkflow:
                         run_id=run_id,
                         turn_id=turn_id,
                         turn_index=turn_index,
-                        new_messages=first_msgs,
+                        new_messages=new_messages,
                     ),
                     result_type=TurnResult,
                     start_to_close_timeout=_RUN_TURN_TIMEOUT,
@@ -255,24 +206,24 @@ class AgentThreadWorkflow:
                 # stays alive.
                 return RunOutcome.FAILED
 
-            first_msgs = []
+            new_messages = []
             self._turn_count_total += 1
-            turns_left -= 1
+            turns_remaining -= 1
 
             if not turn.tool_calls:
                 return RunOutcome.COMPLETED
 
-            terminal_tool = await self._execute_tool_group(payload, turn)
+            should_stop = await self._run_tool_group(payload, turn)
             if self._cancelled:
                 return RunOutcome.CANCELLED
-            if terminal_tool:
+            if should_stop:
                 return RunOutcome.COMPLETED
 
         if self._cancelled:
             return RunOutcome.CANCELLED
         return RunOutcome.EXHAUSTED
 
-    async def _execute_tool_group(
+    async def _run_tool_group(
         self,
         payload: ThreadInput,
         turn: TurnResult,
@@ -408,13 +359,60 @@ class AgentThreadWorkflow:
         self._resolved_tool_ids.add(tool_call_id)
         return outcome
 
+    async def _record_cancellation(self, payload: ThreadInput) -> None:
+        """Persist cancellation without leaving an open run or tool call."""
+        if self._current_run_id is not None:
+            await asyncio.shield(
+                workflow.execute_activity(
+                    ActivityName.FINALIZE_RUN,
+                    FinalizeRunInput(
+                        agent_id=payload.agent_id,
+                        thread_id=payload.thread_id,
+                        run_id=self._current_run_id,
+                        outcome=RunOutcome.CANCELLED.value,
+                        turn_count=self._turn_count_total,
+                    ),
+                    start_to_close_timeout=_PROJECTION_TIMEOUT,
+                )
+            )
+        await asyncio.shield(
+            workflow.execute_activity(
+                ActivityName.APPLY_THREAD_CANCELLATION,
+                ApplyThreadCancellationInput(
+                    agent_id=payload.agent_id,
+                    thread_id=payload.thread_id,
+                ),
+                start_to_close_timeout=_PROJECTION_TIMEOUT,
+            )
+        )
+
+    def _compact_history_if_needed(self, payload: ThreadInput) -> None:
+        """Rotate Temporal history between agent runs, preserving thread state."""
+        if workflow.info().get_current_history_length() <= _history_rotation_threshold(
+            payload
+        ):
+            return
+        workflow.continue_as_new(
+            ThreadInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                max_turns_per_run=payload.max_turns_per_run,
+                external_resolution_timeout_seconds=(
+                    payload.external_resolution_timeout_seconds
+                ),
+                carry_inbox=list(self._inbox),
+                history_size_threshold=payload.history_size_threshold,
+                turn_count_total=self._turn_count_total,
+            )
+        )
+
     def _drain_inbox(self) -> list[InboundMessage]:
         msgs = list(self._inbox)
         self._inbox.clear()
         return msgs
 
 
-def _continue_as_new_threshold(payload: ThreadInput) -> int:
+def _history_rotation_threshold(payload: ThreadInput) -> int:
     return max(1, payload.history_size_threshold)
 
 

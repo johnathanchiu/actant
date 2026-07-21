@@ -149,7 +149,7 @@ class _CanExecuteRaisesTool(BaseDeclarativeTool):
 async def test_admit_tool_swallows_can_execute_exception() -> None:
     """``can_execute`` raising must NOT break the workflow.
 
-    The buggy old behavior: gather() re-raises → _execute_tool_group
+    The buggy old behavior: gather() re-raises → _run_tool_group
     returns FAILED → finalize_tool_group is skipped → orphan tool_call
     in the message log → next LLM call 400s on the orphan forever.
 

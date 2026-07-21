@@ -146,6 +146,9 @@ class ThreadInput:
     # pre-0.1 payload while still carrying client configuration into the
     # deterministic workflow.
     history_size_threshold: int = 5_000
+    # Thread-level workflow state that must survive continue-as-new. The
+    # per-agent-run turn budget intentionally does not carry forward.
+    turn_count_total: int = 0
 
 
 # === Activity I/O ===

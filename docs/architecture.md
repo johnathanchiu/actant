@@ -16,7 +16,7 @@ touch the outside world.
 ```text
 AgentRuntime (client API)
     |
-    | signal-with-start / complete activity / cancel / query
+    | signal-with-start / resolve signal / cancel / query
     v
 AgentThreadWorkflow (durable decisions)
     |
@@ -40,8 +40,8 @@ The central invariant is:
 
 1. `actant/runtime/temporal/workflow.py`
    - `AgentThreadWorkflow.run`: lifetime of a thread.
-   - `AgentThreadWorkflow._execute_run`: orchestration for one agent run.
-   - `AgentThreadWorkflow._execute_tool_group`: the group barrier.
+   - `AgentThreadWorkflow._run_agent`: orchestration for one agent run.
+   - `AgentThreadWorkflow._run_tool_group`: the group barrier.
 2. `actant/runtime/temporal/activities.py`
    - External work and projection writes scheduled by the workflow.
 3. `actant/runtime/temporal/client.py` and `worker.py`
@@ -90,24 +90,25 @@ The following pseudocode mirrors `AgentThreadWorkflow` intentionally. Keep the
 documentation and method order aligned when changing the algorithm.
 
 ```python
-while thread_is_active:
-    wait_until_inbox_has_messages()
-    messages = drain_inbox()
-    run_id = new_id()
-    start_run(run_id)
+while await wait_for_agent_run():
+    new_messages = drain_inbox()
+    start_run()
 
-    while agent_loop_can_continue:
-        turn = run_turn(messages_on_first_iteration_only)
+    turns_remaining = max_turns_per_run
+    while turns_remaining > 0:
+        turn = await run_turn(new_messages)
+        new_messages = []
+        turns_remaining -= 1
+
         if turn.has_no_tool_calls:
-            finish_run(COMPLETED)
             break
 
-        terminal_tool = execute_tool_group(turn.tool_calls)
-        if terminal_tool:
-            finish_run(COMPLETED)
+        should_stop = await run_tool_group(turn.tool_calls)
+        if should_stop:
             break
 
-    park_until_the_next_inbound_message()
+    finalize_run()
+    rotate_temporal_history_if_needed()
 ```
 
 `run_turn` is an activity because it loads projections, calls the model,

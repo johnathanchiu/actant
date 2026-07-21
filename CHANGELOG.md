@@ -13,6 +13,10 @@ affect users.
   activity, and only the workflow may advance an agent run.
 - Renamed the public resolution command to `AgentRuntime.resolve_tool_call`.
 - Simplified tool-call projections by removing Temporal activity routing IDs.
+- Clarified the workflow structure as thread lifecycle → agent run → agent
+  turn → tool-group barrier, and preserved thread turn counts across
+  `continue_as_new` history rotation.
+- Added typed not-found and not-waiting errors for invalid tool resolutions.
 
 ## 0.2.0 - 2026-07-20
 

@@ -19,6 +19,7 @@ import temporalio.client
 import temporalio.exceptions  # re-exported for callers that catch typed errors
 
 from actant.agents import AgentDefinition
+from actant.runtime.exceptions import ToolCallNotFoundError, ToolCallNotWaitingError
 from actant.runtime.temporal.activities import (
     HookFactory,
     ListenerFactory,
@@ -114,7 +115,12 @@ class TemporalRuntimeClient:
         payload: dict[str, Any] | None = None,
     ) -> None:
         """Signal a waiting thread workflow with an external tool result."""
-        record = await self.stores.tool_calls.get(tool_call_id)
+        try:
+            record = await self.stores.tool_calls.get(tool_call_id)
+        except KeyError:
+            raise ToolCallNotFoundError(tool_call_id) from None
+        if record.agent_id != agent_id or record.thread_id != thread_id:
+            raise ToolCallNotFoundError(tool_call_id)
         if record.status in {
             ToolCallStatus.COMPLETED,
             ToolCallStatus.BLOCKED,
@@ -122,11 +128,7 @@ class TemporalRuntimeClient:
         }:
             return
         if record.status is not ToolCallStatus.WAITING:
-            raise RuntimeError(
-                f"tool call {tool_call_id!r} is {record.status.value}, not waiting"
-            )
-        if record.agent_id != agent_id or record.thread_id != thread_id:
-            raise RuntimeError(f"tool call {tool_call_id!r} does not belong to this thread")
+            raise ToolCallNotWaitingError(tool_call_id, record.status)
         client = await self._get_client()
         handle = client.get_workflow_handle(self._workflow_id(agent_id, thread_id))
         await handle.signal(

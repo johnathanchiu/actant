@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from actant.runtime.exceptions import ToolCallNotFoundError, ToolCallNotWaitingError
 
 from app.agents import AGENT_ID, RESEARCHER_AGENT_ID, SUMMARIZER_AGENT_ID
 from app.coordinator import DemoCoordinator
@@ -178,13 +179,18 @@ async def resolve_tool_call(
     request: Request,
 ) -> None:
     coord = get_coordinator(request)
-    await coord.resolve_user_deferred(
-        thread_id=thread_id,
-        tool_call_id=tool_call_id,
-        approved=body.approved,
-        answer=body.answer,
-        payload=body.payload,
-    )
+    try:
+        await coord.resolve_user_deferred(
+            thread_id=thread_id,
+            tool_call_id=tool_call_id,
+            approved=body.approved,
+            answer=body.answer,
+            payload=body.payload,
+        )
+    except ToolCallNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ToolCallNotWaitingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/threads/{thread_id}/events")
