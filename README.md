@@ -147,10 +147,15 @@ store provides durable reload.
 The runtime has three write-side entry points:
 
 ```python
-await runtime.send_message(agent.id, thread_id, "Start")
-await runtime.resolve_tool_call(agent.id, thread_id, tool_call_id, approved=True)
-await runtime.cancel_thread(agent.id, thread_id)
+thread = runtime.thread(agent.id, uuid4())
+await thread.send("Start")
+await thread.resolve(tool_call_id, approved=True)
+await thread.cancel()
 ```
+
+The equivalent runtime-level methods remain available when an application
+already carries `agent_id` and `thread_id` separately. A thread handle also
+exposes `state()`, `messages()`, `waiting_tools()`, and typed live `events()`.
 
 Use `OpenAIProvider`, `AnthropicProvider`, `GeminiProvider`, or `QwenProvider`
 in place of `FakeLLM`. Actant never chooses a model ID for you.

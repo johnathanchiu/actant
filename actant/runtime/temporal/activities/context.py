@@ -9,7 +9,8 @@ from temporalio.exceptions import ApplicationError
 from actant.agents import AgentDefinition
 from actant.llm.messages import Message
 from actant.runtime.completion import RunCompletionHandler
-from actant.runtime.events import AgentThreadHooks, StreamListener
+from actant.runtime.events.lifecycle import AgentThreadHooks
+from actant.runtime.events.streaming import StreamListener
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.types.threads import AgentThread
 

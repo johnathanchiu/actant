@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from actant.core import JSONObject
-from actant.runtime.events.publisher import EventPublisher
+from actant.runtime.events.publisher import EventSink
 
 
 class StreamListener:
@@ -42,7 +42,7 @@ class PublishingStreamListener(StreamListener):
     def __init__(
         self,
         thread_id: str,
-        publisher: EventPublisher,
+        publisher: EventSink,
         *,
         channel: str | None = None,
         parent_channel: str | None = None,

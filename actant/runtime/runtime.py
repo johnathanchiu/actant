@@ -12,12 +12,17 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
+from uuid import UUID
 
 from actant.agents import AgentDefinition
 from actant.llm.messages import Message
-from actant.runtime.events import AgentThreadHooks, StreamListener
+from actant.runtime.events.lifecycle import AgentThreadHooks
+from actant.runtime.events.publisher import EventSource
+from actant.runtime.events.streaming import StreamListener
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.temporal.client import TemporalRuntimeClient
+from actant.runtime.temporal.types import ThreadStateView
+from actant.runtime.thread import ThreadHandle
 from actant.runtime.types.threads import AgentThread
 
 HookFactory = Callable[[AgentThread], AgentThreadHooks]
@@ -36,6 +41,7 @@ class AgentRuntime:
         hooks_factory: HookFactory | None = None,
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
+        event_source: EventSource | None = None,
         temporal: object | None = None,
     ) -> None:
         self.stores = stores
@@ -43,6 +49,7 @@ class AgentRuntime:
         self.hooks_factory = hooks_factory
         self.listener_factory = listener_factory
         self.message_preprocessor = message_preprocessor
+        self.event_source = event_source or getattr(stores, "publisher", None)
         self._client = TemporalRuntimeClient(
             stores=self.stores,
             agents=self.agents,
@@ -82,8 +89,12 @@ class AgentRuntime:
             payload=payload,
         )
 
-    async def get_state(self, agent_id: str, thread_id: str) -> object:
+    async def get_state(self, agent_id: str, thread_id: str) -> ThreadStateView:
         return await self._client.get_state(agent_id, thread_id)
+
+    def thread(self, agent_id: str, thread_id: str | UUID) -> ThreadHandle:
+        """Return a thread-scoped command and observation handle."""
+        return ThreadHandle(self, agent_id=agent_id, thread_id=str(thread_id))
 
 
 def default_hooks_factory(_thread: AgentThread) -> AgentThreadHooks:

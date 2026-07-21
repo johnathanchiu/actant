@@ -9,6 +9,9 @@ import temporalio.worker
 
 from actant.agents import AgentDefinition
 from actant.runtime.completion import RunCompletionHandler
+from actant.runtime.events.lifecycle import AgentThreadHooks, PublishingThreadHooks
+from actant.runtime.events.publisher import EventSink
+from actant.runtime.events.streaming import PublishingStreamListener, StreamListener
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.temporal.activities import (
     HookFactory,
@@ -18,6 +21,21 @@ from actant.runtime.temporal.activities import (
 )
 from actant.runtime.temporal.types import TemporalRuntimeConfig
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
+from actant.runtime.types.threads import AgentThread
+
+
+def _publishing_hooks_factory(sink: EventSink) -> HookFactory:
+    def create_hooks(thread: AgentThread) -> AgentThreadHooks:
+        return PublishingThreadHooks(thread.id, publisher=sink)
+
+    return create_hooks
+
+
+def _publishing_listener_factory(sink: EventSink) -> ListenerFactory:
+    def create_listener(thread: AgentThread) -> StreamListener:
+        return PublishingStreamListener(thread.id, publisher=sink)
+
+    return create_listener
 
 
 class TemporalRuntimeWorker:
@@ -38,8 +56,14 @@ class TemporalRuntimeWorker:
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
+        event_sink: EventSink | None = None,
     ) -> None:
         self.config = config or TemporalRuntimeConfig()
+        sink = event_sink or getattr(stores, "publisher", None)
+        if hooks_factory is None and sink is not None:
+            hooks_factory = _publishing_hooks_factory(sink)
+        if listener_factory is None and sink is not None:
+            listener_factory = _publishing_listener_factory(sink)
         self._activities = TemporalRuntimeActivities(
             stores=stores,
             agents=agents,

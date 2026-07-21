@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from actant.runtime.completion import RunCompletion, RunCompletionHandler
     from actant.runtime.temporal.types import TemporalRuntimeConfig
     from actant.runtime.temporal.worker import TemporalRuntimeWorker
+    from actant.runtime.thread import ThreadHandle
     from actant.runtime.runtime import AgentRuntime
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "RunCompletionHandler",
     "TemporalRuntimeConfig",
     "TemporalRuntimeWorker",
+    "ThreadHandle",
 ]
 
 
@@ -49,4 +51,8 @@ def __getattr__(name: str) -> Any:
         from actant.runtime.temporal.worker import TemporalRuntimeWorker
 
         return TemporalRuntimeWorker
+    if name == "ThreadHandle":
+        from actant.runtime.thread import ThreadHandle
+
+        return ThreadHandle
     raise AttributeError(f"module 'actant.runtime' has no attribute {name!r}")

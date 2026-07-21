@@ -6,7 +6,7 @@ from typing import cast
 
 from actant.core import JSONObject, JSONValue
 from actant.llm.messages import Message
-from actant.runtime.events.publisher import EventPublisher
+from actant.runtime.events.publisher import EventSink
 from actant.tools.base import ToolResult
 
 
@@ -96,7 +96,7 @@ class PublishingThreadHooks(AgentThreadHooks):
     def __init__(
         self,
         thread_id: str,
-        publisher: EventPublisher | None = None,
+        publisher: EventSink | None = None,
         *,
         channel: str | None = None,
         parent_channel: str | None = None,

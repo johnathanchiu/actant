@@ -118,15 +118,16 @@ stores.
 ```python
 from uuid import uuid4
 
-thread_id = uuid4().hex
-await runtime.send_message("assistant", thread_id, "Hello")
+thread = runtime.thread("assistant", uuid4())
+await thread.send("Hello")
 ```
 
 Thread IDs are strings because they cross Temporal and persistence boundaries.
-Generate them from UUIDs (or an equivalently collision-resistant application
-scheme) instead of using sequential labels in production.
+The handle accepts a UUID and normalizes it at the boundary. Generate IDs from
+UUIDs (or an equivalently collision-resistant application scheme) instead of
+using sequential labels in production.
 
-`send_message` uses Temporal signal-with-start. The first message starts the
+`send` uses Temporal signal-with-start. The first message starts the
 thread workflow; later messages signal that same workflow. Messages arriving
 while a run is active remain in the workflow inbox and are drained at the next
 run boundary.
@@ -138,8 +139,10 @@ open for the entire agent run.
 ## Inspect and cancel
 
 ```python
-state = await runtime.get_state("assistant", thread_id)
-await runtime.cancel_thread("assistant", thread_id)
+state = await thread.state()
+messages = await thread.messages()
+waiting = await thread.waiting_tools()
+await thread.cancel()
 ```
 
 The query returns live workflow state such as inbox size, total turns, current
@@ -149,13 +152,7 @@ history. Cancellation is durable and projection cleanup is idempotent.
 ## Resolve deferred tools
 
 ```python
-await runtime.resolve_tool_call(
-    "assistant",
-    thread_id,
-    tool_call_id,
-    approved=True,
-    answer="Approved",
-)
+await thread.resolve(tool_call_id, approved=True, answer="Approved")
 ```
 
 Resolution durably signals the owning thread workflow. See
@@ -179,9 +176,27 @@ continue-as-new. Queued inbox messages are carried into the new execution.
 
 ## Hooks and streaming
 
+For application-facing live observation, consume typed thread events:
+
+```python
+async for event in thread.events():
+    if event.type == "text_delta" and event.text:
+        print(event.text, end="", flush=True)
+    elif event.type == "tool_waiting":
+        print(f"Approval needed: {event.tool_call_id}")
+```
+
+`AgentRuntime` reads events from its `event_source`; `TemporalRuntimeWorker`
+writes events to its `event_sink`. Both default to `stores.publisher`, which is
+convenient in one process. In a split deployment, supply the two sides of a
+shared event transport explicitly. Events are observational: after reconnect,
+reload messages and waiting tools from their projections before resuming the
+live stream.
+
 `AgentThreadHooks` reports persisted lifecycle events. `StreamListener` reports
-low-latency model deltas. Supply factories because each thread receives its own
-hook/listener instance.
+low-latency model deltas. The worker automatically publishes both through its
+event sink. Custom factories remain available for application-specific
+callbacks, with one hook/listener instance created per thread.
 
 Good hook responsibilities include publishing SSE/websocket events, updating
 product status, and emitting audit telemetry. Do not persist duplicate runtime
