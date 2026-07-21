@@ -4,7 +4,7 @@ The runtime package is organized by responsibility:
 
 - ``runtime.py``: application-facing client facade.
 - ``temporal/workflow.py``: durable orchestration algorithm.
-- ``temporal/activities.py``: side effects scheduled by the workflow.
+- ``temporal/activities/``: run, tool, and thread side effects.
 - ``temporal/client.py`` and ``temporal/worker.py``: deployment roles.
 - ``stores/``: readable execution projections.
 - ``events/``: optional lifecycle and streaming observers.

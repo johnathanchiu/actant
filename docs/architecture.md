@@ -42,8 +42,11 @@ The central invariant is:
    - `AgentThreadWorkflow.run`: lifetime of a thread.
    - `AgentThreadWorkflow._run_agent`: orchestration for one agent run.
    - `AgentThreadWorkflow._run_tool_group`: the group barrier.
-2. `actant/runtime/temporal/activities.py`
-   - External work and projection writes scheduled by the workflow.
+2. `actant/runtime/temporal/activities/`
+   - `runs.py`: run lifecycle and one model turn.
+   - `tools.py`: admission, execution, resolution, and group finalization.
+   - `threads.py`: thread-level cancellation repair.
+   - `context.py`: dependencies shared by worker-bound activities.
 3. `actant/runtime/temporal/client.py` and `worker.py`
    - Client operations and worker registration.
 4. `actant/runtime/temporal/types.py`
