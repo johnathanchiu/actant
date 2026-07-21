@@ -1,6 +1,6 @@
 [project]
 name = "actant"
-version = "0.2.0"
+version = "0.3.0"
 description = "Temporal-native runtime for persistent agents with durable inboxes, governed tools, and replay"
 readme = "README.md"
 license = "MIT"

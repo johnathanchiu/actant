@@ -6,6 +6,19 @@ affect users.
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-21
+
+### Added
+
+- Added a thread-scoped runtime handle with commands, projection reads, and
+  typed live events.
+- Added `@tool` and `FunctionTool` for annotated sync and async functions,
+  including generated JSON schemas and validated arguments.
+- Added concise approval, admission, and deferred-resolution callbacks on
+  function tools while preserving class-based tools for advanced behavior.
+- Added import-cycle regression coverage and automatic worker event
+  publishing through explicit event sink/source protocols.
+
 ### Changed
 
 - Replaced deferred async-activity completion with durable workflow signals
@@ -54,6 +67,7 @@ affect users.
 - Optional OpenAI, Anthropic, Gemini, and Qwen provider adapters.
 - Deterministic FastAPI and React demo with streaming and approval flows.
 
-[Unreleased]: https://github.com/johnathanchiu/actant/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/johnathanchiu/actant/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/johnathanchiu/actant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/johnathanchiu/actant/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/johnathanchiu/actant/releases/tag/v0.1.0
