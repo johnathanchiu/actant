@@ -63,7 +63,7 @@ def test_openai_requests_are_never_stored_by_provider() -> None:
         [],
     )
 
-    assert params["store"] is False
+    assert params.get("store") is False
 
 
 def test_tool_call_from_raw_normalizes_null_fields() -> None:
