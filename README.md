@@ -5,6 +5,10 @@ Actant is a durable Python agent runtime built on
 handles parallel tools, human approval, deferred work, subagents, suspension,
 and crash-safe continuation.
 
+[Watch the end-to-end demo](https://github.com/johnathanchiu/actant/blob/main/artifacts/demo-video.mp4):
+a real model asks for user input, runs three tools in parallel, waits for
+approval, and resumes when the complete tool group is ready.
+
 > Actant is pre-1.0. Public APIs may change.
 
 ## Why Actant
