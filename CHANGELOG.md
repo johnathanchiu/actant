@@ -4,6 +4,33 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.4.0 - 2026-08-31
+
+### Added
+
+- Added provider-reported token usage to `Message` as `input_tokens` /
+  `output_tokens`, with a `total_tokens` property. The OpenAI and Anthropic
+  providers already read these off the response for rate limiting; they now
+  survive to the caller and are persisted on the message header row, so the
+  transcript is itself the usage record. `None` means the provider reported
+  nothing, and is deliberately distinct from a reported `0` — a caller
+  billing on these must treat unknown as unknown, not as free. The Gemini
+  and Qwen providers do not report usage yet and leave both fields `None`.
+
+### Upgrading
+
+The `actant_messages` table gains two nullable columns. `create_all` handles
+a fresh database; an existing one needs:
+
+```sql
+ALTER TABLE actant_messages ADD COLUMN input_tokens INTEGER;
+ALTER TABLE actant_messages ADD COLUMN output_tokens INTEGER;
+```
+
+Rows written before the upgrade keep `NULL` usage, which reads back as "not
+reported". Nothing else changes: the new fields are optional everywhere, and
+a message without usage serializes exactly as it did in 0.3.2.
+
 ## 0.3.2 - 2026-07-21
 
 ### Changed

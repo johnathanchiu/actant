@@ -281,14 +281,20 @@ class OpenAIProvider:
                 if reasoning_item := _extract_reasoning_item(item):
                     reasoning_items.append(reasoning_item)
 
+        usage = getattr(response, "usage", None)
+        input_tokens = _usage_int(usage, "input_tokens")
+        output_tokens = _usage_int(usage, "output_tokens")
         message = Message(
             role="assistant",
             content=text or None,
             tool_calls=tool_calls or None,
             thought_summary=thought or None,
             reasoning_items=cast(list[object], reasoning_items) or None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
-        usage = getattr(response, "usage", None)
+        # The limiter wants the server's own total, which includes
+        # reasoning tokens the input/output split may not surface.
         actual_tokens = int(getattr(usage, "total_tokens", 0) or 0)
         return message, actual_tokens
 
@@ -465,3 +471,18 @@ def _parse_retry_after(exc: openai.RateLimitError) -> float | None:
         except (TypeError, ValueError):
             pass
     return None
+
+
+def _usage_int(usage: object, field: str) -> int | None:
+    """Read one token count off a provider usage object.
+
+    None when the provider did not report the field at all, so callers
+    can tell "not reported" from a genuine zero.
+    """
+    value = getattr(usage, field, None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

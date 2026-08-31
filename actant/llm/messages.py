@@ -95,6 +95,17 @@ class Message:
     thought_summary: str | None = None
     thinking_signature: str | None = None
     reasoning_items: list[object] | None = None
+    # Provider-reported token usage, set on assistant messages only.
+    # None means the provider did not report it (or this message did
+    # not come from a provider); 0 is a real, reported zero.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+    @property
+    def total_tokens(self) -> int | None:
+        if self.input_tokens is None and self.output_tokens is None:
+            return None
+        return (self.input_tokens or 0) + (self.output_tokens or 0)
 
     @classmethod
     def from_raw(cls, value: "Message | dict[str, object]") -> "Message":
@@ -112,6 +123,8 @@ class Message:
                 thought_summary=value.thought_summary,
                 thinking_signature=value.thinking_signature,
                 reasoning_items=deepcopy(value.reasoning_items),
+                input_tokens=value.input_tokens,
+                output_tokens=value.output_tokens,
             )
         if not isinstance(value, dict):
             raise TypeError(f"Expected Message or dict, got {type(value).__name__}")
@@ -134,6 +147,8 @@ class Message:
             reasoning_items=(
                 deepcopy(raw_reasoning_items) if isinstance(raw_reasoning_items, list) else None
             ),
+            input_tokens=_optional_int(value.get("input_tokens")),
+            output_tokens=_optional_int(value.get("output_tokens")),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -153,4 +168,18 @@ class Message:
             data["thinking_signature"] = self.thinking_signature
         if self.reasoning_items is not None:
             data["reasoning_items"] = deepcopy(self.reasoning_items)
+        if self.input_tokens is not None:
+            data["input_tokens"] = self.input_tokens
+        if self.output_tokens is not None:
+            data["output_tokens"] = self.output_tokens
         return data
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return int(value)
+    return None

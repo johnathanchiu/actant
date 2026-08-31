@@ -49,6 +49,11 @@ def message_from_header(row: ActantMessageModel) -> Message:
     role = row.role
     parts = [message_part_from_row(part) for part in row.parts]
 
+    def _with_usage(message: Message) -> Message:
+        message.input_tokens = row.input_tokens
+        message.output_tokens = row.output_tokens
+        return message
+
     if role == "tool":
         for part in parts:
             if part.kind is PartKind.TOOL_RESULT:
@@ -59,18 +64,20 @@ def message_from_header(row: ActantMessageModel) -> Message:
                     content = json.dumps(part.result)
                 else:
                     content = part.content or ""
-                return Message(
-                    role="tool",
-                    content=content,
-                    tool_call_id=part.tool_call_id,
-                    name=part.tool_name,
+                return _with_usage(
+                    Message(
+                        role="tool",
+                        content=content,
+                        tool_call_id=part.tool_call_id,
+                        name=part.tool_name,
+                    )
                 )
-        return Message(role=cast(Role, role), content="")
+        return _with_usage(Message(role=cast(Role, role), content=""))
 
     messages = parts_to_messages(parts)
     if messages:
-        return messages[0]
-    return Message(role=cast(Role, role), content="")
+        return _with_usage(messages[0])
+    return _with_usage(Message(role=cast(Role, role), content=""))
 
 
 def message_part_row(

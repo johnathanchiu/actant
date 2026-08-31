@@ -303,9 +303,9 @@ class AnthropicProvider:
                 tool_calls.append(_tool_call_from_block(block))
 
         usage = getattr(response, "usage", None)
-        actual_tokens = int(getattr(usage, "input_tokens", 0) or 0) + int(
-            getattr(usage, "output_tokens", 0) or 0
-        )
+        input_tokens = _usage_int(usage, "input_tokens")
+        output_tokens = _usage_int(usage, "output_tokens")
+        actual_tokens = (input_tokens or 0) + (output_tokens or 0)
 
         return (
             Message(
@@ -314,6 +314,8 @@ class AnthropicProvider:
                 tool_calls=tool_calls or None,
                 thought_summary=thought or None,
                 thinking_signature=thinking_signature,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             ),
             actual_tokens,
         )
@@ -378,3 +380,18 @@ def _tool_call_from_block(block: object) -> ToolCall:
             arguments=arguments,
         ),
     )
+
+
+def _usage_int(usage: object, field: str) -> int | None:
+    """Read one token count off a provider usage object.
+
+    None when the provider did not report the field at all, so callers
+    can tell "not reported" from a genuine zero.
+    """
+    value = getattr(usage, field, None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

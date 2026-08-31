@@ -184,6 +184,8 @@ class SQLAlchemyMessageStore:
                         thread_id=thread_id,
                         turn_id=turn_id,
                         role=message.role,
+                        input_tokens=message.input_tokens,
+                        output_tokens=message.output_tokens,
                     )
                 )
                 for index, part in enumerate(parts):
@@ -315,6 +317,8 @@ class SQLAlchemyMessageStore:
                         thread_id=thread_id,
                         turn_id=turn_id,
                         role=message.role,
+                        input_tokens=message.input_tokens,
+                        output_tokens=message.output_tokens,
                     )
                 )
                 for index, part in enumerate(parts):

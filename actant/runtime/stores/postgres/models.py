@@ -72,6 +72,11 @@ class ActantMessageModel(ActantRuntimeBase):
     thread_id: Mapped[str] = mapped_column(Text, nullable=False)
     turn_id: Mapped[str | None] = mapped_column(Text)
     role: Mapped[str] = mapped_column(Text, nullable=False)
+    # Provider-reported usage for assistant messages. NULL means the
+    # provider did not report it; billing must treat that as unknown,
+    # not as free.
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
