@@ -27,6 +27,19 @@ lint:
 typecheck:
     uv run --extra dev --extra providers pyright actant tests
 
+# Autogenerate a migration from the runtime models. Usage: just db-generate "a name"
+db-generate name:
+    uv run --extra dev alembic -c dev/alembic.ini revision --autogenerate \
+        -m "{{name}}" --version-path actant/migrations/versions
+
+# Apply Actant's migrations to the scratch database.
+db-migrate:
+    uv run --extra dev alembic -c dev/alembic.ini upgrade heads
+
+# Fail if the models have drifted from the migrations.
+db-check:
+    uv run --extra dev alembic -c dev/alembic.ini check
+
 # Build and validate the distributions without publishing them.
 package:
     uv build --clear

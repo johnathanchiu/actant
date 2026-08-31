@@ -90,6 +90,52 @@ In-memory stores are suitable for tests and local examples. Use the included
 SQLAlchemy Postgres stores, or implement the store protocols, when projections
 must survive process restarts.
 
+## Migrating the schema
+
+Actant owns the five tables its SQLAlchemy stores read and write, so it ships
+their migrations: an Alembic branch labelled `actant`, whose revision files
+live in the installed package. Upgrading Actant brings the DDL with it, rather
+than leaving the application to notice that a dependency changed shape.
+
+An application keeps its own revisions on its own branch and embeds Actant's
+as a second `version_locations` entry. Alembic resolves that while building
+its `ScriptDirectory` -- before `env.py` is imported -- so set it on the config
+before invoking a command:
+
+```python
+from alembic import command
+from alembic.config import Config
+from actant.migrations import versions_path
+
+config = Config("alembic.ini")
+config.set_main_option("version_locations", f"{local_versions} {versions_path()}")
+config.set_main_option("version_path_separator", "space")
+
+command.upgrade(config, "heads")
+```
+
+Note `heads`, plural. With two branches there is more than one head, and
+`head` raises rather than picking one.
+
+New application revisions need `--version-path` so Alembic knows which branch
+they belong to; without it, a revision can land in Actant's directory.
+
+Leave Actant's tables out of the application's own `target_metadata`, and
+exclude them from its autogenerate with `include_object`. A table present in
+the database but absent from the metadata reads as "drop this table", and a
+table in both branches gets migrated twice.
+
+**Adopting this on a database that already has the tables** -- created by
+`create_all`, or by the application's own migrations before Actant shipped
+these -- means stamping the branch once rather than running it:
+
+```python
+command.stamp(config, "actant@head")
+```
+
+That records it as applied without re-issuing the DDL. Later Actant revisions
+apply normally.
+
 ## Run a worker
 
 The runtime facade does not execute model calls by itself. A worker must poll
@@ -211,6 +257,7 @@ idempotent.
 ## Production checklist
 
 - Use durable projection stores shared by all workers.
+- Embed Actant's migration branch, and upgrade to `heads` on deploy.
 - Keep client and worker Temporal configuration identical.
 - Make tool side effects idempotent where retries or operator actions matter.
 - Choose external-resolution timeouts from product requirements.

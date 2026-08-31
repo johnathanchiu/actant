@@ -1,6 +1,6 @@
 [project]
 name = "actant"
-version = "0.4.0"
+version = "0.5.0"
 description = "Temporal-native runtime for persistent agents with durable inboxes, governed tools, and replay"
 readme = "README.md"
 license = "MIT"
@@ -43,6 +43,11 @@ dev = [
   "ruff>=0.8",
   "pyright>=1.1",
   "pre-commit>=4.0",
+  # Authoring Actant's own migrations. Consumers need neither: the shipped
+  # revision files are plain modules, run by whatever Alembic the
+  # application already has.
+  "alembic>=1.13",
+  "psycopg2-binary>=2.9",
 ]
 
 [project.urls]
