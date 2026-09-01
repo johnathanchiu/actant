@@ -90,6 +90,69 @@ In-memory stores are suitable for tests and local examples. Use the included
 SQLAlchemy Postgres stores, or implement the store protocols, when projections
 must survive process restarts.
 
+## Migrating the schema
+
+Actant owns the five tables its SQLAlchemy stores read and write, so it ships
+their migrations: an Alembic branch labelled `actant`, whose revision files
+live in the installed package. Upgrading Actant brings the DDL with it, rather
+than leaving the application to notice that a dependency changed shape.
+
+An application keeps its own revisions on its own branch and embeds Actant's
+as a second `version_locations` entry. Alembic resolves that while building
+its `ScriptDirectory` -- before `env.py` is imported -- so set it on the config
+before invoking a command:
+
+```python
+import os
+
+from alembic import command
+from alembic.config import Config
+from actant.migrations import versions_path
+
+config = Config("alembic.ini")
+config.set_main_option(
+    "version_locations", os.pathsep.join([local_versions, str(versions_path())])
+)
+config.set_main_option("path_separator", "os")
+
+command.upgrade(config, "heads")
+```
+
+Note `heads`, plural. With two branches there is more than one head, and
+`head` raises rather than picking one.
+
+`path_separator = "os"` is what Alembic 1.16 and later call the option;
+before that it was `version_path_separator`. Joining on `os.pathsep` rather
+than a space matters for the same reason -- a space-separated value splits
+apart if either path contains a space.
+
+New application revisions need `--head` to say which branch they extend:
+
+```
+alembic revision --autogenerate --head app@head -m "a name"
+```
+
+Without it, Alembic does not guess and does not misplace the file -- it
+aborts with "Multiple heads are present". `--version-path` is optional once
+`--head` is given, since Alembic defaults it to the directory holding the
+resolved head.
+
+Leave Actant's tables out of the application's own `target_metadata`, and
+exclude them from its autogenerate with `include_object`. A table present in
+the database but absent from the metadata reads as "drop this table", and a
+table in both branches gets migrated twice.
+
+**Adopting this on a database that already has the tables** -- created by
+`create_all`, or by the application's own migrations before Actant shipped
+these -- means stamping the branch once rather than running it:
+
+```python
+command.stamp(config, "actant@head")
+```
+
+That records it as applied without re-issuing the DDL. Later Actant revisions
+apply normally.
+
 ## Run a worker
 
 The runtime facade does not execute model calls by itself. A worker must poll
@@ -211,6 +274,7 @@ idempotent.
 ## Production checklist
 
 - Use durable projection stores shared by all workers.
+- Embed Actant's migration branch, and upgrade to `heads` on deploy.
 - Keep client and worker Temporal configuration identical.
 - Make tool side effects idempotent where retries or operator actions matter.
 - Choose external-resolution timeouts from product requirements.

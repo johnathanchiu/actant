@@ -4,6 +4,59 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.5.0 - 2026-08-31
+
+### Added
+
+- Actant now ships the Alembic migrations for the tables it owns, as a branch
+  labelled `actant` under `actant/migrations/versions`, with
+  `actant.migrations.versions_path()` returning their installed location.
+  Previously the package defined the models and left every application to
+  notice on its own that upgrading a dependency had changed its schema --
+  `create_all` only creates, so an existing database silently kept the old
+  shape until something failed on a missing column. Upgrading the package now
+  brings its DDL with it.
+
+### Upgrading
+
+Applications embed the branch as a second `version_locations` entry. Alembic
+resolves that while building its `ScriptDirectory`, before `env.py` is
+imported, so the path has to be set on the config before invoking a command
+rather than computed in `env.py`:
+
+```python
+import os
+
+from alembic import command
+from alembic.config import Config
+from actant.migrations import versions_path
+
+config = Config("alembic.ini")
+config.set_main_option(
+    "version_locations", os.pathsep.join([local_versions, str(versions_path())])
+)
+config.set_main_option("path_separator", "os")
+command.upgrade(config, "heads")
+```
+
+`heads` rather than `head`: with two branches there is more than one, and
+`head` raises rather than choosing. New application revisions likewise need
+`--head <label>@head` to say which branch they extend, or Alembic aborts with
+"Multiple heads are present".
+
+**On a database that already has these tables** -- created by `create_all` or
+by the application's own migrations -- stamp the branch instead of running it,
+once:
+
+```python
+command.stamp(config, "actant@head")
+```
+
+That records it as applied without re-issuing the DDL. Later Actant revisions
+then apply normally. An application that had been migrating these tables on
+its own branch should also stop doing so: drop them from its `target_metadata`
+and exclude them from autogenerate, or the two branches will both try.
+
 ## 0.4.0 - 2026-08-31
 
 ### Added

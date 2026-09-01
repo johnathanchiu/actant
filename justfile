@@ -27,10 +27,32 @@ lint:
 typecheck:
     uv run --extra dev --extra providers pyright actant tests
 
+# Autogenerate a migration from the runtime models. Usage: just db-generate "a name"
+db-generate name:
+    uv run --extra dev alembic -c dev/alembic.ini revision --autogenerate \
+        -m "{{name}}" --version-path actant/migrations/versions
+    # Autogenerate writes repr() single quotes, and the template's dialect
+    # import is unused by any revision that touches no JSONB column -- which
+    # CI lints as F401. Ruff owns the style here.
+    uv run --extra dev ruff check --fix actant/migrations -q
+    uv run --extra dev ruff format actant/migrations -q
+
+# Apply Actant's migrations to the scratch database.
+db-migrate:
+    uv run --extra dev alembic -c dev/alembic.ini upgrade heads
+
+# Fail if the models have drifted from the migrations.
+db-check:
+    uv run --extra dev alembic -c dev/alembic.ini check
+
 # Build and validate the distributions without publishing them.
 package:
     uv build --clear
     uvx twine check dist/*
+    # The revision files are only useful if they ship. A build config that
+    # dropped them would otherwise surface as a missing column in somebody
+    # else's database.
+    unzip -l dist/*.whl | grep -q 'actant/migrations/versions/.*\.py'
 
 # Install demo dependencies (Python server + JS UI).
 demo-sync:
