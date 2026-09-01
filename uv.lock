@@ -42,7 +42,7 @@ qwen = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.13" },
+    { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.16" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
     { name = "anthropic", marker = "extra == 'providers'", specifier = ">=0.40" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },

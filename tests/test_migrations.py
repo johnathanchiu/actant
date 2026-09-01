@@ -15,9 +15,18 @@ from actant.migrations import versions_path
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA
 
 
-def test_the_revision_directory_ships_and_is_locatable() -> None:
+def test_the_revision_directory_is_locatable_and_not_empty() -> None:
+    """An empty directory would satisfy `is_dir()` and migrate nothing.
+
+    This resolves through the installed package, so it proves the path
+    helper works -- but under an editable install that path is the source
+    tree, so it cannot prove the wheel carries the files. The `package`
+    recipe checks the built artifact for that.
+    """
     path = versions_path()
+
     assert path.is_dir()
+    assert list(path.glob("*.py"))
 
 
 def test_there_is_an_initial_revision_on_the_actant_branch() -> None:

@@ -10,13 +10,17 @@ Alembic resolves ``version_locations`` while building its ``ScriptDirectory``,
 which happens before ``env.py`` is imported -- so the path cannot be computed
 there. Read it from here instead, before invoking a command:
 
+    import os
+
     from alembic import command
     from alembic.config import Config
     from actant.migrations import versions_path
 
     config = Config("alembic.ini")
-    config.set_main_option("version_locations", f"{local_versions} {versions_path()}")
-    config.set_main_option("version_path_separator", "space")
+    config.set_main_option(
+        "version_locations", os.pathsep.join([local_versions, str(versions_path())])
+    )
+    config.set_main_option("path_separator", "os")
     command.upgrade(config, "heads")
 
 ``heads``, plural: with Actant's branch alongside the application's there is

@@ -103,13 +103,17 @@ its `ScriptDirectory` -- before `env.py` is imported -- so set it on the config
 before invoking a command:
 
 ```python
+import os
+
 from alembic import command
 from alembic.config import Config
 from actant.migrations import versions_path
 
 config = Config("alembic.ini")
-config.set_main_option("version_locations", f"{local_versions} {versions_path()}")
-config.set_main_option("version_path_separator", "space")
+config.set_main_option(
+    "version_locations", os.pathsep.join([local_versions, str(versions_path())])
+)
+config.set_main_option("path_separator", "os")
 
 command.upgrade(config, "heads")
 ```
@@ -117,8 +121,21 @@ command.upgrade(config, "heads")
 Note `heads`, plural. With two branches there is more than one head, and
 `head` raises rather than picking one.
 
-New application revisions need `--version-path` so Alembic knows which branch
-they belong to; without it, a revision can land in Actant's directory.
+`path_separator = "os"` is what Alembic 1.16 and later call the option;
+before that it was `version_path_separator`. Joining on `os.pathsep` rather
+than a space matters for the same reason -- a space-separated value splits
+apart if either path contains a space.
+
+New application revisions need `--head` to say which branch they extend:
+
+```
+alembic revision --autogenerate --head app@head -m "a name"
+```
+
+Without it, Alembic does not guess and does not misplace the file -- it
+aborts with "Multiple heads are present". `--version-path` is optional once
+`--head` is given, since Alembic defaults it to the directory holding the
+resolved head.
 
 Leave Actant's tables out of the application's own `target_metadata`, and
 exclude them from its autogenerate with `include_object`. A table present in
