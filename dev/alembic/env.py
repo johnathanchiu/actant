@@ -15,13 +15,15 @@ from sqlalchemy import engine_from_config, pool
 
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA
 
+# The repo's own Postgres (`just demo-db-up`), on the uncommon port the
+# compose file deliberately picks so it does not fight other projects'
+# databases. A default of postgres:postgres on 5432 would do exactly that.
+DEFAULT_DATABASE_URL = "postgresql+psycopg2://actant:actant@localhost:55435/actant_demo"
+
 config = context.config
 config.set_main_option(
     "sqlalchemy.url",
-    os.environ.get(
-        "ACTANT_MIGRATIONS_DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/actant_scratch",
-    ),
+    os.environ.get("ACTANT_MIGRATIONS_DATABASE_URL", DEFAULT_DATABASE_URL),
 )
 
 target_metadata = ACTANT_RUNTIME_METADATA

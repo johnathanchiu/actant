@@ -31,6 +31,8 @@ typecheck:
 db-generate name:
     uv run --extra dev alembic -c dev/alembic.ini revision --autogenerate \
         -m "{{name}}" --version-path actant/migrations/versions
+    # Autogenerate writes repr() single quotes; ruff owns the style here.
+    uv run --extra dev ruff format actant/migrations -q
 
 # Apply Actant's migrations to the scratch database.
 db-migrate:
