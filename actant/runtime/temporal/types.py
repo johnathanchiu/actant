@@ -50,6 +50,7 @@ class ActivityName(StrEnum):
     ADMIT_TOOL = "admit_tool"
     EXECUTE_TOOL = "execute_tool"
     RESOLVE_TOOL = "resolve_tool"
+    READ_THREAD_ANSWER = "read_thread_answer"
     FINALIZE_TOOL_GROUP = "finalize_tool_group"
     FINALIZE_RUN = "finalize_run"
     APPLY_THREAD_CANCELLATION = "apply_thread_cancellation"
@@ -90,11 +91,14 @@ class AdmitDecision(StrEnum):
     ``ALLOW`` → workflow fires ``execute_tool``.
     ``BLOCK`` → terminal; admit already persisted the failed result.
     ``WAIT`` → workflow suspends until a durable resolution signal arrives.
+    ``SPAWN`` → the call delegates to another agent; the workflow starts a
+    child thread and awaits it.
     """
 
     ALLOW = "allow"
     BLOCK = "block"
     WAIT = "wait"
+    SPAWN = "spawn"
 
 
 class ExecuteStatus(StrEnum):
@@ -135,6 +139,14 @@ class ThreadInput:
     # Thread-level workflow state that must survive continue-as-new. The
     # per-agent-run turn budget intentionally does not carry forward.
     turn_count_total: int = 0
+    # Finish instead of parking once the inbox is empty.
+    #
+    # A conversation is long-lived: it runs, parks on wait_condition, and
+    # wakes when someone says something else. A delegated subagent is not --
+    # it is spawned to answer one thing, and a parent waiting on it needs it
+    # to end. Without this a parent could never await a child, because the
+    # child would park forever with the answer already written.
+    exit_when_idle: bool = False
 
 
 # === Activity I/O ===
@@ -212,6 +224,31 @@ class AdmitOutcome:
     # Set when ``decision == WAIT``; the prompt the external resolver
     # should display / use. Surfaces to ``on_tool_waiting`` hook.
     wait_request: dict[str, Any] | None = None
+    # Set when ``decision == SPAWN``.
+    spawn_request: SpawnRequest | None = None
+
+
+@dataclass(frozen=True)
+class ReadThreadAnswerInput:
+    """Which thread's final assistant message to read."""
+
+    agent_id: str
+    thread_id: str
+
+
+@dataclass(frozen=True)
+class SpawnRequest:
+    """One agent delegating to another.
+
+    ``thread_id`` is chosen by whoever admitted the call and must be
+    derived from the parent and the tool call, not generated: it becomes
+    the child workflow's id, so a replayed or retried parent reattaches to
+    the run already in flight instead of starting a second one.
+    """
+
+    agent_id: str
+    thread_id: str
+    message: str
 
 
 @dataclass(frozen=True)
