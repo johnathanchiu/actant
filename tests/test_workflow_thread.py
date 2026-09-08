@@ -38,6 +38,7 @@ from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.types.threads import AgentThread
 from actant.tools.admission import (
     ToolCallView,
+    ToolSpawnRequest,
     ToolDecision,
     ToolWaitRequest,
     TurnContextView,
@@ -699,3 +700,113 @@ async def test_run_completion_handler_receives_persisted_boundary() -> None:
 
     setup: _RunSetup
     await _run(body, agent=agent, run_completion_handler=handle)
+
+
+# === delegation to another agent ===
+
+_CHILD_AGENT = "child_agent"
+
+
+class _DelegateInvocation(BaseToolInvocation[JSONObject, dict[str, object]]):
+    async def execute(self) -> ToolResult:  # pragma: no cover - never executed
+        raise AssertionError("a spawned tool is answered by its child, not executed")
+
+
+class _DelegateTool(BaseDeclarativeTool):
+    def __init__(self) -> None:
+        super().__init__("delegate", make_tool_schema("delegate", "Ask another agent"))
+
+    async def can_execute(
+        self,
+        call: ToolCallView,
+        invocation: object,
+        context: TurnContextView,
+    ) -> ToolDecision:
+        del invocation, context
+        return ToolDecision.spawn(
+            ToolSpawnRequest(
+                agent_id=_CHILD_AGENT,
+                # Derived from the call, so a replay joins the same child.
+                thread_id=f"child-of-{call.id}",
+                message="build the thing",
+            )
+        )
+
+    async def build(self, params: JSONObject) -> _DelegateInvocation:
+        return _DelegateInvocation(params)
+
+
+@pytest.mark.asyncio
+async def test_a_delegating_tool_is_answered_by_its_child_agent() -> None:
+    """The parent awaits a child workflow and gets its answer as the result.
+
+    The delegation used to be a separately started top-level workflow whose
+    answer came back through an external resolution signal, which meant a
+    caller outside the workflow had to notice the child finishing and wake
+    the parent. A child workflow is simply awaited.
+    """
+    tool_call = _tool_call("delegate")
+    parent = AgentDefinition(
+        id=_AGENT,
+        name="parent",
+        persona="delegates",
+        llm=FakeLLM([FakeResponse(tool_calls=[tool_call]), FakeResponse(text="done")]),
+        tools=ToolRegistry([_DelegateTool()]),
+        tool_allowlist={"delegate"},
+    )
+    child = AgentDefinition(
+        id=_CHILD_AGENT,
+        name="child",
+        persona="builds",
+        llm=FakeLLM([FakeResponse(text="I built the thing")]),
+        tools=ToolRegistry([]),
+        tool_allowlist=set(),
+    )
+
+    stores = InMemoryRuntimeStores()
+    activities = TemporalRuntimeActivities(
+        stores=stores,
+        agents={parent.id: parent, child.id: child},
+    )
+    task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
+
+    async with await WorkflowEnvironment.start_local() as env:
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=activities.all,
+        ):
+            handle = await env.client.start_workflow(
+                AgentThreadWorkflow.run,
+                ThreadInput(_AGENT, _THREAD, max_turns_per_run=5),
+                id=f"thread-{uuid.uuid4().hex}",
+                task_queue=task_queue,
+                start_signal="inbound",
+                start_signal_args=[InboundMessage(content="please delegate")],
+            )
+
+            async def parent_finished() -> bool:
+                messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
+                return any(m.role == "assistant" and m.content == "done" for m in messages)
+
+            await _wait_for(parent_finished)
+
+            results = [
+                m
+                for m in await stores.messages.list_for_thread(_AGENT, _THREAD)
+                if m.role == "tool"
+            ]
+            assert results, "the delegating call must have produced a tool result"
+            assert "I built the thing" in str(results[0].content), (
+                "the parent's tool result is whatever the child ended up saying"
+            )
+
+            child_messages = await stores.messages.list_for_thread(
+                _CHILD_AGENT, f"child-of-{tool_call.id}"
+            )
+            assert any(m.role == "assistant" for m in child_messages), (
+                "the child ran in its own thread"
+            )
+
+            await handle.signal("cancel")
