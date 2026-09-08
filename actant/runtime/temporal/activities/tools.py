@@ -197,8 +197,11 @@ class ToolActivities(ActivityContext):
         """
         messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
         for message in reversed(messages):
-            if message.role == "assistant" and (message.content or "").strip():
-                return message.content
+            if message.role != "assistant":
+                continue
+            text = _message_text(message.content).strip()
+            if text:
+                return text
         return ""
 
     @activity.defn(name=ActivityName.RESOLVE_TOOL)
@@ -306,3 +309,21 @@ def _outcome(tool_call_id: str, result: ToolResult) -> ExecuteOutcome:
 
 def _outcome_from_record(record: ToolCallRecord) -> ExecuteOutcome:
     return _outcome(record.id, _result_from_record(record))
+
+
+def _message_text(content: str | list[dict[str, object]] | None) -> str:
+    """The readable part of a message, whether it is a string or blocks.
+
+    A message's content is either plain text or a list of blocks, only some
+    of which are text -- an image block has nothing a parent could hand back
+    as a tool result.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        str(block.get("text", ""))
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )

@@ -352,33 +352,48 @@ class AgentThreadWorkflow:
 
         The child exits when idle -- a conversation parks waiting for the
         next message, and a parent awaiting that would wait forever.
+
+        Cancelling the parent cancels the child. The cancel arrives as a
+        signal, which only sets a flag, so the await has to watch for it:
+        without that the parent would sit here until the child finished
+        work nobody is waiting for any more, and only notice the cancel
+        afterwards. Every other tool path already breaks on the flag.
         """
-        try:
-            await workflow.execute_child_workflow(
-                AgentThreadWorkflow.run,
-                ThreadInput(
-                    agent_id=request.agent_id,
-                    thread_id=request.thread_id,
-                    max_turns_per_run=payload.max_turns_per_run,
-                    external_resolution_timeout_seconds=(
-                        payload.external_resolution_timeout_seconds
-                    ),
-                    history_size_threshold=payload.history_size_threshold,
-                    carry_inbox=[InboundMessage(content=request.message)],
-                    exit_when_idle=True,
-                ),
-                id=request.thread_id,
-            )
-        except ChildWorkflowError as error:
-            answer = f"The delegated agent failed: {error}"
+        child = await workflow.start_child_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(
+                agent_id=request.agent_id,
+                thread_id=request.thread_id,
+                max_turns_per_run=payload.max_turns_per_run,
+                external_resolution_timeout_seconds=(payload.external_resolution_timeout_seconds),
+                history_size_threshold=payload.history_size_threshold,
+                carry_inbox=[InboundMessage(content=request.message)],
+                exit_when_idle=True,
+            ),
+            id=request.thread_id,
+        )
+        watch = asyncio.ensure_future(workflow.wait_condition(lambda: self._cancelled))
+        done, _ = await workflow.wait([child, watch], return_when=asyncio.FIRST_COMPLETED)
+
+        if child not in done:
+            # The parent was cancelled while the child was still working.
+            child.cancel()
+            answer = "The delegated agent was cancelled."
             approved = False
         else:
-            answer = await workflow.execute_activity_method(
-                ToolActivities.read_thread_answer,
-                ReadThreadAnswerInput(agent_id=request.agent_id, thread_id=request.thread_id),
-                start_to_close_timeout=_PROJECTION_TIMEOUT,
-            )
-            approved = True
+            watch.cancel()
+            try:
+                await child
+            except ChildWorkflowError as error:
+                answer = f"The delegated agent failed: {error}"
+                approved = False
+            else:
+                answer = await workflow.execute_activity_method(
+                    ToolActivities.read_thread_answer,
+                    ReadThreadAnswerInput(agent_id=request.agent_id, thread_id=request.thread_id),
+                    start_to_close_timeout=_PROJECTION_TIMEOUT,
+                )
+                approved = True
 
         # Persisted through the same path a deferred resolution takes, so a
         # delegated result and an externally answered one are the same kind
