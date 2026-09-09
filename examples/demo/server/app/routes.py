@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -189,7 +190,7 @@ async def stream_events(thread_id: str, request: Request) -> EventSourceResponse
     coord = get_coordinator(request)
     channel = f"thread:{thread_id}"
 
-    async def event_source() -> Any:
+    async def event_source() -> AsyncIterator[dict[str, Any]]:
         yield {"comment": "connected"}
         subscription = coord.stores.publisher.subscribe(channel)
         try:

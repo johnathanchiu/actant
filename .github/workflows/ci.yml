@@ -3,8 +3,9 @@ name: ci
 on:
   push:
     branches: [main]
+  # Every pull request, not only those targeting main: a stacked branch is
+  # still code someone is about to merge, and it was going unchecked.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,7 +27,7 @@ jobs:
         run: uv sync --python 3.11 --extra dev --extra providers
 
       - name: Lint
-        run: uv run --extra dev --extra providers ruff check actant tests
+        run: uv run --extra dev --extra providers ruff check actant tests examples
 
       - name: Type check
         run: uv run --extra dev --extra providers pyright actant tests
@@ -83,6 +84,32 @@ jobs:
                   raise AssertionError(f"{model} unexpectedly loaded without {extra}")
           PY
 
+  # The demo server is its own uv project, so it needs its own install to be
+  # type-checked against real dependencies. It is checked because it went
+  # stale unnoticed: the library changed under it and nothing failed.
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: examples/demo/server
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: examples/demo/server/uv.lock
+
+      - name: Install
+        run: uv sync --python 3.11
+
+      # Type check only. Linting happens in the python job, from the repo
+      # root, so examples are held to the same ruff config as the library
+      # rather than whatever a nested directory resolves to.
+      - name: Type check
+        run: uv run --with pyright pyright --venvpath . --project . app
+
   viewer:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -107,7 +134,7 @@ jobs:
     name: ci / required
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [python, package, viewer]
+    needs: [python, package, demo, viewer]
     if: always()
     steps:
       - name: Check required jobs
@@ -118,6 +145,10 @@ jobs:
           fi
           if [ "${{ needs.package.result }}" != "success" ]; then
             echo "package job did not succeed"
+            exit 1
+          fi
+          if [ "${{ needs.demo.result }}" != "success" ]; then
+            echo "demo job did not succeed"
             exit 1
           fi
           if [ "${{ needs.viewer.result }}" != "success" ]; then

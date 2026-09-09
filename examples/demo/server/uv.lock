@@ -4,7 +4,7 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "actant"
-version = "0.3.2"
+version = "0.6.0"
 source = { editable = "../../../" }
 dependencies = [
     { name = "pydantic" },
@@ -25,6 +25,7 @@ openai = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.16" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
     { name = "anthropic", marker = "extra == 'providers'", specifier = ">=0.40" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
@@ -33,6 +34,7 @@ requires-dist = [
     { name = "openai", marker = "extra == 'providers'", specifier = ">=1.60" },
     { name = "openai", marker = "extra == 'qwen'", specifier = ">=1.60" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
