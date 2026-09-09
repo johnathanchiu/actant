@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
 from actant.core import JSONObject
+from actant.runtime.events.lifecycle import PublishingThreadHooks
 from actant.tools.admission import ToolDecisionKind
 from actant.tools.task import TaskTool
 
@@ -85,14 +88,15 @@ async def test_construction_time_parent_thread_id_wins() -> None:
     result = await (await tool.build_for_call(call)).execute()
     assert len(spawner.spawns) == 1
     assert spawner.spawns[0].parent_thread_id == "thread_constructed"
-    # The model reads output; it needs the id to check on the child later.
     assert result.output == {
         "subagent": "researcher",
         "thread_id": "sub_1",
+        "sub_thread_id": "sub_1",
         "status": "running",
     }
-    # Linking child to parent is the host's bookkeeping, not the model's.
-    assert result.metadata == {"sub_thread_id": "sub_1"}
+    # In the output rather than metadata on purpose: the tool_result event
+    # carries only output, so a viewer cannot see metadata at all.
+    assert result.metadata == {}
 
 
 async def test_per_call_thread_id_fallback() -> None:
@@ -164,3 +168,35 @@ async def test_sync_mode_still_allows_no_parent_thread_id() -> None:
     )
     decision = await tool.can_execute(call, None, None)
     assert decision.kind == ToolDecisionKind.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_the_sub_thread_id_survives_the_event_a_viewer_sees() -> None:
+    """A viewer must be able to link the child to the call that started it.
+
+    This asserts through the event, not the ToolResult, because that is
+    where it broke: ``on_tool_result`` publishes ``output`` and ``error``
+    and nothing else, so anything put in ``metadata`` is invisible to a UI
+    until the page is reloaded and history is read from the store instead.
+    """
+    published: list[JSONObject] = []
+
+    class _Publisher:
+        async def publish(self, channel: str, event: JSONObject) -> None:
+            published.append(event)
+
+    spawner = _CapturingSpawner()
+    tool = TaskTool(spawner=spawner, parent_thread_id="thread_1")
+    call = _FakeCall(id="tc_1", thread_id="thread_1", args={"subagent": "r", "message": "go"})
+
+    result = await (await tool.build_for_call(call)).execute()
+    hooks = PublishingThreadHooks("thread_1", _Publisher())
+    await hooks.on_tool_result("tc_1", result)
+
+    assert published, "the tool result was published"
+    # The key, not the value: ``thread_id`` carries the same string, so
+    # asserting on the value alone passes even when sub_thread_id is absent.
+    # A viewer looks for this key to attach the child to the call.
+    assert "sub_thread_id" in str(published[0]["data"]), (
+        "a viewer can find the sub-thread id in the event it actually receives"
+    )
