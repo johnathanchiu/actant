@@ -38,9 +38,9 @@ durable identity and progresses the calls independently, while treating the
 group as a barrier:
 
 1. Admit all calls concurrently.
-2. Execute every `ALLOW` call without waiting for its siblings.
-3. Record every `BLOCK` call as a terminal result.
-4. Suspend every `WAIT` call on a durable Temporal workflow condition.
+2. Execute every `EXECUTE` call without waiting for its siblings.
+3. Record every `DENY` call as a terminal result.
+4. Suspend every `AWAIT_HUMAN` call on a durable Temporal workflow condition.
 5. Accept external resolutions by the original tool-call identity.
 6. Finalize one deterministic tool-result group after every sibling is
    terminal.
@@ -52,8 +52,8 @@ This is especially important for a mixed group:
 time ----------------------------------------------------------------->
 
 lookup:       admit -> execute -> completed
-publish:      admit -> WAIT ................. approval -> completed
-subagent:     admit -> WAIT ..... child run ............ -> completed
+publish:      admit -> AWAIT_HUMAN ................. approval -> completed
+subagent:     admit -> execute -> completed (child runs on; it messages back)
 group:        [================ durable barrier =====================]
 next turn:                                                       start
 ```

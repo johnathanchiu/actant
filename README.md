@@ -172,7 +172,7 @@ async def publish(title: str) -> dict[str, str]:
 ```
 
 Register them with `ToolRegistry([weather, publish])`. Actant derives the JSON
-schema from annotations. Approval tools enter the same durable WAIT state as
+schema from annotations. Approval tools enter the same durable AWAIT_HUMAN state as
 advanced deferred tools and execute only after `thread.resolve(...,
 approved=True)`.
 

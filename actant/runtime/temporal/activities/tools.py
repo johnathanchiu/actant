@@ -50,7 +50,7 @@ class ToolActivities(ActivityContext):
         hooks = self._hooks(thread)
         tool = agent.tools.get(record.name)
         if tool is None:
-            return await self._block(record, hooks, f"Tool {record.name} not found")
+            return await self._deny(record, hooks, f"Tool {record.name} not found")
 
         try:
             # The same builder execution uses, so a tool that needs its call
@@ -59,7 +59,7 @@ class ToolActivities(ActivityContext):
             # object unlike the one that will actually run.
             invocation = await _build_invocation(tool, record)
         except Exception as exc:  # noqa: BLE001
-            return await self._block(record, hooks, f"Tool build error: {exc}")
+            return await self._deny(record, hooks, f"Tool build error: {exc}")
 
         context = TurnContext(
             agent=agent,
@@ -72,9 +72,9 @@ class ToolActivities(ActivityContext):
             turn_index=record.turn_index,
         )
         decision = await _tool_decision(tool, record, invocation, context)
-        if decision.kind == ToolDecisionKind.BLOCK:
-            return await self._block(record, hooks, decision.reason or "Tool call blocked")
-        if decision.kind == ToolDecisionKind.WAIT:
+        if decision.kind == ToolDecisionKind.DENY:
+            return await self._deny(record, hooks, decision.reason or "Tool call denied")
+        if decision.kind == ToolDecisionKind.AWAIT_HUMAN:
             request = decision.wait_request
             request_data = request.to_dict() if request is not None else None
             prompt = decision.reason or invocation.get_description()
@@ -89,15 +89,15 @@ class ToolActivities(ActivityContext):
             )
             return AdmitOutcome(
                 tool_call_id=record.id,
-                decision=AdmitDecision.WAIT.value,
+                decision=AdmitDecision.AWAIT_HUMAN.value,
                 reason=decision.reason,
                 wait_request=request_data,
             )
 
         await self.stores.tool_calls.update_status(record.id, ToolCallStatus.RUNNING)
-        return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.ALLOW.value)
+        return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.EXECUTE.value)
 
-    async def _block(
+    async def _deny(
         self, record: ToolCallRecord, hooks: AgentThreadHooks, reason: str
     ) -> AdmitOutcome:
         result = ToolResult.fail(reason)
@@ -108,7 +108,7 @@ class ToolActivities(ActivityContext):
         await hooks.on_tool_result(record.id, result, record.turn_id)
         return AdmitOutcome(
             tool_call_id=record.id,
-            decision=AdmitDecision.BLOCK.value,
+            decision=AdmitDecision.DENY.value,
             reason=reason,
         )
 
@@ -123,7 +123,7 @@ class ToolActivities(ActivityContext):
             pass
         return AdmitOutcome(
             tool_call_id=tool_call_id,
-            decision=AdmitDecision.BLOCK.value,
+            decision=AdmitDecision.DENY.value,
             reason=reason,
         )
 
@@ -250,7 +250,7 @@ async def _tool_decision(
         return await cast(ToolCanExecute, tool).can_execute(
             cast(ToolCallView, call), invocation, context
         )
-    return ToolDecision.allow()
+    return ToolDecision.execute()
 
 
 def _result_from_record(record: ToolCallRecord) -> ToolResult:

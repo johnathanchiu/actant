@@ -158,7 +158,9 @@ class _ApprovalTool(BaseDeclarativeTool):
         context: TurnContextView,
     ) -> ToolDecision:
         del call, invocation, context
-        return ToolDecision.wait(ToolWaitRequest(kind="approval", prompt="approve?", payload={}))
+        return ToolDecision.await_human(
+            ToolWaitRequest(kind="approval", prompt="approve?", payload={})
+        )
 
     async def on_resolve(
         self,

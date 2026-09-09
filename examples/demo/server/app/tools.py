@@ -134,7 +134,7 @@ class GetWeatherTool(BaseDeclarativeTool):
     async def can_execute(self, call, invocation, context):  # type: ignore[no-untyped-def]
         del invocation, context
         location = str(call.args.get("location", "")).strip()
-        return ToolDecision.wait(
+        return ToolDecision.await_human(
             ToolWaitRequest(
                 kind="approval",
                 prompt=f"Share {location} with the weather service?",
@@ -253,7 +253,7 @@ class RequestApprovalTool(BaseDeclarativeTool):
 
     async def can_execute(self, call, invocation, context):  # type: ignore[no-untyped-def]
         action = str(call.args.get("action", ""))
-        return ToolDecision.wait(
+        return ToolDecision.await_human(
             ToolWaitRequest(
                 kind="approval",
                 prompt=f"Approve action: {action}",
@@ -323,10 +323,10 @@ class AskUserTool(BaseDeclarativeTool):
         raw_options = call.args.get("options", [])
         options = [str(o) for o in raw_options if isinstance(o, str) and o.strip()]
         if len(options) < 2:
-            return ToolDecision.block(
+            return ToolDecision.deny(
                 reason="`ask_user` requires at least 2 options for the user to choose from."
             )
-        return ToolDecision.wait(
+        return ToolDecision.await_human(
             ToolWaitRequest(
                 kind="multiple_choice",
                 prompt=question,

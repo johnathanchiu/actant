@@ -130,9 +130,9 @@ For every tool call in one turn:
 1. Schedule admit_tool for every call.
 2. Await all admission outcomes in completion order.
 3. For each outcome:
-   ALLOW -> schedule execute_tool
-   WAIT  -> suspend until a resolve_tool signal arrives
-   BLOCK -> no second activity; admission already persisted a terminal result
+   EXECUTE -> schedule execute_tool
+   AWAIT_HUMAN  -> suspend until a resolve_tool signal arrives
+   DENY -> no second activity; admission already persisted a terminal result
 4. Await every tool outcome in completion order.
 5. Run finalize_tool_group once.
 6. Return control to the agent run for its next agent turn.
@@ -148,7 +148,7 @@ For a mixed group, the timeline can be:
 time --->
 
 allowed call:   admit -- execute ---------------- completed
-deferred call:  admit -- WAIT ........ approve -- completed
+deferred call:  admit -- AWAIT_HUMAN ........ approve -- completed
 group barrier:  ================================== open
 next agent turn:                                  start
 ```

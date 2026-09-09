@@ -4,6 +4,53 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.7.0
+
+**Breaking, and requires draining in-flight workflows before deploy.**
+
+Two payloads that Temporal serializes into workflow history changed shape:
+`AdmitDecision`'s string values, and `ThreadInput` (which lost
+`exit_when_idle`). A workflow started before the deploy replays the old
+values against the new code, and the admission mismatch **fails quietly** --
+the call matches no branch, nothing runs, nothing waits, and the transcript
+gets `{"error": "No result"}`. Drain first; do not rely on it erroring.
+
+### Subagents are ordinary tools
+
+Delegation no longer parks the parent. `TaskTool` starts the subagent and
+returns its thread id, so a parent can start several and supervise them with
+the new `check_subagent` / `message_subagent` / `stop_subagent`, over a
+`SubagentSupervisor` the host implements.
+
+- `SubagentSpawner.spawn` returns the sub-thread id and no longer takes
+  `parent_tool_call_id`.
+- `ToolDecision.spawn`, `ToolSpawnRequest` and the `SPAWN` admission kind are
+  removed. `SubThreadLink.parent_tool_call_id` and
+  `SubThreadRegistry.find_by_parent_tool_call` go with them.
+- Tools may define `build_for_call`, discovered structurally like
+  `can_execute` and `on_resolve`, for the few that are about the call rather
+  than its arguments.
+
+### Threads end when their work is done
+
+`ThreadInput.exit_when_idle` is removed; it is simply what threads do. A
+closed thread resumes on its next message with the same id and nothing lost.
+
+- `get_state` reads the stores rather than querying the workflow, and raises
+  for a thread that does not exist rather than creating one.
+- `inbox_size` is now `int | None`, and is `None` when read from the stores.
+- `cancel_thread` tolerates an already-finished thread but raises
+  `ThreadNotFoundError` for one that never existed.
+
+### The admission gate says what it decides
+
+`ALLOW` -> `EXECUTE`, `BLOCK` -> `DENY`, `WAIT` -> `AWAIT_HUMAN`, with
+`ToolDecision.allow`/`block`/`wait` renamed to match. `BLOCK` read as
+"suspend" and was the only one that never suspended.
+
+`ToolCallStatus.WAITING`/`BLOCKED` are a different enum, are persisted, and
+are deliberately unchanged.
+
 ## 0.5.0 - 2026-08-31
 
 ### Added

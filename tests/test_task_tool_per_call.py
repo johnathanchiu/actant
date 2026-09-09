@@ -83,7 +83,7 @@ async def test_construction_time_parent_thread_id_wins() -> None:
         args={"subagent": "researcher", "message": "do a thing"},
     )
     decision = await tool.can_execute(call, None, None)
-    assert decision.kind == ToolDecisionKind.ALLOW
+    assert decision.kind == ToolDecisionKind.EXECUTE
     # Admission does not spawn: it runs for calls that never execute.
     assert spawner.spawns == []
 
@@ -117,8 +117,8 @@ async def test_per_call_thread_id_fallback() -> None:
         thread_id="thread_beta",
         args={"subagent": "researcher", "message": "task B"},
     )
-    assert (await tool.can_execute(call_a, None, None)).kind == ToolDecisionKind.ALLOW
-    assert (await tool.can_execute(call_b, None, None)).kind == ToolDecisionKind.ALLOW
+    assert (await tool.can_execute(call_a, None, None)).kind == ToolDecisionKind.EXECUTE
+    assert (await tool.can_execute(call_b, None, None)).kind == ToolDecisionKind.EXECUTE
 
     await (await tool.build_for_call(call_a)).execute()
     await (await tool.build_for_call(call_b)).execute()
@@ -147,7 +147,7 @@ async def test_blocks_when_thread_id_missing_everywhere() -> None:
         args: JSONObject = field(default_factory=lambda: {"subagent": "x", "message": "y"})
 
     decision = await tool.can_execute(_NoThreadCall(), None, None)
-    assert decision.kind == ToolDecisionKind.BLOCK
+    assert decision.kind == ToolDecisionKind.DENY
     assert "parent_thread_id" in decision.reason
     assert len(spawner.spawns) == 0
 
@@ -169,7 +169,7 @@ async def test_sync_mode_still_allows_no_parent_thread_id() -> None:
         args={"subagent": "x", "message": "y"},
     )
     decision = await tool.can_execute(call, None, None)
-    assert decision.kind == ToolDecisionKind.ALLOW
+    assert decision.kind == ToolDecisionKind.EXECUTE
 
 
 @pytest.mark.asyncio

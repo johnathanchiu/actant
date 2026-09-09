@@ -1,13 +1,17 @@
 # Pauses and deferred work
 
-`WAIT` is the central control-flow primitive for work that cannot safely finish
-now. Typical cases include human approval, a user question, an external job,
-or a delegated subagent.
+`AWAIT_HUMAN` is the control-flow primitive for a call whose result a
+**person** supplies: an approval, or a question only they can answer.
+
+It is not for waiting on a machine. A delegated subagent returns a handle
+immediately and messages its parent when it finishes, and an external job
+should do the same -- parking a thread on something that will finish by
+itself buys nothing and stops the agent doing anything else meanwhile.
 
 ## Lifecycle
 
 1. The model requests a tool.
-2. The tool's `can_execute` returns `ToolDecision.wait(...)`.
+2. The tool's `can_execute` returns `ToolDecision.await_human(...)`.
 3. Actant persists the call as waiting and emits `on_tool_waiting`.
 4. The workflow suspends on a durable condition, so no Python worker is held.
 5. The application later calls `runtime.resolve_tool_call(...)`.
@@ -26,7 +30,7 @@ from actant.tools import ToolDecision, ToolWaitRequest
 
 
 async def can_execute(self, call, invocation, context):
-    return ToolDecision.wait(
+    return ToolDecision.await_human(
         ToolWaitRequest(
             kind="publish_approval",
             prompt="Approve publishing this report?",
