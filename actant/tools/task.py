@@ -290,16 +290,13 @@ class TaskInvocation(BaseToolInvocation[JSONObject, object]):
         except Exception as exc:  # noqa: BLE001 -- a failed spawn is a failed tool
             return ToolResult.fail(f"Subagent spawn failed: {exc}")
 
-        # ``sub_thread_id`` as well as ``thread_id``: hosts already locate a
-        # sub-thread's parent by matching this key inside the stored result,
-        # and that lookup should keep working.
+        # Split by audience. ``output`` is what the model reads, and it needs
+        # the id because that is what it passes to check/message/stop.
+        # ``metadata`` is for the host: linking a sub-thread back to the call
+        # that started it is bookkeeping, not something to spend context on.
         return ToolResult.ok(
-            {
-                "subagent": subagent,
-                "thread_id": thread_id,
-                "sub_thread_id": thread_id,
-                "status": "running",
-            }
+            {"subagent": subagent, "thread_id": thread_id, "status": "running"},
+            sub_thread_id=thread_id,
         )
 
 

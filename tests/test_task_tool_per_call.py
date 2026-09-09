@@ -85,12 +85,14 @@ async def test_construction_time_parent_thread_id_wins() -> None:
     result = await (await tool.build_for_call(call)).execute()
     assert len(spawner.spawns) == 1
     assert spawner.spawns[0].parent_thread_id == "thread_constructed"
+    # The model reads output; it needs the id to check on the child later.
     assert result.output == {
         "subagent": "researcher",
         "thread_id": "sub_1",
-        "sub_thread_id": "sub_1",
         "status": "running",
     }
+    # Linking child to parent is the host's bookkeeping, not the model's.
+    assert result.metadata == {"sub_thread_id": "sub_1"}
 
 
 async def test_per_call_thread_id_fallback() -> None:

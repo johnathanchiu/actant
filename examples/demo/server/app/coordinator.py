@@ -8,8 +8,10 @@ that `docs/coordinator-guide.md` points at. The shape is:
 - Build one main agent plus researcher and summarizer subagents globally.
 - Wire AgentRuntime with the registry-aware factories from
   `actant.runtime.coordinator`.
-- Implement `SubagentSpawner` for `TaskTool` to delegate work.
-- Funnel all deferred resolutions through `AgentRuntime.resolve_tool_call`.
+- Implement `SubagentSpawner` for `TaskTool` to delegate work, and
+  `SubagentSupervisor` so the parent can check/message/stop its children.
+- Funnel user-driven resolutions through `AgentRuntime.resolve_tool_call`,
+  and tell a parent its child finished with `AgentRuntime.send_message`.
 
 NO subclassing of any actant base class. Pure composition.
 """
@@ -49,7 +51,8 @@ from actant.runtime.stores.postgres import (
     create_schema,
 )
 from actant.runtime.types.threads import AgentThread
-from actant.tools.calls import ToolCallStatus
+from actant.tools.base import Tool
+from actant.tools.supervise import supervision_tools
 from actant.tools.task import TaskTool
 
 from app.agents import (
@@ -121,33 +124,34 @@ class DemoCoordinator:
         message: str,
         context: JSONObject,
         parent_thread_id: str,
-        parent_tool_call_id: str,
-    ) -> None:
+    ) -> str:
+        """Start a sub-thread and hand its id back to the parent.
+
+        The parent is NOT parked: the id it gets is the whole tool
+        result, and it is what `check_subagent` / `message_subagent` /
+        `stop_subagent` take. The parent hears about the ending when
+        `handle_run_completion` messages it.
+        """
         sub_agent_id = _SUBAGENT_IDS.get(name)
         if sub_agent_id is None:
             raise ValueError(f"unknown subagent name: {name!r}")
-        # The parent's agent_id is derivable without a store lookup:
-        # if the parent thread is a registered sub-thread, the registry
-        # knows its agent; otherwise it's the one top-level agent
-        # (AGENT_ID). Same single-source-of-truth shape a production
-        # coordinator would use, backed by the in-memory registry
-        # instead of a store query.
-        parent_link = self.registry.get(parent_thread_id)
-        parent_agent_id = parent_link.sub_agent_id if parent_link is not None else AGENT_ID
         sub_thread_id = f"sub_{uuid.uuid4().hex[:10]}"
         link = SubThreadLink(
             sub_thread_id=sub_thread_id,
             parent_thread_id=parent_thread_id,
-            parent_tool_call_id=parent_tool_call_id,
+            # The spawning tool call is no longer part of the link: the
+            # task call completes immediately and its stored result names
+            # the sub-thread, which is what the UI reads.
+            parent_tool_call_id="",
             sub_agent_id=sub_agent_id,
             subagent_name=name,
-            metadata={"parent_agent_id": parent_agent_id},
+            metadata={"parent_agent_id": self._agent_id_for(parent_thread_id)},
         )
         # Register BEFORE send_message so the hooks_factory sees the
         # link synchronously and wires dual-publish from the very
         # first event.
         self.registry.register(link)
-        # Persist parent metadata onto the sub-thread row too so
+        # Persist the parent id onto the sub-thread row too so
         # /api/threads/:id/sub_threads can report the mapping after
         # process restart.
         thread = await self.stores.threads.get_or_create(sub_agent_id, sub_thread_id)
@@ -159,7 +163,6 @@ class DemoCoordinator:
                 turn_count=thread.turn_count,
                 active_run_id=thread.active_run_id,
                 parent_thread_id=parent_thread_id,
-                parent_tool_call_id=parent_tool_call_id,
             )
         )
         composed = message
@@ -168,6 +171,41 @@ class DemoCoordinator:
                 f"{message}\n\nContext from caller:\n```json\n{json.dumps(context, indent=2)}\n```"
             )
         await self.runtime.send_message(sub_agent_id, sub_thread_id, composed)
+        return sub_thread_id
+
+    # ─── SubagentSupervisor protocol (supervision_tools) ────────────
+
+    async def status(self, thread_id: str) -> JSONObject:
+        """What the demo knows about a sub-thread, read by the model."""
+        agent_id = self._agent_id_for(thread_id)
+        try:
+            thread = await self.stores.threads.get(agent_id, thread_id)
+        except KeyError:
+            return {"thread_id": thread_id, "status": "unknown"}
+        return {
+            "thread_id": thread_id,
+            "subagent": agent_id,
+            "status": str(thread.status),
+            "turn_count": thread.turn_count,
+        }
+
+    async def send(self, thread_id: str, message: str) -> None:
+        await self.runtime.send_message(self._agent_id_for(thread_id), thread_id, message)
+
+    async def stop(self, thread_id: str) -> None:
+        # Must be safe on a sub-thread that already finished — the model
+        # has no way to know it did.
+        try:
+            await self.runtime.cancel_thread(self._agent_id_for(thread_id), thread_id)
+        except Exception:  # noqa: BLE001 -- already gone is not an error here
+            pass
+
+    def _agent_id_for(self, thread_id: str) -> str:
+        """Which agent owns a thread, without a store lookup: registered
+        sub-threads belong to their sub-agent, everything else to the one
+        top-level agent."""
+        link = self.registry.get(thread_id)
+        return link.sub_agent_id if link is not None else AGENT_ID
 
     # ─── Resolve flows ──────────────────────────────────────────────
 
@@ -188,10 +226,8 @@ class DemoCoordinator:
 
         Funneled through `resolve_tool_call`, which durably signals the
         owning thread workflow."""
-        link = self.registry.get(thread_id)
-        agent_id = link.sub_agent_id if link is not None else AGENT_ID
         await self.runtime.resolve_tool_call(
-            agent_id,
+            self._agent_id_for(thread_id),
             thread_id,
             tool_call_id,
             approved=approved,
