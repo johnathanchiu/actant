@@ -57,7 +57,7 @@ dev = [
 Homepage = "https://github.com/johnathanchiu/actant"
 Repository = "https://github.com/johnathanchiu/actant"
 Issues = "https://github.com/johnathanchiu/actant/issues"
-Documentation = "https://github.com/johnathanchiu/actant/tree/main/docs"
+Documentation = "https://actant.readthedocs.io/"
 
 [build-system]
 requires = ["hatchling"]

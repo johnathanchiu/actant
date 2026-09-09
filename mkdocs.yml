@@ -1,6 +1,6 @@
 site_name: Actant
 site_description: Temporal-native runtime for persistent agents with durable inboxes, governed tools, and replay
-site_url: https://johnathanchiu.github.io/actant/
+site_url: https://actant.readthedocs.io/
 repo_url: https://github.com/johnathanchiu/actant
 repo_name: johnathanchiu/actant
 edit_uri: edit/main/docs/

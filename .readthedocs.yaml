@@ -1,0 +1,24 @@
+# Read the Docs build. This is the versioned docs host: RTD builds a separate
+# copy per git tag, so someone still on 0.6.0 gets 0.6.0 docs rather than the
+# single latest-main site GitHub Pages serves.
+version: 2
+
+build:
+  # Pinned rather than ubuntu-lts-latest so a new LTS cannot silently change
+  # the toolchain under a rebuild of an old tag.
+  os: ubuntu-24.04
+  tools:
+    python: "3.11"
+
+# RTD supports uv natively in python.install, which is the only install method
+# here that reads PEP 735 [dependency-groups] and uv.lock -- the same pinned
+# set CI builds the docs from. `command: sync` is what allows `groups`.
+python:
+  install:
+    - method: uv
+      command: sync
+      groups:
+        - docs
+
+mkdocs:
+  configuration: mkdocs.yml
