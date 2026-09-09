@@ -111,17 +111,10 @@ class MyCoordinator:
             listener_factory=publishing_listener_factory(self.publisher, registry=self.registry),
         )
 
-    # TaskTool's SubagentSpawner Protocol —
-    # ``can_execute`` calls this with the parent's thread/tool_call.
-    async def spawn(
-        self,
-        *,
-        name,
-        message,
-        context,
-        parent_thread_id,
-        parent_tool_call_id,
-    ):
+    # TaskTool's SubagentSpawner Protocol. Returns the sub-thread's id,
+    # which becomes the parent's tool result: the parent is not waiting on
+    # this, it is being handed a handle.
+    async def spawn(self, *, name, message, context, parent_thread_id):
         sub_thread_id = f"sub_{uuid.uuid4().hex[:10]}"
         # Register the link BEFORE send_message so the hook factory
         # sees the relationship synchronously.
@@ -129,16 +122,22 @@ class MyCoordinator:
             SubThreadLink(
                 sub_thread_id=sub_thread_id,
                 parent_thread_id=parent_thread_id,
-                parent_tool_call_id=parent_tool_call_id,
                 sub_agent_id=self.researcher_agent.id,
                 subagent_name=name,
             )
         )
+        # Record parentage durably too. The registry is process memory and
+        # the child may finish on another worker.
+        child = await self.stores.threads.get_or_create(self.researcher_agent.id, sub_thread_id)
+        child.parent_thread_id = parent_thread_id
+        await self.stores.threads.update(child)
+
         await self.runtime.send_message(
             self.researcher_agent.id,
             sub_thread_id,
             message,
         )
+        return sub_thread_id
 
     # Passed to TemporalRuntimeWorker(run_completion_handler=...).
     # This runs inside the retryable finalize_run activity, after the
@@ -148,9 +147,8 @@ class MyCoordinator:
             completion.agent_id,
             completion.thread_id,
         )
-        if child.parent_tool_call_id is None or child.parent_thread_id is None:
+        if child.parent_thread_id is None:
             return
-        parent_call = await self.stores.tool_calls.get(child.parent_tool_call_id)
         messages = await self.stores.messages.list_for_thread(
             completion.agent_id,
             completion.thread_id,
@@ -163,13 +161,20 @@ class MyCoordinator:
             ),
             completion.outcome,
         )
-        envelope = {"text": final_text, "subagent": completion.agent_id}
-        await self.runtime.resolve_tool_call(
-            parent_call.agent_id,
+        # Tell the parent, rather than resolve anything: its task call
+        # completed the moment the child started. The message wakes it
+        # whether it is parked or has already closed.
+        envelope = {
+            "subagent": completion.agent_id,
+            "thread_id": completion.thread_id,
+            "run_id": completion.run_id,
+            "succeeded": completion.succeeded,
+            "text": final_text,
+        }
+        await self.runtime.send_message(
+            await self.agent_id_for(child.parent_thread_id),
             child.parent_thread_id,
-            parent_call.id,
-            approved=completion.succeeded,
-            answer=json.dumps(envelope),
+            json.dumps(envelope),
         )
 
     # Worker wiring is separate from AgentRuntime's client role.
@@ -208,8 +213,10 @@ class MyCoordinator:
   `RunCompletionHandler` owns retryable completion integration.
 - Maintain a side-channel map of "is this thread a sub-thread"
   (the registry IS that map; the factories consult it).
-- Build separate code paths for user-driven vs sub-thread-driven
-  resolves (one `resolve_tool_call` entry, two callers).
+- Continue a parent when its subagent finishes by resolving a tool call.
+  Nothing is waiting: the task call completed the moment the child
+  started, and the child tells its parent by sending it a message.
+  `resolve_tool_call` is for a person answering, and has one caller.
 
 ## What you still own
 
