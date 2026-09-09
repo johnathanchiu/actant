@@ -709,5 +709,3 @@ _CHILD_AGENT = "child_agent"
 class _DelegateInvocation(BaseToolInvocation[JSONObject, dict[str, object]]):
     async def execute(self) -> ToolResult:  # pragma: no cover - never executed
         raise AssertionError("a spawned tool is answered by its child, not executed")
-
-
