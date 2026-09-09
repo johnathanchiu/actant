@@ -26,7 +26,6 @@ class TemporalRuntimeActivities(RunActivities, ToolActivities, ThreadActivities)
             self.admit_tool,
             self.execute_tool,
             self.resolve_tool,
-            self.read_thread_answer,
             self.finalize_tool_group,
             self.finalize_run,
             self.apply_thread_cancellation,

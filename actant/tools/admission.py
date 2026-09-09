@@ -15,22 +15,6 @@ class ToolDecisionKind(StrEnum):
     ALLOW = "allow"
     BLOCK = "block"
     WAIT = "wait"
-    SPAWN = "spawn"
-
-
-@dataclass(frozen=True)
-class ToolSpawnRequest:
-    """A tool call that is really a delegation to another agent.
-
-    ``thread_id`` is chosen here, not generated later, and must be derived
-    from the calling tool call. It becomes the child workflow's id, so the
-    same delegation replayed or retried joins the run already in flight
-    rather than starting a second one.
-    """
-
-    agent_id: str
-    thread_id: str
-    message: str
 
 
 @dataclass(frozen=True)
@@ -77,7 +61,6 @@ class ToolDecision:
     kind: ToolDecisionKind
     reason: str = ""
     wait_request: ToolWaitRequest | None = None
-    spawn_request: ToolSpawnRequest | None = None
 
     @classmethod
     def allow(cls) -> "ToolDecision":
@@ -86,11 +69,6 @@ class ToolDecision:
     @classmethod
     def block(cls, reason: str) -> "ToolDecision":
         return cls(kind=ToolDecisionKind.BLOCK, reason=reason)
-
-    @classmethod
-    def spawn(cls, request: "ToolSpawnRequest") -> "ToolDecision":
-        """Delegate this call to another agent and wait for its answer."""
-        return cls(kind=ToolDecisionKind.SPAWN, spawn_request=request)
 
     @classmethod
     def wait(cls, request: ToolWaitRequest) -> "ToolDecision":
