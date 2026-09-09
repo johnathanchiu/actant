@@ -85,16 +85,21 @@ class ThreadOutcome(StrEnum):
 
 
 class AdmitDecision(StrEnum):
-    """Output of ``admit_tool``.
+    """Output of ``admit_tool``: who produces this call's result.
 
-    ``ALLOW`` → workflow fires ``execute_tool``.
-    ``BLOCK`` → terminal; admit already persisted the failed result.
-    ``WAIT`` → workflow suspends until a durable resolution signal arrives.
+    ``EXECUTE`` → workflow fires ``execute_tool``; the tool produces it.
+    ``DENY`` → terminal; admission already persisted the refusal as the
+    result, so the workflow does nothing.
+    ``AWAIT_HUMAN`` → workflow suspends until a person answers.
+
+    Only ``AWAIT_HUMAN`` suspends. That is the whole of what the workflow
+    needs to know from this; which of the other two produced the result is
+    the activity's business.
     """
 
-    ALLOW = "allow"
-    BLOCK = "block"
-    WAIT = "wait"
+    EXECUTE = "execute"
+    DENY = "deny"
+    AWAIT_HUMAN = "await_human"
 
 
 class ExecuteStatus(StrEnum):

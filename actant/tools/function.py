@@ -109,12 +109,12 @@ class FunctionTool:
                 if callable(self.approval)
                 else self.approval.format_map(params)
             )
-            return ToolDecision.wait(
+            return ToolDecision.await_human(
                 ToolWaitRequest(kind="approval", prompt=prompt, payload={"args": call.args})
             )
         if self.admission is not None:
             return await _maybe_await(self.admission(params))
-        return ToolDecision.allow()
+        return ToolDecision.execute()
 
     async def on_resolve(
         self,

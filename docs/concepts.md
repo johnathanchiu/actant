@@ -44,9 +44,12 @@ to the transcript and begins the next turn.
 A tool call has a persisted identity and lifecycle. Before execution, admission
 classifies it as:
 
-- `ALLOW`: execute now.
-- `BLOCK`: record a failed result and do not execute.
-- `WAIT`: persist the wait request and suspend until an external resolution.
+Each answers one question -- who produces this call's result.
+
+- `EXECUTE`: the tool does. Run it now.
+- `DENY`: admission does. The refusal is the result, and nothing executes.
+- `AWAIT_HUMAN`: a person does, by approving so the tool then runs, or by
+  answering, where their answer is the result. The only one that suspends.
 
 Calls emitted by the same turn are admitted in parallel. Allowed and waiting
 calls are then processed concurrently, and their results are finalized as one

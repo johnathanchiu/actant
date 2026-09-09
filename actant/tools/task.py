@@ -200,25 +200,25 @@ class TaskTool:
     ) -> ToolDecision:
         del invocation, context
         if not self.deferred:
-            return ToolDecision.allow()
+            return ToolDecision.execute()
         args: JSONObject = call.args if isinstance(call.args, dict) else {}
         subagent = args.get("subagent")
         message = args.get("message")
         if not isinstance(subagent, str) or not subagent:
-            return ToolDecision.block(reason="`subagent` is required")
+            return ToolDecision.deny(reason="`subagent` is required")
         if self.subagent_choices and subagent not in self.subagent_choices:
             valid = ", ".join(self.subagent_choices)
-            return ToolDecision.block(reason=f"Unknown subagent {subagent!r}; valid: {valid}")
+            return ToolDecision.deny(reason=f"Unknown subagent {subagent!r}; valid: {valid}")
         if not isinstance(message, str) or not message.strip():
-            return ToolDecision.block(reason="`message` is required")
+            return ToolDecision.deny(reason="`message` is required")
         if self._parent_thread_id(call) is None:
-            return ToolDecision.block(
+            return ToolDecision.deny(
                 reason=(
                     "TaskTool has no parent_thread_id: neither set at "
                     "construction nor present on the tool call."
                 )
             )
-        return ToolDecision.allow()
+        return ToolDecision.execute()
 
     def _parent_thread_id(self, call: ToolCallView) -> str | None:
         """Prefer the construction-time id, fall back to the call's.

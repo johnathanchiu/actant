@@ -10,8 +10,8 @@ The workflow is a thin orchestrator. It:
 1. Receives ``inbound`` signals (user messages) into an in-memory inbox.
 2. For each agent run: drains the inbox and advances through turns until the model
    stops emitting tool_calls or the turn budget is exhausted.
-3. For each turn's tool_calls: admits every tool, then executes ALLOW tools
-   and durably suspends WAIT tools until a resolution signal arrives.
+3. For each turn's tool_calls: admits every tool, then executes EXECUTE
+   tools and durably suspends AWAIT_HUMAN tools until a person answers.
 4. Finalizes each tool group via ``finalize_tool_group`` (writes the
    tool_result messages — the transcript invariant lives there).
 
@@ -277,13 +277,13 @@ class AgentThreadWorkflow:
             outcome = await fut
             admits[outcome.tool_call_id] = outcome
 
-        # 2. Each non-blocked tool produces one outcome. ALLOW tools execute
-        #    normally. WAIT tools suspend inside the workflow until their
-        #    resolution signal arrives. BLOCK tools are already terminal.
+        # 2. Each tool produces one outcome. EXECUTE runs it. AWAIT_HUMAN
+        #    suspends inside the workflow until a person answers. DENY is
+        #    already terminal -- admission wrote the refusal as its result.
         exec_handles = []
         for spec in turn.tool_calls:
             decision = admits[spec.id].decision
-            if decision == AdmitDecision.ALLOW.value:
+            if decision == AdmitDecision.EXECUTE.value:
                 exec_handles.append(
                     workflow.start_activity_method(
                         ToolActivities.execute_tool,
@@ -297,7 +297,7 @@ class AgentThreadWorkflow:
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
                 )
-            elif decision == AdmitDecision.WAIT.value:
+            elif decision == AdmitDecision.AWAIT_HUMAN.value:
                 exec_handles.append(
                     asyncio.create_task(
                         self._resolve_tool(
@@ -307,7 +307,8 @@ class AgentThreadWorkflow:
                         )
                     )
                 )
-            # else BLOCK — nothing to await
+            # else DENY -- admission already produced the result, so there
+            # is nothing to wait on and nothing to run.
 
         # 3. This is the durable tool-group barrier. Temporal wakes the
         #    workflow only for activity completions, signals, timers, or cancel.

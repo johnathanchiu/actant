@@ -69,7 +69,7 @@ async def publish(title: str) -> dict[str, str]:
     return {"published": title}
 ```
 
-The call enters the normal durable WAIT state. The function has not executed
+The call enters the normal durable AWAIT_HUMAN state. The function has not executed
 at that point. Resolve it through the thread handle:
 
 ```python
@@ -93,8 +93,8 @@ from actant.tools import ToolDecision
 
 async def admit_publish(args):
     if args["title"] == "draft":
-        return ToolDecision.block("Drafts cannot be published")
-    return ToolDecision.allow()
+        return ToolDecision.deny("Drafts cannot be published")
+    return ToolDecision.execute()
 
 
 @tool(admission=admit_publish)
@@ -103,7 +103,7 @@ async def publish(title: str) -> dict[str, str]:
     return {"published": title}
 ```
 
-Custom callbacks may also return `ToolDecision.wait(...)`. Add a `resolve=`
+Custom callbacks may also return `ToolDecision.await_human(...)`. Add a `resolve=`
 callback when the external answer itself should produce the tool result. Use a
 class-based tool when admission needs the full tool-call or turn context.
 
@@ -201,10 +201,10 @@ from actant.tools import ToolDecision, ToolWaitRequest
 class PublishTool(BaseDeclarativeTool):
     async def can_execute(self, call, invocation, context):
         if content_policy.blocks(call.args):
-            return ToolDecision.block("content policy blocked this action")
+            return ToolDecision.deny("content policy blocked this action")
 
         if not await approval_store.is_approved(call.id):
-            return ToolDecision.wait(
+            return ToolDecision.await_human(
                 ToolWaitRequest(
                     kind="publish_approval",
                     prompt="Approve publishing this update?",
@@ -212,7 +212,7 @@ class PublishTool(BaseDeclarativeTool):
                 )
             )
 
-        return ToolDecision.allow()
+        return ToolDecision.execute()
 ```
 
 Admission decisions:

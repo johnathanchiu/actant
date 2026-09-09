@@ -12,9 +12,19 @@ from actant.tools.base import ToolInvocation, ToolResult
 
 
 class ToolDecisionKind(StrEnum):
-    ALLOW = "allow"
-    BLOCK = "block"
-    WAIT = "wait"
+    """Who produces this tool call's result.
+
+    ``EXECUTE`` -- the tool does. ``DENY`` -- admission does, and the reason
+    is the result. ``AWAIT_HUMAN`` -- a person does, either by approving so
+    the tool then runs, or by answering, where their answer is the result.
+
+    Only ``AWAIT_HUMAN`` suspends anything, which is why the old names were
+    confusing: ``BLOCK`` read as "suspend" and was the one that never did.
+    """
+
+    EXECUTE = "execute"
+    DENY = "deny"
+    AWAIT_HUMAN = "await_human"
 
 
 @dataclass(frozen=True)
@@ -63,17 +73,17 @@ class ToolDecision:
     wait_request: ToolWaitRequest | None = None
 
     @classmethod
-    def allow(cls) -> "ToolDecision":
-        return cls(kind=ToolDecisionKind.ALLOW)
+    def execute(cls) -> "ToolDecision":
+        return cls(kind=ToolDecisionKind.EXECUTE)
 
     @classmethod
-    def block(cls, reason: str) -> "ToolDecision":
-        return cls(kind=ToolDecisionKind.BLOCK, reason=reason)
+    def deny(cls, reason: str) -> "ToolDecision":
+        return cls(kind=ToolDecisionKind.DENY, reason=reason)
 
     @classmethod
-    def wait(cls, request: ToolWaitRequest) -> "ToolDecision":
+    def await_human(cls, request: ToolWaitRequest) -> "ToolDecision":
         return cls(
-            kind=ToolDecisionKind.WAIT,
+            kind=ToolDecisionKind.AWAIT_HUMAN,
             reason=request.prompt,
             wait_request=request,
         )

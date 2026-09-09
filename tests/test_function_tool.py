@@ -103,7 +103,7 @@ async def test_approval_waits_then_executes_only_when_approved() -> None:
         await weather.build(call.args),
         cast(TurnContextView, object()),
     )
-    assert decision.kind is ToolDecisionKind.WAIT
+    assert decision.kind is ToolDecisionKind.AWAIT_HUMAN
     assert decision.wait_request is not None
     assert decision.wait_request.kind == "approval"
     assert decision.wait_request.prompt == "Check weather for Paris?"
@@ -121,7 +121,7 @@ async def test_approval_waits_then_executes_only_when_approved() -> None:
 @pytest.mark.asyncio
 async def test_custom_admission_and_resolution_callbacks() -> None:
     async def admit(args: dict[str, object]) -> ToolDecision:
-        return ToolDecision.wait(
+        return ToolDecision.await_human(
             ToolWaitRequest(kind="question", prompt=f"Units for {args['city']}?")
         )
 
@@ -142,7 +142,7 @@ async def test_custom_admission_and_resolution_callbacks() -> None:
         await weather.build(call.args),
         cast(TurnContextView, object()),
     )
-    assert decision.kind is ToolDecisionKind.WAIT
+    assert decision.kind is ToolDecisionKind.AWAIT_HUMAN
     result = await weather.on_resolve(_call({"city": "Paris"}), ToolResolution(answer="celsius"))
     assert result.output == {"city": "Paris", "units": "celsius"}
 
@@ -155,7 +155,7 @@ def test_tool_rejects_ambiguous_or_untyped_definitions() -> None:
         FunctionTool(
             candidate,
             approval="Approve?",
-            admission=lambda _args: ToolDecision.allow(),
+            admission=lambda _args: ToolDecision.execute(),
         )
 
     with pytest.raises(TypeError, match="requires a type annotation"):
