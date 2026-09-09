@@ -24,10 +24,24 @@ observe or resume.
 
 ### Durable delegation
 
-Pass a `spawner` when the child should own a thread. `TaskTool` spawns the
-child, returns `WAIT` for the parent's task call, and the parent parks. When the
-child completes, the application resolves that task call with the harvested
-child output.
+Pass a `spawner` when the child should own a thread. `TaskTool` starts the
+child and returns its thread id as the tool result. The parent is not parked
+and can start others, or carry on with something else.
+
+```json
+{"subagent": "researcher", "thread_id": "thr_...", "sub_thread_id": "thr_...", "status": "running"}
+```
+
+The parent does not poll for the ending. A finished sub-thread messages its
+parent, which wakes it whether it is parked or already closed — the same
+inbox a person's message arrives on. Use `check_subagent`, `message_subagent`
+and `stop_subagent` (`actant.tools.supervision_tools`) to look at a running
+child, say something else to it, or abandon it.
+
+Delegation used to park the parent on a `WAIT` until the child finished,
+resolved by the application through `resolve_tool_call`. That overloaded
+`WAIT` — which otherwise always means a person has to answer — onto a machine
+finishing its work, and a parent could supervise exactly one child.
 
 ```python
 task_tool = TaskTool(
@@ -49,8 +63,10 @@ A durable coordinator records:
 
 - child thread ID;
 - parent thread ID;
-- parent task tool-call ID;
 - child agent ID and display name.
+
+The parent's task call no longer needs recording as a link: it completes
+immediately, and its stored result already names the child thread.
 
 Register this link before sending the child's first message. Publishing hooks
 can then dual-publish child events onto the parent's channel with enough
@@ -70,11 +86,17 @@ The coordinator owns harvest semantics. It might return:
 - a success/failure envelope;
 - a product-specific result assembled from several stores.
 
-Register a `RunCompletionHandler` on `TemporalRuntimeWorker`. It runs inside
-the retryable `finalize_run` activity after projections are committed. The
-handler harvests persisted child output and resolves the parent's parked task
-call. `TaskTool.on_resolve` converts the JSON envelope into a normal
-`ToolResult`, after which the parent continues its agent run.
+Register a `RunCompletionHandler` on `TemporalRuntimeWorker`, or use the
+thread hooks. Either runs after the child's projections are committed. The
+handler harvests persisted child output and **sends the parent a message**
+saying the child is done.
+
+That message is what resumes the parent. It arrives on the same inbox a
+person's message would, so a completing subagent and a user speaking are the
+same kind of event, and a parent that has already closed is restarted by it.
+
+Deliver it idempotently: completion handlers retry, and signals are not
+deduplicated.
 
 ## Nested delegation
 
