@@ -50,7 +50,7 @@ from actant.runtime.stores.postgres import (
     SQLAlchemyToolCallStore,
     create_schema,
 )
-from actant.runtime.types.threads import AgentThread
+from actant.runtime.types.threads import AgentThread, ThreadStatus
 from actant.tools.base import Tool
 from actant.tools.supervise import supervision_tools
 from actant.tools.task import TaskTool
@@ -141,9 +141,10 @@ class DemoCoordinator:
             parent_thread_id=parent_thread_id,
             # The spawning tool call is no longer part of the link: the
             # task call completes immediately and its stored result names
+            # the sub-thread, which is what the UI reads.
             sub_agent_id=sub_agent_id,
             subagent_name=name,
-            metadata={"parent_agent_id": self._agent_id_for(parent_thread_id)},
+            metadata={"parent_agent_id": await self.agent_id_for(parent_thread_id)},
         )
         # Register BEFORE send_message so the hooks_factory sees the
         # link synchronously and wires dual-publish from the very
@@ -175,35 +176,74 @@ class DemoCoordinator:
 
     async def status(self, thread_id: str) -> JSONObject:
         """What the demo knows about a sub-thread, read by the model."""
-        agent_id = self._agent_id_for(thread_id)
-        try:
-            thread = await self.stores.threads.get(agent_id, thread_id)
-        except KeyError:
+        thread = await self._thread_row(thread_id)
+        if thread is None:
             return {"thread_id": thread_id, "status": "unknown"}
         return {
             "thread_id": thread_id,
-            "subagent": agent_id,
+            "subagent": thread.agent_id,
             "status": str(thread.status),
             "turn_count": thread.turn_count,
         }
 
     async def send(self, thread_id: str, message: str) -> None:
-        await self.runtime.send_message(self._agent_id_for(thread_id), thread_id, message)
+        # A finished sub-thread is a normal target: its next run has to
+        # publish to the root thread like the first one did, so put its
+        # chain back in the routing index before the message starts it.
+        await self._link_ancestry(thread_id)
+        await self.runtime.send_message(await self.agent_id_for(thread_id), thread_id, message)
 
     async def stop(self, thread_id: str) -> None:
         # Must be safe on a sub-thread that already finished — the model
         # has no way to know it did.
         try:
-            await self.runtime.cancel_thread(self._agent_id_for(thread_id), thread_id)
+            await self.runtime.cancel_thread(await self.agent_id_for(thread_id), thread_id)
         except Exception:  # noqa: BLE001 -- already gone is not an error here
             pass
 
-    def _agent_id_for(self, thread_id: str) -> str:
-        """Which agent owns a thread, without a store lookup: registered
-        sub-threads belong to their sub-agent, everything else to the one
-        top-level agent."""
-        link = self.registry.get(thread_id)
-        return link.sub_agent_id if link is not None else AGENT_ID
+    async def _thread_row(self, thread_id: str) -> AgentThread | None:
+        """The durable row for a thread, whichever demo agent owns it.
+
+        The stores are keyed by (agent_id, thread_id) and the demo has
+        three agents, so "which agent owns this thread" is three misses
+        at worst."""
+        for agent_id in (AGENT_ID, *_SUBAGENT_IDS.values()):
+            try:
+                return await self.stores.threads.get(agent_id, thread_id)
+            except KeyError:
+                continue
+        return None
+
+    async def agent_id_for(self, thread_id: str) -> str:
+        """Which agent owns a thread, read from the durable projection.
+
+        NOT from the registry: that is an in-memory event-routing index,
+        it is empty in a worker that did not spawn the thread, and a
+        finished sub-thread is dropped from it. Guessing the top-level
+        agent for a sub-thread starts a phantom workflow under the main
+        agent bearing the sub-thread's id."""
+        thread = await self._thread_row(thread_id)
+        return thread.agent_id if thread is not None else AGENT_ID
+
+    async def _link_ancestry(self, thread_id: str) -> None:
+        """Put a thread's parent chain back into the routing registry.
+
+        Registration normally happens in `spawn`, in the process that
+        spawned. Anything that wakes a sub-thread later — a follow-up
+        message, a resolved wait, a child of its own finishing — may run
+        after a restart or in another worker, so it rebuilds the chain
+        from the thread rows first. Registration is idempotent."""
+        thread = await self._thread_row(thread_id)
+        while thread is not None and thread.parent_thread_id is not None:
+            self.registry.register(
+                SubThreadLink(
+                    sub_thread_id=thread.id,
+                    parent_thread_id=thread.parent_thread_id,
+                    sub_agent_id=thread.agent_id,
+                    subagent_name=thread.agent_id,
+                )
+            )
+            thread = await self._thread_row(thread.parent_thread_id)
 
     # ─── Resolve flows ──────────────────────────────────────────────
 
@@ -218,14 +258,17 @@ class DemoCoordinator:
     ) -> None:
         """User-driven resolve (DeferredPanel POST). Single entry point.
 
-        Derives ``agent_id`` from the registry: if ``thread_id`` is a
-        registered sub-thread, the wait belongs to the sub-agent (e.g.
-        researcher's ask_user); otherwise it's a main-thread wait.
+        Derives ``agent_id`` from the thread row: if ``thread_id`` is a
+        sub-thread, the wait belongs to the sub-agent (e.g. researcher's
+        ask_user); otherwise it's a main-thread wait.
 
         Funneled through `resolve_tool_call`, which durably signals the
         owning thread workflow."""
+        # The resolve restarts the thread, so its events need somewhere
+        # to route, same as `send`.
+        await self._link_ancestry(thread_id)
         await self.runtime.resolve_tool_call(
-            self._agent_id_for(thread_id),
+            await self.agent_id_for(thread_id),
             thread_id,
             tool_call_id,
             approved=approved,
@@ -250,10 +293,24 @@ class DemoCoordinator:
         thread = await self.stores.threads.get(completion.agent_id, completion.thread_id)
         if thread.parent_thread_id is None:
             return
+        parent_agent_id = await self.agent_id_for(thread.parent_thread_id)
         # Completion handlers retry and signals are not deduplicated, so the
-        # live registration is the "not delivered yet" flag. Popped only after
-        # the send, so a failed send is retried rather than swallowed.
-        if completion.thread_id not in self.registry:
+        # parent's own transcript is the "already delivered" record: the
+        # envelope names the run that finished, and every run of a child
+        # gets its own delivery. Registry presence cannot serve here — the
+        # handler runs in whichever worker finalized the child's run, which
+        # is not necessarily the one that spawned it. The window between the
+        # signal and the workflow persisting the message is not covered; a
+        # host that cannot tolerate a repeat wants its own delivery table.
+        delivered = await self.stores.messages.list_for_thread(
+            parent_agent_id, thread.parent_thread_id
+        )
+        if any(
+            message.role == "user"
+            and isinstance(message.content, str)
+            and completion.run_id in message.content
+            for message in delivered
+        ):
             return
 
         messages = await self.stores.messages.list_for_thread(
@@ -274,14 +331,20 @@ class DemoCoordinator:
         envelope = {
             "subagent": completion.agent_id,
             "thread_id": completion.thread_id,
+            "run_id": completion.run_id,
             "succeeded": completion.succeeded,
             "text": text,
         }
+        # The parent may itself be a sub-thread whose link this worker has
+        # never seen, and the message is about to start a run on it.
+        await self._link_ancestry(thread.parent_thread_id)
         await self.runtime.send_message(
-            self._agent_id_for(thread.parent_thread_id),
+            parent_agent_id,
             thread.parent_thread_id,
             f"Subagent finished:\n```json\n{json.dumps(envelope, indent=2)}\n```",
         )
+        # The child's run is over, so its routing entry is dead weight until
+        # something wakes it again — and whatever does re-links it first.
         self.registry.pop(completion.thread_id)
 
     # ─── Shutdown ───────────────────────────────────────────────────
@@ -317,15 +380,21 @@ async def _restore_subthread_registry(
     registry: SubThreadRegistry,
     agent_ids: list[str],
 ) -> None:
-    """Rebuild live parent/child links from durable projections.
+    """Rebuild LIVE parent/child links from durable projections.
 
     A parent tool call no longer gates this: it completes as soon as the
     child is spawned, so the sub-thread row's parent id is the only link
-    there is.
+    there is. Liveness is the sub-thread's own status instead — a run that
+    Temporal will resume is the thing that still has events to route.
+    Registering every thread that ever had a parent would grow the index
+    without bound and index threads that will never emit again; the ones
+    that do wake later are re-linked by `DemoCoordinator._link_ancestry`.
     """
     for agent_id in agent_ids:
         for thread in await stores.threads.list_for_agent(agent_id):
             if thread.parent_thread_id is None:
+                continue
+            if thread.status is not ThreadStatus.ACTIVE:
                 continue
             registry.register(
                 SubThreadLink(

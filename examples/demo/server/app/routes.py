@@ -104,8 +104,7 @@ async def get_waiting_tool_calls(thread_id: str, request: Request) -> list[dict[
     # sub-thread's waiting tool calls belong to the sub-agent (e.g.
     # researcher's ask_user), not the main agent. Without this, the
     # FE refresh path loses sub-agent deferred panels.
-    link = coord.registry.get(thread_id)
-    agent_id = link.sub_agent_id if link is not None else AGENT_ID
+    agent_id = await coord.agent_id_for(thread_id)
     records = await coord.stores.tool_calls.get_open_for_thread(agent_id, thread_id)
     return [
         {

@@ -267,6 +267,45 @@ test('get_current_time regression: tool turn rendered BEFORE answer turn, never 
   expect(answerTurn.thinking).toBe('')
 })
 
+test('a persisted task() result links the call to its sub-thread after a refresh', () => {
+  // The stored tool message is `json.dumps(ToolResult.to_dict())`: the
+  // tool's output nested under "result", next to the tool_call_id the
+  // runtime stamps on every result before persisting it. The task
+  // output itself is `{subagent, thread_id, sub_thread_id, status}`
+  // from `TaskInvocation._start`.
+  const persisted: PersistedMessage[] = [
+    { role: 'user', content: 'research this' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        {
+          id: 'tc_task',
+          function: { name: 'task', arguments: '{"subagent":"researcher","message":"go"}' },
+        },
+      ],
+    },
+    {
+      role: 'tool',
+      content: JSON.stringify({
+        tool_call_id: 'tc_task',
+        result: {
+          subagent: 'researcher',
+          thread_id: 'sub_9',
+          sub_thread_id: 'sub_9',
+          status: 'running',
+        },
+      }),
+      tool_call_id: 'tc_task',
+      name: 'task',
+    },
+  ]
+  const call = (historyToEntries(persisted, TID)[1] as TurnEntry).toolCalls[0]
+  expect(call.state).toBe('ok')
+  expect(call.subThreadId).toBe('sub_9')
+  expect(call.subagent).toBe('researcher')
+})
+
 test('history rehydration matches live reducer shape for tool turn plus answer turn', () => {
   const persisted: PersistedMessage[] = [
     { role: 'user', content: 'time?' },

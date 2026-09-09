@@ -272,7 +272,11 @@ test('complete only finalizes turns on the matching thread', () => {
 // ─── task() delegation link ─────────────────────────────────────────
 
 test("a task() result links the call to its sub-thread (live SSE shape)", () => {
-  // Live events stringify the result with Python's `str()`.
+  // The exact string the server sends: `TaskInvocation._start` returns
+  // `ToolResult.ok({subagent, thread_id, sub_thread_id, status})` and
+  // `PublishingThreadHooks.on_tool_result` emits `str(result.output)`
+  // — a Python dict repr, single quotes and all. The persisted
+  // counterpart is covered in history.test.ts.
   const entries = applyAll([
     ts(),
     tcs('tc_task', 'task'),
@@ -280,23 +284,6 @@ test("a task() result links the call to its sub-thread (live SSE shape)", () => 
     tcResult(
       'tc_task',
       "{'subagent': 'researcher', 'thread_id': 'sub_9', 'sub_thread_id': 'sub_9', 'status': 'running'}",
-    ),
-  ])
-  const call = (entries[0] as TurnEntry).toolCalls[0]
-  expect(call.subThreadId).toBe('sub_9')
-  expect(call.subagent).toBe('researcher')
-})
-
-test("a task() result links the call to its sub-thread (persisted JSON shape)", () => {
-  const entries = applyAll([
-    ts(),
-    tcs('tc_task', 'task'),
-    tcResult(
-      'tc_task',
-      JSON.stringify({
-        result: { subagent: 'researcher', sub_thread_id: 'sub_9', status: 'running' },
-        tool_call_id: 'tc_task',
-      }),
     ),
   ])
   const call = (entries[0] as TurnEntry).toolCalls[0]
