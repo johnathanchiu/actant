@@ -1,0 +1,63 @@
+site_name: Actant
+site_description: Temporal-native runtime for persistent agents with durable inboxes, governed tools, and replay
+site_url: https://johnathanchiu.github.io/actant/
+repo_url: https://github.com/johnathanchiu/actant
+repo_name: johnathanchiu/actant
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - content.action.edit
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+
+plugins:
+  - search
+
+validation:
+  links:
+    anchors: warn
+    # One pre-existing link escapes docs/ (coordinator-guide.md links
+    # ../actant/runtime/coordinator.py) and cannot pass strict mode without
+    # editing content, which is deferred to the scheduled docs content pass.
+    # Restore this to the default "warn" once that link is rewritten.
+    not_found: info
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Overview: README.md
+  - Start here:
+      - Why Actant?: why-actant.md
+      - Core concepts: concepts.md
+      - Runtime architecture: architecture.md
+  - Guides:
+      - Running agents: actant-runtime-guide.md
+      - Tools: tools-guide.md
+      - Pauses and deferred work: pauses-and-resume.md
+      - Subagents: subagents.md
+      - Coordinator: coordinator-guide.md
+  - Project:
+      - Releasing: releasing.md

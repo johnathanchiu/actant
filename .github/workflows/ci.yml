@@ -130,11 +130,25 @@ jobs:
       - name: Build
         run: bun run build
 
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Build docs
+        run: uv run --group docs mkdocs build --strict
+
   required:
     name: ci / required
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [python, package, demo, viewer]
+    needs: [python, package, demo, viewer, docs]
     if: always()
     steps:
       - name: Check required jobs
@@ -153,5 +167,9 @@ jobs:
           fi
           if [ "${{ needs.viewer.result }}" != "success" ]; then
             echo "viewer job did not succeed"
+            exit 1
+          fi
+          if [ "${{ needs.docs.result }}" != "success" ]; then
+            echo "docs job did not succeed"
             exit 1
           fi
