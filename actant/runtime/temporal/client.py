@@ -31,6 +31,7 @@ from actant.runtime.temporal.types import (
     SignalName,
     TemporalRuntimeConfig,
     ThreadInput,
+    ThreadOutcome,
     ThreadStateView,
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
@@ -95,6 +96,47 @@ class TemporalRuntimeClient:
         # Signals don't have ids in Temporal; return the workflow id as
         # a stable handle the caller can correlate against.
         return wf_id
+
+    async def run_thread(
+        self,
+        agent_id: str,
+        thread_id: str,
+        content: str | list[dict[str, object]],
+    ) -> ThreadOutcome:
+        """Run a thread to completion and wait for it.
+
+        ``send_message`` is right for a conversation: it delivers and returns,
+        and the thread parks waiting for whatever comes next. A caller that
+        needs the work itself -- a job that asked an agent to build something
+        and cannot continue without it -- has nothing to wait on.
+
+        So the thread is started with ``exit_when_idle``, which ends the run
+        rather than parking it, and this awaits the workflow. The id is the
+        same one ``send_message`` derives, so a caller that retries reattaches
+        to the run already in flight instead of paying for a second one.
+
+        Returns how the run ended. What it produced is the agent's business --
+        it writes to the stores like any other run, and the caller reads it
+        back from there.
+        """
+        client = await self._get_client()
+        handle = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(
+                agent_id=agent_id,
+                thread_id=thread_id,
+                max_turns_per_run=self._max_turns_for_agent(agent_id),
+                external_resolution_timeout_seconds=(
+                    self.config.external_resolution_timeout_seconds
+                ),
+                history_size_threshold=self.config.history_size_threshold,
+                carry_inbox=[InboundMessage(content=content)],
+                exit_when_idle=True,
+            ),
+            id=self._workflow_id(agent_id, thread_id),
+            task_queue=self.config.task_queue,
+        )
+        return ThreadOutcome(await handle.result())
 
     def _max_turns_for_agent(self, agent_id: str) -> int:
         agent = self.agents.get(agent_id)

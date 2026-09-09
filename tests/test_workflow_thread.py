@@ -26,10 +26,13 @@ from actant.core import JSONObject, new_id
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime.temporal.activities import TemporalRuntimeActivities
+from actant.runtime.temporal.client import TemporalRuntimeClient
 from actant.runtime.temporal.types import (
     DeferredToolResolution,
     InboundMessage,
+    TemporalRuntimeConfig,
     ThreadInput,
+    ThreadOutcome,
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.events.lifecycle import AgentThreadHooks
@@ -904,3 +907,43 @@ async def test_cancelling_the_parent_cancels_the_child() -> None:
             )
 
             blocking.released.set()
+
+
+@pytest.mark.asyncio
+async def test_running_a_thread_waits_for_the_work() -> None:
+    """A caller that needs the work, not a conversation, can await it.
+
+    send_message delivers and returns, leaving the thread parked for
+    whatever comes next -- right for a chat, and useless to a job that
+    cannot continue until the agent has actually built something.
+    """
+    agent = _agent(FakeLLM([FakeResponse(text="built the thing")]))
+    stores = InMemoryRuntimeStores()
+    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+    task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
+
+    async with await WorkflowEnvironment.start_local() as env:
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=activities.all,
+        ):
+            runtime = TemporalRuntimeClient(
+                stores=stores,
+                agents={agent.id: agent},
+                config=TemporalRuntimeConfig(
+                    task_queue=task_queue,
+                    address=env.client.service_client.config.target_host,
+                    namespace=env.client.namespace,
+                ),
+            )
+
+            outcome = await runtime.run_thread(_AGENT, _THREAD, "build the thing")
+
+            # Returned because the run ended, not because it was delivered.
+            assert outcome is ThreadOutcome.STOPPED
+            messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
+            assert any(
+                m.role == "assistant" and m.content == "built the thing" for m in messages
+            ), "the work is already done by the time run_thread returns"

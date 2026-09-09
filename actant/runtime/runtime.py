@@ -21,7 +21,7 @@ from actant.runtime.events.publisher import EventSource
 from actant.runtime.events.streaming import StreamListener
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.temporal.client import TemporalRuntimeClient
-from actant.runtime.temporal.types import ThreadStateView
+from actant.runtime.temporal.types import ThreadOutcome, ThreadStateView
 from actant.runtime.thread import ThreadHandle
 from actant.runtime.types.threads import AgentThread
 
@@ -66,6 +66,19 @@ class AgentRuntime:
         content: str | list[dict[str, object]],
     ) -> str:
         return await self._client.send_message(agent_id, thread_id, content)
+
+    async def run_thread(
+        self,
+        agent_id: str,
+        thread_id: str,
+        content: str | list[dict[str, object]],
+    ) -> ThreadOutcome:
+        """Run a thread to completion, and wait for it.
+
+        For a caller that needs the work rather than a conversation. See
+        ``TemporalRuntimeClient.run_thread``.
+        """
+        return await self._client.run_thread(agent_id, thread_id, content)
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
         await self._client.cancel_thread(agent_id, thread_id)
