@@ -23,8 +23,9 @@ pattern is:
    - Implements a ``spawn_subagent`` method that registers a new
      :class:`SubThreadLink` BEFORE calling ``runtime.send_message``
      (so the hook factory sees the relationship synchronously).
-   - Routes both user-driven and sub-thread-completion resolutions through
-     ``runtime.resolve_tool_call``.
+   - Routes user-driven resolutions through ``runtime.resolve_tool_call``,
+     and tells a parent its sub-thread finished by sending it a message.
+     A subagent does not resolve anything: its parent was never waiting.
 
 See ``docs/coordinator-guide.md`` for the full pattern with code,
 and the ``examples/demo/`` directory in the actant repo for the canonical

@@ -1,8 +1,12 @@
 # Pauses and deferred work
 
-`AWAIT_HUMAN` is the central control-flow primitive for work that cannot safely finish
-now. Typical cases include human approval, a user question, an external job,
-or a delegated subagent.
+`AWAIT_HUMAN` is the control-flow primitive for a call whose result a
+**person** supplies: an approval, or a question only they can answer.
+
+It is not for waiting on a machine. A delegated subagent returns a handle
+immediately and messages its parent when it finishes, and an external job
+should do the same -- parking a thread on something that will finish by
+itself buys nothing and stops the agent doing anything else meanwhile.
 
 ## Lifecycle
 

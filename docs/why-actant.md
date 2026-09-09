@@ -53,7 +53,7 @@ time ----------------------------------------------------------------->
 
 lookup:       admit -> execute -> completed
 publish:      admit -> AWAIT_HUMAN ................. approval -> completed
-subagent:     admit -> AWAIT_HUMAN ..... child run ............ -> completed
+subagent:     admit -> execute -> completed (child runs on; it messages back)
 group:        [================ durable barrier =====================]
 next turn:                                                       start
 ```

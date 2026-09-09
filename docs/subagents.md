@@ -38,7 +38,7 @@ inbox a person's message arrives on. Use `check_subagent`, `message_subagent`
 and `stop_subagent` (`actant.tools.supervision_tools`) to look at a running
 child, say something else to it, or abandon it.
 
-Delegation used to park the parent on a `AWAIT_HUMAN` until the child finished,
+Delegation used to park the parent on an `AWAIT_HUMAN` until the child finished,
 resolved by the application through `resolve_tool_call`. That overloaded
 `AWAIT_HUMAN` — which otherwise always means a person has to answer — onto a machine
 finishing its work, and a parent could supervise exactly one child.

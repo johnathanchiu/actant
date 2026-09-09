@@ -94,9 +94,9 @@ class InMemorySubagentRegistry:
 class TaskTool:
     """Delegate to a registered subagent.
 
-    Pass exactly one of ``invoker`` (sync) or ``spawner`` (deferred).
+    Pass exactly one of ``invoker`` (sync) or ``spawner`` (background).
 
-    **Parent-thread resolution (deferred mode):** ``parent_thread_id``
+    **Parent-thread resolution (background mode):** ``parent_thread_id``
     is optional — if unset, the tool reads ``call.thread_id``
     from each invocation (which the runtime always stamps on
     ``ToolCallView``). This means a single ``TaskTool`` instance can be
@@ -124,12 +124,12 @@ class TaskTool:
     def __post_init__(self) -> None:
         if (self.invoker is None) == (self.spawner is None):
             raise ValueError("TaskTool requires exactly one of `invoker` or `spawner`")
-        # parent_thread_id is no longer required for deferred mode —
+        # parent_thread_id is no longer required for background mode --
         # ``can_execute`` falls back to ``call.thread_id`` when it's
         # unset. The old check is dropped intentionally.
 
     @property
-    def deferred(self) -> bool:
+    def background(self) -> bool:
         return self.spawner is not None
 
     @property
@@ -199,7 +199,7 @@ class TaskTool:
         context: TurnContextView | None,
     ) -> ToolDecision:
         del invocation, context
-        if not self.deferred:
+        if not self.background:
             return ToolDecision.execute()
         args: JSONObject = call.args if isinstance(call.args, dict) else {}
         subagent = args.get("subagent")
