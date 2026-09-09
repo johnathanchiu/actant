@@ -1,3 +1,6 @@
+# Transitional. Docs hosting is moving to Read the Docs (.readthedocs.yaml)
+# for per-tag versioned builds; this keeps the GitHub Pages site live until
+# actant.readthedocs.io is confirmed serving, then it can be deleted.
 name: docs
 
 on:
