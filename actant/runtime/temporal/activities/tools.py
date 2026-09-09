@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import cast
 
 from temporalio import activity
@@ -16,9 +17,7 @@ from actant.runtime.temporal.types import (
     ExecuteInput,
     ExecuteOutcome,
     ExecuteStatus,
-    ReadThreadAnswerInput,
     ResolveToolInput,
-    SpawnRequest,
 )
 from actant.runtime.types.context import TurnContext
 from actant.tools.admission import (
@@ -71,28 +70,6 @@ class ToolActivities(ActivityContext):
         decision = await _tool_decision(tool, record, invocation, context)
         if decision.kind == ToolDecisionKind.BLOCK:
             return await self._block(record, hooks, decision.reason or "Tool call blocked")
-        if decision.kind == ToolDecisionKind.SPAWN:
-            spawn = decision.spawn_request
-            if spawn is None:
-                return await self._block(record, hooks, "Tool spawn decision carried no request")
-            # WAITING, like a deferred call: the parent's turn is suspended on
-            # an answer that has not arrived. Where it comes from -- a person
-            # or a child agent -- is not something the transcript needs to
-            # distinguish.
-            await self.stores.tool_calls.update_status(
-                record.id,
-                ToolCallStatus.WAITING,
-                prompt=decision.reason or f"Delegating to {spawn.agent_id}",
-            )
-            return AdmitOutcome(
-                tool_call_id=record.id,
-                decision=AdmitDecision.SPAWN.value,
-                spawn_request=SpawnRequest(
-                    agent_id=spawn.agent_id,
-                    thread_id=spawn.thread_id,
-                    message=spawn.message,
-                ),
-            )
         if decision.kind == ToolDecisionKind.WAIT:
             request = decision.wait_request
             request_data = request.to_dict() if request is not None else None
@@ -161,7 +138,7 @@ class ToolActivities(ActivityContext):
         if tool is None:
             return await self._execute_failed(record.id, f"Tool {record.name} not found")
         try:
-            invocation = await tool.build(record.args)
+            invocation = await _build_invocation(tool, record)
         except Exception as exc:  # noqa: BLE001
             return await self._execute_failed(record.id, f"Tool build error: {exc}")
         try:
@@ -186,23 +163,6 @@ class ToolActivities(ActivityContext):
         except Exception:  # noqa: BLE001 -- preserve structured boundary
             pass
         return ExecuteOutcome(tool_call_id=tool_call_id, status=ExecuteStatus.FAILED.value)
-
-    @activity.defn(name=ActivityName.READ_THREAD_ANSWER)
-    async def read_thread_answer(self, payload: ReadThreadAnswerInput) -> str:
-        """What a delegated thread ended up saying.
-
-        A child thread writes its work to the store like any other; the
-        parent only needs the last thing it said, to hand back as the
-        result of the tool call that delegated to it.
-        """
-        messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
-        for message in reversed(messages):
-            if message.role != "assistant":
-                continue
-            text = _message_text(message.content).strip()
-            if text:
-                return text
-        return ""
 
     @activity.defn(name=ActivityName.RESOLVE_TOOL)
     async def resolve_tool(self, payload: ResolveToolInput) -> ExecuteOutcome:
@@ -311,19 +271,20 @@ def _outcome_from_record(record: ToolCallRecord) -> ExecuteOutcome:
     return _outcome(record.id, _result_from_record(record))
 
 
-def _message_text(content: str | list[dict[str, object]] | None) -> str:
-    """The readable part of a message, whether it is a string or blocks.
+async def _build_invocation(tool: object, record: ToolCallRecord) -> ToolInvocation:
+    """Build a tool's invocation, giving it the call when it wants one.
 
-    A message's content is either plain text or a list of blocks, only some
-    of which are text -- an image block has nothing a parent could hand back
-    as a tool result.
+    Most tools are a pure function of their arguments, so ``build(args)`` is
+    all they need. A few are about the call itself -- delegating to a subagent
+    is "this thread starts that one", which the arguments cannot express.
+
+    Discovered structurally, like ``can_execute`` and ``on_resolve``: a tool
+    opts in by defining ``build_for_call`` and nothing else changes.
     """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    return "\n".join(
-        str(block.get("text", ""))
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "text"
+    builder = cast(
+        "Callable[[ToolCallRecord], Awaitable[ToolInvocation]] | None",
+        getattr(tool, "build_for_call", None),
     )
+    if callable(builder):
+        return await builder(record)
+    return await cast(Tool, tool).build(record.args)

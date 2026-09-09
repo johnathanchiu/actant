@@ -75,7 +75,6 @@ function subActivity(
   return {
     subThreadId,
     parentThreadId: MAIN_TID,
-    parentToolCallId: 'tc_task',
     subagent: 'researcher',
     turns: [turn(toolCalls, subThreadId)],
     isStreaming: false,

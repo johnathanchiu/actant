@@ -1,16 +1,22 @@
-"""TaskTool's parent_thread_id resolution.
+"""TaskTool's parent_thread_id resolution, and what a spawn returns.
 
-v0.2 makes ``parent_thread_id`` optional at construction. The tool
-falls back to ``call.thread_id`` from the per-call ``ToolCallView``,
-so a single ``TaskTool`` instance can be shared across many threads
-in one ``AgentDefinition``.
+``parent_thread_id`` is optional at construction: the tool falls back to
+``call.thread_id`` from the per-call ``ToolCallView``, so one ``TaskTool``
+can be shared across many threads in one ``AgentDefinition``.
+
+Admission only validates. The spawn itself happens in ``execute``, and
+returns the sub-thread's id rather than its answer -- the parent gets a
+handle it can supervise instead of stopping until the subagent is done.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
 from actant.core import JSONObject
+from actant.runtime.events.lifecycle import PublishingThreadHooks
 from actant.tools.admission import ToolDecisionKind
 from actant.tools.task import TaskTool
 
@@ -21,7 +27,6 @@ class _RecordedSpawn:
     message: str
     context: JSONObject
     parent_thread_id: str
-    parent_tool_call_id: str
 
 
 @dataclass
@@ -37,17 +42,16 @@ class _CapturingSpawner:
         message: str,
         context: JSONObject,
         parent_thread_id: str,
-        parent_tool_call_id: str,
-    ) -> None:
+    ) -> str:
         self.spawns.append(
             _RecordedSpawn(
                 name=name,
                 message=message,
                 context=context,
                 parent_thread_id=parent_thread_id,
-                parent_tool_call_id=parent_tool_call_id,
             )
         )
+        return f"sub_{len(self.spawns)}"
 
 
 @dataclass
@@ -77,9 +81,22 @@ async def test_construction_time_parent_thread_id_wins() -> None:
         args={"subagent": "researcher", "message": "do a thing"},
     )
     decision = await tool.can_execute(call, None, None)
-    assert decision.kind == ToolDecisionKind.WAIT
+    assert decision.kind == ToolDecisionKind.ALLOW
+    # Admission does not spawn: it runs for calls that never execute.
+    assert spawner.spawns == []
+
+    result = await (await tool.build_for_call(call)).execute()
     assert len(spawner.spawns) == 1
     assert spawner.spawns[0].parent_thread_id == "thread_constructed"
+    assert result.output == {
+        "subagent": "researcher",
+        "thread_id": "sub_1",
+        "sub_thread_id": "sub_1",
+        "status": "running",
+    }
+    # In the output rather than metadata on purpose: the tool_result event
+    # carries only output, so a viewer cannot see metadata at all.
+    assert result.metadata == {}
 
 
 async def test_per_call_thread_id_fallback() -> None:
@@ -98,10 +115,11 @@ async def test_per_call_thread_id_fallback() -> None:
         thread_id="thread_beta",
         args={"subagent": "researcher", "message": "task B"},
     )
-    decision_a = await tool.can_execute(call_a, None, None)
-    decision_b = await tool.can_execute(call_b, None, None)
-    assert decision_a.kind == ToolDecisionKind.WAIT
-    assert decision_b.kind == ToolDecisionKind.WAIT
+    assert (await tool.can_execute(call_a, None, None)).kind == ToolDecisionKind.ALLOW
+    assert (await tool.can_execute(call_b, None, None)).kind == ToolDecisionKind.ALLOW
+
+    await (await tool.build_for_call(call_a)).execute()
+    await (await tool.build_for_call(call_b)).execute()
     assert len(spawner.spawns) == 2
     assert spawner.spawns[0].parent_thread_id == "thread_alpha"
     assert spawner.spawns[1].parent_thread_id == "thread_beta"
@@ -150,3 +168,35 @@ async def test_sync_mode_still_allows_no_parent_thread_id() -> None:
     )
     decision = await tool.can_execute(call, None, None)
     assert decision.kind == ToolDecisionKind.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_the_sub_thread_id_survives_the_event_a_viewer_sees() -> None:
+    """A viewer must be able to link the child to the call that started it.
+
+    This asserts through the event, not the ToolResult, because that is
+    where it broke: ``on_tool_result`` publishes ``output`` and ``error``
+    and nothing else, so anything put in ``metadata`` is invisible to a UI
+    until the page is reloaded and history is read from the store instead.
+    """
+    published: list[JSONObject] = []
+
+    class _Publisher:
+        async def publish(self, channel: str, event: JSONObject) -> None:
+            published.append(event)
+
+    spawner = _CapturingSpawner()
+    tool = TaskTool(spawner=spawner, parent_thread_id="thread_1")
+    call = _FakeCall(id="tc_1", thread_id="thread_1", args={"subagent": "r", "message": "go"})
+
+    result = await (await tool.build_for_call(call)).execute()
+    hooks = PublishingThreadHooks("thread_1", _Publisher())
+    await hooks.on_tool_result("tc_1", result)
+
+    assert published, "the tool result was published"
+    # The key, not the value: ``thread_id`` carries the same string, so
+    # asserting on the value alone passes even when sub_thread_id is absent.
+    # A viewer looks for this key to attach the child to the call.
+    assert "sub_thread_id" in str(published[0]["data"]), (
+        "a viewer can find the sub-thread id in the event it actually receives"
+    )

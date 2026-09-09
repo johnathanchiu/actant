@@ -76,7 +76,6 @@ class SubThreadLink:
 
     sub_thread_id: str
     parent_thread_id: str
-    parent_tool_call_id: str
     sub_agent_id: str
     subagent_name: str | None = None
     metadata: JSONObject = field(default_factory=dict)
@@ -86,9 +85,9 @@ class SubThreadRegistry:
     """In-memory map of active sub-threads keyed by ``sub_thread_id``.
 
     Owned by the app's coordinator. Lifetime is process-scoped; applications
-    rebuild it from persisted thread parent fields on startup. Durable parent
-    resolution must use a ``RunCompletionHandler`` and projection data rather
-    than relying on registry presence.
+    rebuild it from persisted thread parent fields on startup. Telling a
+    parent its child has finished must use a ``RunCompletionHandler`` and
+    projection data rather than relying on registry presence.
 
     Thread-safety: registrations and lookups happen from coroutines
     on a single event loop. The registry is NOT safe for use across
@@ -111,15 +110,6 @@ class SubThreadRegistry:
         time so the registry only holds active sub-threads."""
         return self._links.pop(sub_thread_id, None)
 
-    def find_by_parent_tool_call(self, parent_tool_call_id: str) -> SubThreadLink | None:
-        """Look up a sub-thread by the tool call that spawned it.
-        Useful when the parent's deferred resolution flow needs to
-        find the sub-thread it's waiting on."""
-        for link in self._links.values():
-            if link.parent_tool_call_id == parent_tool_call_id:
-                return link
-        return None
-
     def __contains__(self, sub_thread_id: str) -> bool:
         return sub_thread_id in self._links
 
@@ -130,10 +120,7 @@ class SubThreadRegistry:
 def _parent_metadata_for(link: SubThreadLink) -> JSONObject:
     """Stamps a sub-thread event with parent context so the FE can
     attribute it to the parent's ``task()`` row."""
-    metadata: JSONObject = {
-        "parent_thread_id": link.parent_thread_id,
-        "parent_tool_call_id": link.parent_tool_call_id,
-    }
+    metadata: JSONObject = {"parent_thread_id": link.parent_thread_id}
     if link.subagent_name is not None:
         metadata["subagent"] = link.subagent_name
     return metadata

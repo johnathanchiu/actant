@@ -130,13 +130,17 @@ export function applyEventToToolCall(
   event: ActantEvent,
 ): ToolCallEntry {
   switch (event.type) {
-    case 'tool_result':
+    case 'tool_result': {
+      const link = subThreadFromResult(event.data.output)
       return {
         ...call,
         state: event.data.error ? 'error' : 'ok',
         result: event.data.output,
         error: event.data.error,
+        subThreadId: link?.subThreadId ?? call.subThreadId,
+        subagent: link?.subagent ?? call.subagent,
       }
+    }
     case 'tool_waiting': {
       const rawOptions = (event.data.wait_payload as { options?: unknown } | undefined)
         ?.options
@@ -161,6 +165,24 @@ export function applyEventToToolCall(
     default:
       return call
   }
+}
+
+/** A `task()` call resolves immediately with
+ * `{subagent, thread_id, sub_thread_id, status}` — that result is the
+ * only parent→child link there is, and it lands as soon as the child
+ * is spawned rather than when it finishes.
+ *
+ * Matched by regex rather than parsed: live SSE stringifies the result
+ * with Python's `str()` (single quotes), while the history path stores
+ * real JSON. Both shapes are one pattern. */
+function subThreadFromResult(
+  output: string | null,
+): { subThreadId: string; subagent: string | null } | null {
+  if (!output) return null
+  const id = /["']sub_thread_id["']:\s*["']([^"']+)["']/.exec(output)
+  if (!id) return null
+  const subagent = /["']subagent["']:\s*["']([^"']+)["']/.exec(output)
+  return { subThreadId: id[1], subagent: subagent?.[1] ?? null }
 }
 
 function safeParseObject(text: string): Record<string, unknown> | null {

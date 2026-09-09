@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -103,8 +104,7 @@ async def get_waiting_tool_calls(thread_id: str, request: Request) -> list[dict[
     # sub-thread's waiting tool calls belong to the sub-agent (e.g.
     # researcher's ask_user), not the main agent. Without this, the
     # FE refresh path loses sub-agent deferred panels.
-    link = coord.registry.get(thread_id)
-    agent_id = link.sub_agent_id if link is not None else AGENT_ID
+    agent_id = await coord.agent_id_for(thread_id)
     records = await coord.stores.tool_calls.get_open_for_thread(agent_id, thread_id)
     return [
         {
@@ -136,15 +136,10 @@ async def list_sub_threads(thread_id: str, request: Request) -> list[dict[str, A
         descendants.extend(found)
         known_parents.update(t.id for t in found)
         remaining = [t for t in remaining if t not in found]
-    return [
-        {
-            "sub_thread_id": t.id,
-            "parent_thread_id": t.parent_thread_id,
-            "parent_tool_call_id": t.parent_tool_call_id,
-        }
-        for t in descendants
-        if t.parent_tool_call_id
-    ]
+    # No spawning tool call in the link any more: the parent's task() call
+    # completes immediately and its stored result names the sub-thread, so
+    # the FE reads the pairing off that result.
+    return [{"sub_thread_id": t.id, "parent_thread_id": t.parent_thread_id} for t in descendants]
 
 
 @router.post("/threads/{thread_id}/messages", status_code=202)
@@ -194,7 +189,7 @@ async def stream_events(thread_id: str, request: Request) -> EventSourceResponse
     coord = get_coordinator(request)
     channel = f"thread:{thread_id}"
 
-    async def event_source() -> Any:
+    async def event_source() -> AsyncIterator[dict[str, Any]]:
         yield {"comment": "connected"}
         subscription = coord.stores.publisher.subscribe(channel)
         try:

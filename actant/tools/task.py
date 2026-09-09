@@ -8,22 +8,30 @@ Supports two modes:
   (echo, deterministic transforms, fan-out aggregation that
   finishes in one call).
 
-- **Deferred** — provide a ``spawner`` plus ``parent_thread_id``.
-  ``can_execute`` returns ``ToolDecision.wait`` immediately and
-  schedules ``spawner.spawn(...)`` via ``asyncio.create_task`` so
-  the executor's ``status=WAITING`` write lands first. The
-  spawner kicks off a sub-thread on the host coordinator;
-  the coordinator must arrange that the sub-thread's terminal
-  event calls ``resolve_tool_call(parent_tool_call_id, ...)``
-  with a JSON-encoded result envelope. ``on_resolve`` then
-  parses that envelope into the ``ToolResult`` the parent
-  agent ultimately sees. Right for sub-thread delegations
-  that span many turns and don't fit a single async call.
+- **Background** — provide a ``spawner``. ``execute()`` starts the
+  sub-thread and returns its id straight away. Right for delegations
+  that span many turns.
+
+  Background does not mean a different kind of tool call. Every tool
+  call is blocking: the agent calls it and gets a result. This one
+  returns a handle rather than an answer, which is what lets a parent
+  start several subagents and supervise them instead of stopping on
+  the first. Use ``check``/``message``/``stop`` (``supervise.py``) to
+  work with what it returns.
+
+  The parent does not have to poll for the ending: a finished
+  sub-thread messages its parent, which wakes it whether it is parked
+  or already closed.
+
+This tool used to park the parent on a ``WAIT`` until the subagent
+finished, resolved by the host through ``resolve_tool_call``. That
+overloaded ``WAIT`` -- which otherwise always means "a person has to
+answer" -- onto a machine finishing its work, and it meant a parent
+could supervise exactly one child, badly.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -32,8 +40,6 @@ from actant.core import JSONObject, JSONValue
 from actant.tools.admission import (
     ToolCallView,
     ToolDecision,
-    ToolResolution,
-    ToolWaitRequest,
     TurnContextView,
 )
 from actant.tools.base import (
@@ -52,13 +58,12 @@ class SubagentInvoker(Protocol):
 
 
 class SubagentSpawner(Protocol):
-    """Deferred mode: ``spawn`` kicks off a sub-thread and returns.
+    """Background mode: ``spawn`` starts a sub-thread and returns its id.
 
-    The host coordinator is responsible for ensuring that the
-    sub-thread's terminal event eventually calls
-    ``resolve_tool_call(parent_tool_call_id, approved, answer)``
-    with ``answer`` being a JSON-encoded result envelope the
-    parent's ``on_resolve`` can parse.
+    The id is what the parent gets back as the tool result, and what it
+    passes to ``check``/``message``/``stop``. Raising is how a spawner
+    reports that it could not start -- the caller turns that into a
+    failed tool result rather than a parent waiting on nothing.
     """
 
     async def spawn(
@@ -68,8 +73,7 @@ class SubagentSpawner(Protocol):
         message: str,
         context: JSONObject,
         parent_thread_id: str,
-        parent_tool_call_id: str,
-    ) -> None: ...
+    ) -> str: ...
 
 
 @dataclass
@@ -166,11 +170,27 @@ class TaskTool:
         )
 
     async def build(self, params: JSONObject) -> "TaskInvocation":
-        return TaskInvocation(params, self.invoker)
+        return TaskInvocation(params, invoker=self.invoker)
 
-    # Deferred mode hooks. The runtime discovers ``can_execute`` and
-    # ``on_resolve`` structurally; expose both and gate their behavior on
-    # ``self.deferred`` so synchronous TaskTool instances use ALLOW.
+    async def build_for_call(self, call: ToolCallView) -> "TaskInvocation":
+        """The call carries the thread doing the delegating.
+
+        Discovered structurally by the runtime (see ``_build_invocation``).
+        Plain ``build`` cannot serve background mode: the parent thread id is
+        not in the tool's arguments, and it is the whole point of the call.
+        """
+        args: JSONObject = call.args if isinstance(call.args, dict) else {}
+        return TaskInvocation(
+            args,
+            invoker=self.invoker,
+            spawner=self.spawner,
+            parent_thread_id=self._parent_thread_id(call),
+        )
+
+    # ``can_execute`` validates and nothing more. Starting the subagent is
+    # work, and work belongs in ``execute`` -- admission runs on every call
+    # including ones that get denied, so a side effect here fires for calls
+    # that never execute.
 
     async def can_execute(
         self,
@@ -191,104 +211,99 @@ class TaskTool:
             return ToolDecision.block(reason=f"Unknown subagent {subagent!r}; valid: {valid}")
         if not isinstance(message, str) or not message.strip():
             return ToolDecision.block(reason="`message` is required")
-        ctx = _context_payload(args.get("context"))
-
-        # Spawn synchronously: the sub-thread's earliest possible
-        # terminal event is at least one LLM round trip away, so the
-        # executor's subsequent ``status=WAITING`` write trivially
-        # lands first. Using ``asyncio.create_task`` here would be
-        # unsafe — the loop only keeps weak references to tasks, so a
-        # fire-and-forget task can be GC'd before the spawn coroutine
-        # ever runs. ``await`` keeps the reference alive for the
-        # duration of can_execute and surfaces spawn failures as
-        # exceptions instead of silently dropped tasks.
-        spawner = self.spawner
-        assert spawner is not None  # invariant: deferred mode
-        # Prefer the construction-time parent_thread_id (apps that build
-        # one TaskTool per thread); fall back to the per-call thread_id
-        # the runtime stamps on every ToolCallView. The fallback lets
-        # apps share one TaskTool across many threads.
-        parent_thread_id = self.parent_thread_id or getattr(call, "thread_id", None)
-        if not parent_thread_id:
+        if self._parent_thread_id(call) is None:
             return ToolDecision.block(
                 reason=(
                     "TaskTool has no parent_thread_id: neither set at "
                     "construction nor present on the tool call."
                 )
             )
-        try:
-            await spawner.spawn(
-                name=subagent,
-                message=message,
-                context=ctx,
-                parent_thread_id=parent_thread_id,
-                parent_tool_call_id=call.id,
-            )
-        except Exception as exc:
-            # Surface spawn failures inline rather than silently
-            # parking the parent forever. Returning BLOCK rolls back
-            # to a normal failed-tool flow.
-            return ToolDecision.block(reason=f"Subagent spawn failed: {exc}")
+        return ToolDecision.allow()
 
-        prompt = f"Delegating to {subagent}: {message[:80]}"
-        return ToolDecision.wait(
-            ToolWaitRequest(
-                kind="subagent_task",
-                prompt=prompt,
-                payload={"subagent": subagent},
-            )
-        )
+    def _parent_thread_id(self, call: ToolCallView) -> str | None:
+        """Prefer the construction-time id, fall back to the call's.
 
-    async def on_resolve(
-        self,
-        call: ToolCallView,
-        resolution: ToolResolution,
-    ) -> ToolResult:
-        del call
-        if not self.deferred:
-            # Shouldn't happen in sync mode (no WAIT was returned), but
-            # be defensive: just echo the resolution back.
-            return ToolResult.ok({"approved": resolution.approved, "answer": resolution.answer})
-        if resolution.approved is False:
-            return ToolResult.fail(resolution.answer or "Subagent task failed")
-        if not resolution.answer:
-            return ToolResult.ok({})
-        try:
-            payload = json.loads(resolution.answer)
-        except (ValueError, TypeError) as exc:
-            return ToolResult.fail(f"Subagent returned malformed result: {exc}")
-        if not isinstance(payload, dict):
-            return ToolResult.fail("Subagent returned non-object result")
-        return ToolResult.ok(payload)
+        Apps that build one TaskTool per thread set it at construction;
+        apps that share one across threads rely on the id the runtime
+        stamps on every ToolCallView.
+
+        Empty is missing, not a thread: a spawn against "" would parent the
+        child to nothing, and the notification on completion would have
+        nowhere to go.
+        """
+        return self.parent_thread_id or getattr(call, "thread_id", None) or None
 
 
 class TaskInvocation(BaseToolInvocation[JSONObject, object]):
-    """Sync-mode invocation. Deferred-mode TaskTools never reach
-    ``execute`` because ``can_execute`` returns WAIT first."""
+    """Delegate, either inline or in the background.
 
-    def __init__(self, params: JSONObject, invoker: SubagentInvoker | None) -> None:
+    Background mode returns the sub-thread's id rather than its answer. That
+    is deliberate: the parent gets a handle it can supervise, instead of
+    stopping until the subagent is done. The work itself arrives later --
+    the sub-thread messages its parent when it finishes.
+    """
+
+    def __init__(
+        self,
+        params: JSONObject,
+        *,
+        invoker: SubagentInvoker | None = None,
+        spawner: SubagentSpawner | None = None,
+        parent_thread_id: str | None = None,
+    ) -> None:
         super().__init__(params)
         self._invoker = invoker
+        self._spawner = spawner
+        self._parent_thread_id = parent_thread_id
 
     def get_description(self) -> str:
         subagent = self.params.get("subagent")
         return f"Delegate task to {subagent}" if isinstance(subagent, str) else "Delegate task"
 
     async def execute(self) -> ToolResult:
-        if self._invoker is None:
-            # Deferred-mode safety: if we somehow get here, fail
-            # rather than silently returning empty.
-            return ToolResult.fail(
-                "TaskTool is in deferred mode; execute() should not be reached."
-            )
         subagent = self.params.get("subagent")
         message = self.params.get("message")
-        context = self.params.get("context")
         if not isinstance(subagent, str) or not subagent:
             return ToolResult.fail("subagent is required")
         if not isinstance(message, str) or not message:
             return ToolResult.fail("message is required")
-        return await self._invoker.invoke(subagent, message, _context_payload(context))
+        context = _context_payload(self.params.get("context"))
+
+        if self._spawner is not None:
+            return await self._start(subagent, message, context)
+        if self._invoker is None:
+            return ToolResult.fail("TaskTool has neither an invoker nor a spawner.")
+        return await self._invoker.invoke(subagent, message, context)
+
+    async def _start(self, subagent: str, message: str, context: JSONObject) -> ToolResult:
+        spawner = self._spawner
+        assert spawner is not None
+        if self._parent_thread_id is None:
+            return ToolResult.fail("TaskTool has no parent_thread_id.")
+        try:
+            thread_id = await spawner.spawn(
+                name=subagent,
+                message=message,
+                context=context,
+                parent_thread_id=self._parent_thread_id,
+            )
+        except Exception as exc:  # noqa: BLE001 -- a failed spawn is a failed tool
+            return ToolResult.fail(f"Subagent spawn failed: {exc}")
+
+        # ``sub_thread_id`` is in the output, not in metadata, even though
+        # it is bookkeeping rather than something the model needs: the tool
+        # result event carries only ``output`` and ``error``
+        # (``PublishingThreadHooks.on_tool_result``), so metadata never
+        # reaches a viewer. Putting it there hides a running subagent from
+        # the UI until someone reloads the page.
+        return ToolResult.ok(
+            {
+                "subagent": subagent,
+                "thread_id": thread_id,
+                "sub_thread_id": thread_id,
+                "status": "running",
+            }
+        )
 
 
 def _context_payload(value: JSONValue | None) -> JSONObject:

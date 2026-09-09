@@ -26,7 +26,6 @@ import asyncio
 from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ApplicationError, ChildWorkflowError
 
 with workflow.unsafe.imports_passed_through():
     from actant.runtime.temporal.activities import (
@@ -46,11 +45,9 @@ from actant.runtime.temporal.types import (
     ExecuteStatus,
     FinalizeRunInput,
     InboundMessage,
-    ReadThreadAnswerInput,
     ResolveToolInput,
     RunOutcome,
     RunTurnInput,
-    SpawnRequest,
     StartRunInput,
     ThreadInput,
     ThreadOutcome,
@@ -288,20 +285,6 @@ class AgentThreadWorkflow:
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
                 )
-            elif decision == AdmitDecision.SPAWN.value:
-                request = admits[spec.id].spawn_request
-                if request is None:
-                    raise ApplicationError("admit returned SPAWN without a request")
-                exec_handles.append(
-                    asyncio.create_task(
-                        self._spawn_tool(
-                            payload,
-                            run_id=run_id,
-                            tool_call_id=spec.id,
-                            request=request,
-                        )
-                    )
-                )
             elif decision == AdmitDecision.WAIT.value:
                 exec_handles.append(
                     asyncio.create_task(
@@ -333,91 +316,6 @@ class AgentThreadWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
         return terminal_tool
-
-    async def _spawn_tool(
-        self,
-        payload: ThreadInput,
-        *,
-        run_id: str,
-        tool_call_id: str,
-        request: SpawnRequest,
-    ) -> ExecuteOutcome:
-        """Delegate to another agent and wait for what it says.
-
-        A child workflow rather than a separately started one, so the
-        parent simply awaits its result. Started with the id the admitting
-        side derived from this tool call: a replayed or retried parent
-        reattaches to the run already in flight instead of paying for a
-        second one.
-
-        The child exits when idle -- a conversation parks waiting for the
-        next message, and a parent awaiting that would wait forever.
-
-        Cancelling the parent cancels the child. The cancel arrives as a
-        signal, which only sets a flag, so the await has to watch for it:
-        without that the parent would sit here until the child finished
-        work nobody is waiting for any more, and only notice the cancel
-        afterwards. Every other tool path already breaks on the flag.
-        """
-        child = await workflow.start_child_workflow(
-            AgentThreadWorkflow.run,
-            ThreadInput(
-                agent_id=request.agent_id,
-                thread_id=request.thread_id,
-                max_turns_per_run=payload.max_turns_per_run,
-                external_resolution_timeout_seconds=(payload.external_resolution_timeout_seconds),
-                history_size_threshold=payload.history_size_threshold,
-                carry_inbox=[InboundMessage(content=request.message)],
-                exit_when_idle=True,
-            ),
-            id=request.thread_id,
-        )
-        watch = asyncio.ensure_future(workflow.wait_condition(lambda: self._cancelled))
-        done, _ = await workflow.wait([child, watch], return_when=asyncio.FIRST_COMPLETED)
-
-        if child not in done:
-            # The parent was cancelled while the child was still working.
-            child.cancel()
-            answer = "The delegated agent was cancelled."
-            approved = False
-        else:
-            watch.cancel()
-            try:
-                await child
-            except ChildWorkflowError as error:
-                answer = f"The delegated agent failed: {error}"
-                approved = False
-            else:
-                answer = await workflow.execute_activity_method(
-                    ToolActivities.read_thread_answer,
-                    ReadThreadAnswerInput(agent_id=request.agent_id, thread_id=request.thread_id),
-                    start_to_close_timeout=_PROJECTION_TIMEOUT,
-                )
-                approved = True
-
-        # Persisted through the same path a deferred resolution takes, so a
-        # delegated result and an externally answered one are the same kind
-        # of thing to everything downstream.
-        self._resolving_tool_ids.add(tool_call_id)
-        outcome = await workflow.execute_activity_method(
-            ToolActivities.resolve_tool,
-            ResolveToolInput(
-                agent_id=payload.agent_id,
-                thread_id=payload.thread_id,
-                run_id=run_id,
-                tool_call_id=tool_call_id,
-                resolution=DeferredToolResolution(
-                    tool_call_id=tool_call_id,
-                    approved=approved,
-                    answer=answer,
-                ),
-            ),
-            start_to_close_timeout=_TOOL_TIMEOUT,
-            retry_policy=RetryPolicy(maximum_attempts=1),
-        )
-        self._resolving_tool_ids.discard(tool_call_id)
-        self._resolved_tool_ids.add(tool_call_id)
-        return outcome
 
     async def _resolve_tool(
         self,

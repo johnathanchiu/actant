@@ -31,7 +31,6 @@ def test_registry_register_get_pop_roundtrip() -> None:
     link = SubThreadLink(
         sub_thread_id="sub_1",
         parent_thread_id="thread_a",
-        parent_tool_call_id="tc_1",
         sub_agent_id="researcher",
         subagent_name="researcher",
     )
@@ -46,21 +45,10 @@ def test_registry_register_get_pop_roundtrip() -> None:
     assert len(reg) == 0
 
 
-def test_registry_find_by_parent_tool_call() -> None:
-    reg = SubThreadRegistry()
-    link_a = SubThreadLink("sub_a", "thread_x", "tc_alpha", "researcher")
-    link_b = SubThreadLink("sub_b", "thread_x", "tc_beta", "researcher")
-    reg.register(link_a)
-    reg.register(link_b)
-    assert reg.find_by_parent_tool_call("tc_alpha") is link_a
-    assert reg.find_by_parent_tool_call("tc_beta") is link_b
-    assert reg.find_by_parent_tool_call("tc_unknown") is None
-
-
 def test_registry_register_is_idempotent() -> None:
     reg = SubThreadRegistry()
-    link_v1 = SubThreadLink("sub_1", "thread_a", "tc_1", "researcher")
-    link_v2 = SubThreadLink("sub_1", "thread_a", "tc_1", "researcher", subagent_name="researcher")
+    link_v1 = SubThreadLink("sub_1", "thread_a", "researcher")
+    link_v2 = SubThreadLink("sub_1", "thread_a", "researcher", subagent_name="researcher")
     reg.register(link_v1)
     reg.register(link_v2)  # overwrite
     assert reg.get("sub_1") is link_v2
@@ -93,7 +81,6 @@ async def test_hooks_factory_subthread_dual_publishes() -> None:
         SubThreadLink(
             sub_thread_id="sub_1",
             parent_thread_id="thread_parent",
-            parent_tool_call_id="tc_task_1",
             sub_agent_id="researcher",
             subagent_name="researcher",
         )
@@ -116,7 +103,6 @@ async def test_hooks_factory_subthread_dual_publishes() -> None:
     assert parent[0]["type"] == "custom"
     assert parent[0]["thread_id"] == "sub_1"
     assert parent[0]["parent_thread_id"] == "thread_parent"
-    assert parent[0]["parent_tool_call_id"] == "tc_task_1"
     assert parent[0]["subagent"] == "researcher"
 
 
@@ -150,7 +136,6 @@ async def test_listener_factory_subthread_dual_publishes() -> None:
         SubThreadLink(
             sub_thread_id="sub_x",
             parent_thread_id="thread_y",
-            parent_tool_call_id="tc_xy",
             sub_agent_id="researcher",
             subagent_name="researcher",
         )

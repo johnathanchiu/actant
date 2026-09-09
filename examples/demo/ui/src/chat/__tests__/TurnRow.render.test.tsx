@@ -177,7 +177,6 @@ test('task() tool call with a sub-thread renders the nested transcript inline', 
   const activity: SubThreadActivity = {
     subThreadId: 'sub_1',
     parentThreadId: TID,
-    parentToolCallId: 'tc_task',
     subagent: 'researcher',
     turns: [subTurn],
     isStreaming: false,
