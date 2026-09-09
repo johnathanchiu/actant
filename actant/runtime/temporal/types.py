@@ -280,7 +280,9 @@ class ApplyThreadCancellationInput:
 class ThreadStateView:
     agent_id: str
     thread_id: str
-    inbox_size: int
+    #: None when read from the stores, which cannot see a running
+    #: workflow's queue. Only a live workflow knows its own depth.
+    inbox_size: int | None
     turn_count_total: int
     current_run_id: str | None
     cancelled: bool

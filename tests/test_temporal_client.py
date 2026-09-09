@@ -435,3 +435,27 @@ async def test_continue_as_new_preserves_thread_state_between_agent_runs() -> No
                 ("assistant", "two"),
             ]
             await runtime.cancel_thread(_AGENT, _THREAD)
+
+
+@pytest.mark.asyncio
+async def test_state_for_a_thread_that_does_not_exist_is_an_error() -> None:
+    """A typo must not read back as a plausible idle thread.
+
+    get_state used to query the workflow, so a bad id simply failed. It
+    reads the stores now, and reading with get_or_create would answer by
+    creating the row -- turning a caller's mistake into a healthy-looking
+    answer, permanently.
+    """
+    stores = InMemoryRuntimeStores()
+    client = TemporalRuntimeClient(
+        stores=stores,
+        agents={},
+        config=TemporalRuntimeConfig(task_queue="unused"),
+    )
+
+    with pytest.raises(KeyError):
+        await client.get_state("agent", "thread_that_never_existed")
+
+    # And it did not create one on the way past.
+    with pytest.raises(KeyError):
+        await stores.threads.get("agent", "thread_that_never_existed")

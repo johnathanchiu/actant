@@ -20,7 +20,11 @@ import temporalio.service  # re-exported for callers that catch typed errors
 
 from actant.agents import AgentDefinition
 from actant.core import JSONObject
-from actant.runtime.exceptions import ToolCallNotFoundError, ToolCallNotWaitingError
+from actant.runtime.exceptions import (
+    ThreadNotFoundError,
+    ToolCallNotFoundError,
+    ToolCallNotWaitingError,
+)
 from actant.runtime.temporal.activities import (
     HookFactory,
     ListenerFactory,
@@ -156,6 +160,14 @@ class TemporalRuntimeClient:
         except temporalio.service.RPCError as error:
             if error.status is not temporalio.service.RPCStatusCode.NOT_FOUND:
                 raise
+            # NOT_FOUND covers "already finished" and "never existed", and
+            # only the first is fine. Ask the stores which it was, so a
+            # typo'd id or a misconfigured namespace still surfaces instead
+            # of every cancel silently succeeding forever.
+            try:
+                await self.stores.threads.get(agent_id, thread_id)
+            except KeyError:
+                raise ThreadNotFoundError(thread_id) from error
 
     async def get_state(self, agent_id: str, thread_id: str) -> ThreadStateView:
         """What the stores say about this thread.
@@ -166,13 +178,17 @@ class TemporalRuntimeClient:
         while and then starts failing, which is worse than not working at
         all. The stores are the durable record and answer either way.
         """
-        thread = await self.stores.threads.get_or_create(agent_id, thread_id)
+        # ``get`` rather than ``get_or_create``: asking about a thread that
+        # does not exist is a caller's mistake, and creating a row to answer
+        # it turns a typo into a plausible-looking idle thread.
+        thread = await self.stores.threads.get(agent_id, thread_id)
         return ThreadStateView(
             agent_id=agent_id,
             thread_id=thread_id,
-            # Nothing is queued between runs: an inbox exists only inside a
-            # running workflow, and a thread with queued work is running.
-            inbox_size=0,
+            # Only a running workflow knows its queue depth, and this no
+            # longer asks one. Reported as unknown rather than zero, because
+            # a message arriving mid-run does queue and zero would be a lie.
+            inbox_size=None,
             turn_count_total=thread.turn_count,
             current_run_id=thread.active_run_id,
             cancelled=thread.status is ThreadStatus.CANCELLED,

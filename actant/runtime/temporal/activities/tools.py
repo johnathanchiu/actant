@@ -53,7 +53,11 @@ class ToolActivities(ActivityContext):
             return await self._block(record, hooks, f"Tool {record.name} not found")
 
         try:
-            invocation = await tool.build(record.args)
+            # The same builder execution uses, so a tool that needs its call
+            # gets the same invocation in both places. Building one way here
+            # and another there is how can_execute ends up inspecting an
+            # object unlike the one that will actually run.
+            invocation = await _build_invocation(tool, record)
         except Exception as exc:  # noqa: BLE001
             return await self._block(record, hooks, f"Tool build error: {exc}")
 
