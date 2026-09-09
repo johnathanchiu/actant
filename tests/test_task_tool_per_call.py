@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from typing import cast
+
 from actant.core import JSONObject
 from actant.runtime.events.lifecycle import PublishingThreadHooks
 from actant.tools.admission import ToolDecisionKind
@@ -199,4 +201,36 @@ async def test_the_sub_thread_id_survives_the_event_a_viewer_sees() -> None:
     # A viewer looks for this key to attach the child to the call.
     assert "sub_thread_id" in str(published[0]["data"]), (
         "a viewer can find the sub-thread id in the event it actually receives"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_runtime_builds_a_task_invocation_with_its_call() -> None:
+    """The structural hook is what makes delegation work, so exercise it.
+
+    Every other test here calls ``build_for_call`` directly, which proves
+    the method and not the dispatch. If the runtime stopped finding it --
+    a renamed hook, a changed getattr -- it would silently fall back to
+    ``build(args)``, producing an invocation with no spawner, and every
+    delegation would fail at runtime against a fully green suite.
+    """
+    from actant.runtime.temporal.activities.tools import _build_invocation
+    from actant.tools.calls import ToolCallRecord
+
+    spawner = _CapturingSpawner()
+    tool = TaskTool(spawner=spawner)
+    record = _FakeCall(
+        id="tc_1",
+        thread_id="thread_from_the_record",
+        args={"subagent": "researcher", "message": "go"},
+    )
+
+    # _FakeCall is not a ToolCallRecord, but _build_invocation only reads
+    # what ToolCallView declares -- which is the point of the hook.
+    invocation = await _build_invocation(tool, cast(ToolCallRecord, record))
+    result = await invocation.execute()
+
+    assert result.error is None, result.error
+    assert spawner.spawns[0].parent_thread_id == "thread_from_the_record", (
+        "the runtime handed the tool its call, not just the arguments"
     )

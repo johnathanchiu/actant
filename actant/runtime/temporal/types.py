@@ -135,14 +135,6 @@ class ThreadInput:
     # Thread-level workflow state that must survive continue-as-new. The
     # per-agent-run turn budget intentionally does not carry forward.
     turn_count_total: int = 0
-    # Finish instead of parking once the inbox is empty.
-    #
-    # A conversation is long-lived: it runs, parks on wait_condition, and
-    # wakes when someone says something else. A delegated subagent is not --
-    # it is spawned to answer one thing, and a parent waiting on it needs it
-    # to end. Without this a parent could never await a child, because the
-    # child would park forever with the answer already written.
-    exit_when_idle: bool = False
 
 
 # === Activity I/O ===
@@ -288,7 +280,9 @@ class ApplyThreadCancellationInput:
 class ThreadStateView:
     agent_id: str
     thread_id: str
-    inbox_size: int
+    #: None when read from the stores, which cannot see a running
+    #: workflow's queue. Only a live workflow knows its own depth.
+    inbox_size: int | None
     turn_count_total: int
     current_run_id: str | None
     cancelled: bool

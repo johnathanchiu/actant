@@ -240,10 +240,22 @@ async def test_cancel_writes_placeholder_for_waiting_tool_calls() -> None:
 
 @pytest.mark.asyncio
 async def test_thread_status_is_cancelled_after_workflow_cancel() -> None:
-    """Pre-fix: thread.status was always IDLE post-finalize. UIs use
-    status to distinguish "between turns" from "this thread
-    is done" — so a cancelled session must read CANCELLED."""
-    agent = _agent(FakeLLM([FakeResponse(text="hi")]))
+    """A thread stopped mid-work must read CANCELLED, not IDLE.
+
+    UIs use status to tell "between turns" from "this is over", and the two
+    want different affordances.
+
+    Cancelled while a tool is parked on a human, deliberately. A thread now
+    ends as soon as its work is done, so cancelling after the reply landed
+    would race an already-finished workflow and prove nothing -- there would
+    be nothing left to cancel. Parked on a wait is the state where a thread
+    genuinely is still going and someone can still stop it.
+    """
+    tool_call = _tool_call("park")
+    agent = _agent(
+        FakeLLM([FakeResponse(tool_calls=[tool_call])]),
+        tools=[_ParkTool()],
+    )
 
     async def body(s: _RunSetup, client) -> None:  # type: ignore[no-untyped-def]
         handle = await client.start_workflow(
@@ -252,31 +264,38 @@ async def test_thread_status_is_cancelled_after_workflow_cancel() -> None:
             id=f"thread-{uuid.uuid4().hex}",
             task_queue=s.task_queue,
             start_signal="inbound",
-            start_signal_args=[InboundMessage(content="hi")],
+            start_signal_args=[InboundMessage(content="trigger park")],
         )
 
-        async def has_assistant() -> bool:
-            msgs = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
-            return any(m.role == "assistant" for m in msgs)
+        async def is_waiting() -> bool:
+            try:
+                rec = await s.stores.tool_calls.get(tool_call.id)
+            except KeyError:
+                return False
+            return rec.status == ToolCallStatus.WAITING
 
-        await _wait_for(has_assistant)
+        await _wait_for(is_waiting)
 
-        # Cancel after the first turn lands but before the workflow
-        # naturally exits — the next finalize will flip thread.status.
         await handle.cancel()
         try:
-            await asyncio.wait_for(handle.result(), timeout=5.0)
+            await asyncio.wait_for(handle.result(), timeout=10.0)
         except Exception:
             pass
 
+        async def cancelled() -> bool:
+            try:
+                t = await s.stores.threads.get(_AGENT, _THREAD)
+            except KeyError:
+                return False
+            return t.status == ThreadStatus.CANCELLED
+
+        await _wait_for(cancelled)
         thread = await s.stores.threads.get(_AGENT, _THREAD)
-        assert thread.status == ThreadStatus.CANCELLED
         assert thread.active_run_id is None
 
     await _run(body, agent=agent)
 
 
-@pytest.mark.asyncio
 async def test_thread_status_returns_to_idle_after_normal_completion() -> None:
     """COMPLETED outcome → thread.status=IDLE so the workflow can
     accept the next user message. Sanity check that the new mapping
@@ -306,10 +325,7 @@ async def test_thread_status_returns_to_idle_after_normal_completion() -> None:
         assert thread.status == ThreadStatus.IDLE
         assert thread.active_run_id is None
 
-        await handle.signal(AgentThreadWorkflow.cancel)
-        try:
-            await asyncio.wait_for(handle.result(), timeout=5.0)
-        except Exception:
-            pass
+        # It ends on its own; nothing has to stop it.
+        await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)

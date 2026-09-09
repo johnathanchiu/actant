@@ -388,7 +388,42 @@ async def test_resolution_is_durable_while_no_worker_is_running() -> None:
 
 @pytest.mark.asyncio
 async def test_continue_as_new_preserves_thread_state_between_agent_runs() -> None:
-    agent = _agent(FakeLLM([FakeResponse(text="one"), FakeResponse(text="two")]))
+    """History rotation, in the one situation that still reaches it.
+
+    A thread ends as soon as its work is done, so there is normally no
+    "between runs" left to rotate in. The exception is a thread that keeps
+    being spoken to: messages arriving while a run is working queue up, the
+    loop starts another run without ever going idle, and history grows.
+    That is the only path to ``_compact_history_if_needed`` now, and the
+    reason it was kept.
+
+    The messages are therefore sent back to back, without waiting for the
+    first reply -- waiting is what the previous version of this test did,
+    and by then the thread had exited and rotation could never fire.
+    """
+    # A tool the test holds open, so the second message is guaranteed to
+    # arrive while the first run is still working rather than racing it.
+    working = asyncio.Event()
+    release = asyncio.Event()
+
+    @tool
+    async def slow() -> str:
+        """Block until the test lets go."""
+        working.set()
+        await release.wait()
+        return "done"
+
+    first_call = _tool_call("slow")
+    agent = _agent(
+        FakeLLM(
+            [
+                FakeResponse(tool_calls=[first_call]),
+                FakeResponse(text="one"),
+                FakeResponse(text="two"),
+            ]
+        ),
+        tools=[slow],
+    )
     stores = InMemoryRuntimeStores()
     task_queue = f"test-continue-{uuid.uuid4().hex[:8]}"
     activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
@@ -401,6 +436,7 @@ async def test_continue_as_new_preserves_thread_state_between_agent_runs() -> No
                 address=env.client.service_client.config.target_host,
                 namespace=env.client.namespace,
                 task_queue=task_queue,
+                # One event is enough to rotate, so any second run does.
                 history_size_threshold=1,
             ),
         )
@@ -410,28 +446,61 @@ async def test_continue_as_new_preserves_thread_state_between_agent_runs() -> No
             workflows=[AgentThreadWorkflow],
             activities=activities.all,
         ):
-            await runtime.send_message(_AGENT, _THREAD, "first")
+            workflow_id = await runtime.send_message(_AGENT, _THREAD, "first")
 
-            async def first_run_rotated() -> bool:
-                try:
-                    state = await runtime.get_state(_AGENT, _THREAD)
-                except Exception:  # continue-as-new transition is momentarily unqueryable
-                    return False
-                return state.current_run_id is None and state.turn_count_total == 1
-
-            await _wait_for(first_run_rotated)
+            # The first run is now inside the tool and cannot finish, so this
+            # queues rather than starting a run of its own.
+            await _wait_for(lambda: working.is_set())
             await runtime.send_message(_AGENT, _THREAD, "second")
+            release.set()
 
-            async def second_run_finished() -> bool:
-                state = await runtime.get_state(_AGENT, _THREAD)
-                return state.current_run_id is None and state.turn_count_total == 2
+            async def both_answered() -> bool:
+                messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
+                # By content, not by counting assistant turns: the first run
+                # takes two of those, one for the tool call.
+                return any(m.content == "two" for m in messages)
 
-            await _wait_for(second_run_finished)
+            await _wait_for(both_answered)
+
             messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
-            assert [(message.role, message.content) for message in messages] == [
-                ("user", "first"),
-                ("assistant", "one"),
-                ("user", "second"),
-                ("assistant", "two"),
+            roles = [m.role for m in messages]
+            assert roles.count("user") == 2, "both messages reached the thread"
+            assert [m.content for m in messages if m.role == "assistant"][-2:] == [
+                "one",
+                "two",
+            ], "both runs answered, across the rotation"
+
+            # Rotation is a new run of the same workflow id, so more than one
+            # execution for that id is the observable trace of it. Without
+            # rotation this is exactly one.
+            executions = [
+                execution
+                async for execution in env.client.list_workflows(f"WorkflowId = '{workflow_id}'")
             ]
-            await runtime.cancel_thread(_AGENT, _THREAD)
+            assert len(executions) > 1, (
+                "the workflow continued as new rather than growing one history"
+            )
+
+
+@pytest.mark.asyncio
+async def test_state_for_a_thread_that_does_not_exist_is_an_error() -> None:
+    """A typo must not read back as a plausible idle thread.
+
+    get_state used to query the workflow, so a bad id simply failed. It
+    reads the stores now, and reading with get_or_create would answer by
+    creating the row -- turning a caller's mistake into a healthy-looking
+    answer, permanently.
+    """
+    stores = InMemoryRuntimeStores()
+    client = TemporalRuntimeClient(
+        stores=stores,
+        agents={},
+        config=TemporalRuntimeConfig(task_queue="unused"),
+    )
+
+    with pytest.raises(KeyError):
+        await client.get_state("agent", "thread_that_never_existed")
+
+    # And it did not create one on the way past.
+    with pytest.raises(KeyError):
+        await stores.threads.get("agent", "thread_that_never_existed")

@@ -26,9 +26,11 @@ from actant.core import JSONObject, new_id
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime.temporal.activities import TemporalRuntimeActivities
+from actant.runtime.temporal.client import TemporalRuntimeClient
 from actant.runtime.temporal.types import (
     DeferredToolResolution,
     InboundMessage,
+    TemporalRuntimeConfig,
     ThreadInput,
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
@@ -158,7 +160,6 @@ async def test_inbound_runs_one_turn_and_persists_assistant_message() -> None:
         assert roles == ["user", "assistant"]
         assert messages[-1].content == "hi back"
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -258,7 +259,6 @@ async def test_tool_turn_allow_completes_and_continues() -> None:
         record = await s.stores.tool_calls.get(tool_call.id)
         assert record.status == ToolCallStatus.COMPLETED
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -308,7 +308,6 @@ async def test_parallel_tool_calls_execute_concurrently() -> None:
         assert (await s.stores.tool_calls.get(first.id)).status == ToolCallStatus.COMPLETED
         assert (await s.stores.tool_calls.get(second.id)).status == ToolCallStatus.COMPLETED
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -355,7 +354,6 @@ async def test_terminal_tool_completes_without_followup_llm_turn() -> None:
         result = cast(dict[str, object], record.result)
         assert result.get("metadata") == {"terminal": True}
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -434,7 +432,6 @@ async def test_wait_tool_suspends_until_resolution_signal() -> None:
         assistants = [m for m in messages if m.role == "assistant"]
         assert assistants[-1].content == "approved!"
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -477,7 +474,6 @@ async def test_wait_tool_timeout_is_a_durable_workflow_timer() -> None:
         assert record.status is ToolCallStatus.FAILED
         assert "timed out" in str(record.result).lower()
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -543,7 +539,6 @@ async def test_mixed_allow_and_wait_group_continues_only_after_resolution() -> N
         ]
         assert sum(message.content == "group continued exactly once" for message in after) == 1
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -593,22 +588,24 @@ async def test_exhaustion_finalizes_run_then_next_message_starts_fresh_run() -> 
 
         await _wait_for(first_run_exhausted)
 
-        # Give the workflow a beat to finalize the run before sending
-        # the next message — finalize_run is async and the next
-        # send_message must observe a fresh run boundary.
-        await asyncio.sleep(0.2)
-
-        # Send a follow-up message. This starts a NEW run.
-        await handle.signal(AgentThreadWorkflow.inbound, InboundMessage(content="continue"))
+        # The run is exhausted, so the thread has ended. Reaching it now
+        # means signal-with-start, not a signal: a bare signal to a closed
+        # workflow raises, and this is the ordinary case rather than an edge
+        # one -- every message to an idle thread arrives this way.
+        await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=3),
+            id=handle.id,
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="continue")],
+        )
 
         async def fourth_assistant() -> bool:
             msgs = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
             return sum(1 for m in msgs if m.role == "assistant") >= 4
 
         await _wait_for(fourth_assistant)
-
-        await handle.signal(AgentThreadWorkflow.cancel)
-        await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
 
@@ -660,7 +657,6 @@ async def test_hooks_fire_inside_activities() -> None:
         assert "assistant" in kinds
         assert "complete" in kinds
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent, hooks_factory=factory)
@@ -694,7 +690,6 @@ async def test_run_completion_handler_receives_persisted_boundary() -> None:
         assert completions[0].thread_id == _THREAD
         assert completions[0].succeeded
 
-        await handle_workflow.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle_workflow.result(), timeout=5.0)
 
     setup: _RunSetup
@@ -709,3 +704,60 @@ _CHILD_AGENT = "child_agent"
 class _DelegateInvocation(BaseToolInvocation[JSONObject, dict[str, object]]):
     async def execute(self) -> ToolResult:  # pragma: no cover - never executed
         raise AssertionError("a spawned tool is answered by its child, not executed")
+
+
+@pytest.mark.asyncio
+async def test_a_message_racing_the_ending_is_not_lost() -> None:
+    """A thread now ends whenever its inbox empties, so this race is common.
+
+    Every message arrives as a signal and lives only in workflow memory until
+    a run persists it. If one lands while the workflow is completing, the
+    question is whether it is delivered, restarts the thread, or vanishes --
+    and a vanished user message is the one failure that cannot be recovered.
+    """
+    agent = _agent(FakeLLM([FakeResponse(text="one"), FakeResponse(text="two")]))
+    stores = InMemoryRuntimeStores()
+    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+    task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
+
+    async with await WorkflowEnvironment.start_local() as env:
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=activities.all,
+        ):
+            runtime = TemporalRuntimeClient(
+                stores=stores,
+                agents={agent.id: agent},
+                config=TemporalRuntimeConfig(
+                    task_queue=task_queue,
+                    address=env.client.service_client.config.target_host,
+                    namespace=env.client.namespace,
+                ),
+            )
+
+            await runtime.send_message(_AGENT, _THREAD, "first")
+
+            async def answered_once() -> bool:
+                messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
+                return any(m.role == "assistant" and m.content == "one" for m in messages)
+
+            await _wait_for(answered_once)
+
+            # The run has finished, so the workflow is ending or already
+            # ended. Sending now lands in exactly the window that worries me.
+            await runtime.send_message(_AGENT, _THREAD, "second")
+
+            async def answered_twice() -> bool:
+                messages = await stores.messages.list_for_thread(_AGENT, _THREAD)
+                return any(m.role == "assistant" and m.content == "two" for m in messages)
+
+            await _wait_for(answered_twice, timeout=20.0)
+
+            users = [
+                m.content
+                for m in await stores.messages.list_for_thread(_AGENT, _THREAD)
+                if m.role == "user"
+            ]
+            assert users == ["first", "second"], "both messages reached the thread"

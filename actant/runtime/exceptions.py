@@ -17,6 +17,20 @@ class ToolCallNotFoundError(ToolCallResolutionError, LookupError):
         self.tool_call_id = tool_call_id
 
 
+class ThreadNotFoundError(LookupError):
+    """The addressed thread does not exist.
+
+    Worth its own error because a thread that has merely finished looks the
+    same to Temporal as one that never existed, and only the first is
+    ordinary. Without the distinction, a typo'd id or a misconfigured
+    namespace makes every command quietly succeed.
+    """
+
+    def __init__(self, thread_id: str) -> None:
+        super().__init__(f"Thread {thread_id!r} was not found")
+        self.thread_id = thread_id
+
+
 class ToolCallNotWaitingError(ToolCallResolutionError):
     """The call exists but cannot accept an external resolution."""
 
@@ -27,6 +41,7 @@ class ToolCallNotWaitingError(ToolCallResolutionError):
 
 
 __all__ = [
+    "ThreadNotFoundError",
     "ToolCallNotFoundError",
     "ToolCallNotWaitingError",
     "ToolCallResolutionError",

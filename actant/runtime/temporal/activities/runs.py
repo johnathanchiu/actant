@@ -31,8 +31,16 @@ class RunActivities(ActivityContext):
     """Activities for the lifecycle and LLM turns of an agent run."""
 
     @activity.defn(name=ActivityName.START_RUN)
-    async def start_run(self, payload: StartRunInput) -> None:
-        """Create the run projection, idempotently on Temporal retry."""
+    async def start_run(self, payload: StartRunInput) -> int:
+        """Create the run projection, and say how many turns this thread has had.
+
+        The count is returned because the workflow cannot keep it any more. A
+        thread now ends when its work is done and restarts on the next
+        message, so anything held only in workflow memory resets -- and turn
+        numbering that restarts at one repeats numbers within a thread. The
+        store has the real count, and this activity already runs once before
+        every run, so reading it here costs nothing extra.
+        """
         try:
             await self.stores.runs.create(
                 payload.agent_id,
@@ -49,6 +57,7 @@ class RunActivities(ActivityContext):
         thread.active_run_id = payload.run_id
         thread.status = ThreadStatus.ACTIVE
         await self.stores.threads.update(thread)
+        return thread.turn_count
 
     @activity.defn(name=ActivityName.RUN_TURN)
     async def run_turn(self, payload: RunTurnInput) -> TurnResult:

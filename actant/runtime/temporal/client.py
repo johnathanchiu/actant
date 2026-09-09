@@ -15,11 +15,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import temporalio.client
-import temporalio.exceptions  # re-exported for callers that catch typed errors
+import temporalio.exceptions
+import temporalio.service  # re-exported for callers that catch typed errors
 
 from actant.agents import AgentDefinition
 from actant.core import JSONObject
-from actant.runtime.exceptions import ToolCallNotFoundError, ToolCallNotWaitingError
+from actant.runtime.exceptions import (
+    ThreadNotFoundError,
+    ToolCallNotFoundError,
+    ToolCallNotWaitingError,
+)
 from actant.runtime.temporal.activities import (
     HookFactory,
     ListenerFactory,
@@ -35,6 +40,7 @@ from actant.runtime.temporal.types import (
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.interfaces.stores import RuntimeStores
+from actant.runtime.types.threads import ThreadStatus
 from actant.tools.calls import ToolCallStatus
 
 
@@ -140,15 +146,53 @@ class TemporalRuntimeClient:
         )
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
+        """Stop a running thread. A finished one is already stopped.
+
+        Threads end when their work is done, so cancelling is routinely
+        aimed at a workflow that has already closed -- Temporal raises for
+        that, and it is not an error worth propagating: the caller asked for
+        the thread not to be running, and it is not running.
+        """
         client = await self._get_client()
         handle = client.get_workflow_handle(self._workflow_id(agent_id, thread_id))
-        await handle.cancel()
+        try:
+            await handle.cancel()
+        except temporalio.service.RPCError as error:
+            if error.status is not temporalio.service.RPCStatusCode.NOT_FOUND:
+                raise
+            # NOT_FOUND covers "already finished" and "never existed", and
+            # only the first is fine. Ask the stores which it was, so a
+            # typo'd id or a misconfigured namespace still surfaces instead
+            # of every cancel silently succeeding forever.
+            try:
+                await self.stores.threads.get(agent_id, thread_id)
+            except KeyError:
+                raise ThreadNotFoundError(thread_id) from error
 
     async def get_state(self, agent_id: str, thread_id: str) -> ThreadStateView:
-        client = await self._get_client()
-        handle = client.get_workflow_handle(self._workflow_id(agent_id, thread_id))
-        result = await handle.query(AgentThreadWorkflow.get_state)
-        return result
+        """What the stores say about this thread.
+
+        Read from the stores rather than queried from the workflow. A thread
+        ends when its work is done, and a closed workflow is only queryable
+        while Temporal retains its history -- so the query answers for a
+        while and then starts failing, which is worse than not working at
+        all. The stores are the durable record and answer either way.
+        """
+        # ``get`` rather than ``get_or_create``: asking about a thread that
+        # does not exist is a caller's mistake, and creating a row to answer
+        # it turns a typo into a plausible-looking idle thread.
+        thread = await self.stores.threads.get(agent_id, thread_id)
+        return ThreadStateView(
+            agent_id=agent_id,
+            thread_id=thread_id,
+            # Only a running workflow knows its queue depth, and this no
+            # longer asks one. Reported as unknown rather than zero, because
+            # a message arriving mid-run does queue and zero would be a lie.
+            inbox_size=None,
+            turn_count_total=thread.turn_count,
+            current_run_id=thread.active_run_id,
+            cancelled=thread.status is ThreadStatus.CANCELLED,
+        )
 
     async def _get_client(self) -> temporalio.client.Client:
         if self._client is None:
