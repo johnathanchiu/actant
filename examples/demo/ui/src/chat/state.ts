@@ -32,11 +32,10 @@ export type ToolCallEntry = {
   /** For multiple-choice `ask_user` calls, the option strings the
    * agent provided. DeferredPanel renders these as buttons. */
   waitOptions: string[] | null
-  /** Populated for `task()` tool calls when the spawned sub-thread is
-   * known (live: from sub-thread SSE events with matching
-   * parent_tool_call_id; rehydration: from `/api/threads/:id/sub_threads`).
-   * Components use this to render a NestedTranscript inside the
-   * tool-call card. */
+  /** Populated for `task()` tool calls from the call's own result,
+   * which names the sub-thread it started — live and on rehydration
+   * alike. Components use this to render a NestedTranscript inside
+   * the tool-call card. */
   subThreadId: string | null
   subagent: string | null
   startedAt: number

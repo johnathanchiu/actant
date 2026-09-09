@@ -106,10 +106,7 @@ export function useAgentConsole({
         ])
         if (gen !== generationRef.current) return
 
-        entries = patchWaitingState(
-          patchSubThreadLinks(historyToEntries(messages, threadId), subLinks),
-          waiting,
-        )
+        entries = patchWaitingState(historyToEntries(messages, threadId), waiting)
         setEntries(entries)
 
         // 2. Backfill each sub-thread's transcript from its own
@@ -161,42 +158,17 @@ export function useAgentConsole({
             event.parent_thread_id === threadId ||
             (event.parent_thread_id && subThreadsRef.current[event.parent_thread_id])
           ) {
-            // Sub-thread event.
+            // Sub-thread event. The parent's task() call already learned
+            // this sub-thread's id from its own tool_result, so there is
+            // nothing to annotate here.
             setSubThreads((prev) => {
               const next = reduceSubThread(prev, event, threadId)
               subThreadsRef.current = next
               return next
             })
-            // Also annotate the parent's tool call with the sub_thread_id
-            // (so the renderer knows where to find the nested transcript).
-            if (event.parent_thread_id === threadId) {
-              setEntries((prev) =>
-                annotateSubThreadOnToolCall(
-                  prev,
-                  event.parent_tool_call_id ?? null,
-                  event.thread_id,
-                  event.subagent ?? null,
-                ),
-              )
-            }
           } else if (!event.parent_thread_id) {
             // Top-level event.
-            setEntries((prev) => {
-              let next = reduce(prev, event)
-              // A very fast sub-agent can emit and finish before the
-              // parent's persisted tool_call event reaches the UI. Reapply
-              // known links whenever top-level state advances so the nested
-              // transcript cannot be lost to event ordering.
-              for (const activity of Object.values(subThreadsRef.current)) {
-                next = annotateSubThreadOnToolCall(
-                  next,
-                  activity.parentToolCallId,
-                  activity.subThreadId,
-                  activity.subagent,
-                )
-              }
-              return next
-            })
+            setEntries((prev) => reduce(prev, event))
           }
           // Sub-thread events not for our parent are ignored.
         }
@@ -317,54 +289,4 @@ function patchWaitingState(
     })
     return mutated ? { ...e, toolCalls } : e
   })
-}
-
-/** Attach `subThreadId` to each `task()` tool call so NestedTranscript
- * can find the matching sub-thread activity. */
-function patchSubThreadLinks(
-  entries: ConsoleEntry[],
-  links: Array<{ sub_thread_id: string; parent_tool_call_id: string }>,
-): ConsoleEntry[] {
-  if (links.length === 0) return entries
-  const byToolCall = new Map(links.map((l) => [l.parent_tool_call_id, l]))
-  return entries.map((e) => {
-    if (e.kind !== 'turn') return e
-    let mutated = false
-    const toolCalls = e.toolCalls.map((c) => {
-      const link = byToolCall.get(c.id)
-      if (!link) return c
-      mutated = true
-      return { ...c, subThreadId: link.sub_thread_id }
-    })
-    return mutated ? { ...e, toolCalls } : e
-  })
-}
-
-/** Live SSE counterpart of `patchSubThreadLinks`. When the first
- * sub-thread event arrives on the parent's channel, we know the
- * parent_tool_call_id → sub_thread_id mapping. Reflect it onto the
- * tool call so the renderer can show the nested transcript live
- * (not just after refresh). */
-function annotateSubThreadOnToolCall(
-  entries: ConsoleEntry[],
-  parentToolCallId: string | null,
-  subThreadId: string,
-  subagent: string | null,
-): ConsoleEntry[] {
-  if (!parentToolCallId) return entries
-  let mutated = false
-  const next = entries.map((e) => {
-    if (e.kind !== 'turn') return e
-    if (!e.toolCalls.some((c) => c.id === parentToolCallId)) return e
-    mutated = true
-    return {
-      ...e,
-      toolCalls: e.toolCalls.map((c) =>
-        c.id === parentToolCallId
-          ? { ...c, subThreadId, subagent: subagent ?? c.subagent }
-          : c,
-      ),
-    }
-  })
-  return mutated ? next : entries
 }

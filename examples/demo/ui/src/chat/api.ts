@@ -51,7 +51,6 @@ export type WaitingToolCall = {
 export type SubThreadLink = {
   sub_thread_id: string
   parent_thread_id: string
-  parent_tool_call_id: string
 }
 
 /** Resolve-tool payload that the UI sends when the user replies to a

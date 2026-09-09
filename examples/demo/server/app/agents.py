@@ -8,6 +8,7 @@ from __future__ import annotations
 from actant.agents import AgentDefinition
 from actant.llm.base import LLMClient
 from actant.tools import ToolRegistry
+from actant.tools.base import Tool
 from actant.tools.task import TaskTool
 
 from app.tools import (
@@ -46,8 +47,13 @@ DEMO_PERSONA = (
     "well-scoped task to a specialist subagent. The only subagent "
     "you can delegate to directly is `researcher`, which can fetch "
     "URLs, ask the user clarifying questions, and further delegate "
-    "summarization work. Use this for multi-step research jobs you "
-    "want to delegate.\n"
+    "summarization work. It returns a `thread_id` STRAIGHT AWAY, not "
+    "the answer — the subagent is still working. You may start "
+    "several and carry on.\n"
+    "- `check_subagent(thread_id)` / `message_subagent(thread_id, "
+    "message)` / `stop_subagent(thread_id)`: look at how a delegation "
+    "is going, tell it something else, or abandon it. Do NOT poll in "
+    "a loop — a finished subagent messages you on its own.\n"
     "Use `ask_user` naturally when a small preference would improve the "
     "answer, including food choices such as pizza. Use the tools when they "
     "fit; otherwise answer directly. If the user continues a cancelled run, "
@@ -70,9 +76,12 @@ RESEARCHER_PERSONA = (
     "- `task(subagent='summarizer', message)`: delegate condensation "
     "or rewriting work to the `summarizer` subagent. Use this when "
     "you've gathered material and want a concise, structured summary "
-    "produced by a specialist.\n"
-    "Produce a concise, structured final reply — that becomes the "
-    "parent's tool result. Do not chat. Cite the URLs you fetched. "
+    "produced by a specialist. It returns a `thread_id` straight "
+    "away; the summarizer messages you when it is done.\n"
+    "- `check_subagent` / `message_subagent` / `stop_subagent`: "
+    "supervise a delegation you started, by its `thread_id`.\n"
+    "Produce a concise, structured final reply — that is what the "
+    "parent is told when you finish. Do not chat. Cite the URLs you fetched. "
     "Stay under ~200 words unless the task obviously needs more."
 )
 
@@ -86,19 +95,24 @@ SUMMARIZER_PERSONA = (
 )
 
 
-def build_main_agent(llm: LLMClient, task_tool: TaskTool) -> AgentDefinition:
+def build_main_agent(
+    llm: LLMClient, task_tool: TaskTool, supervision: list[Tool]
+) -> AgentDefinition:
     """The user-facing agent. Has all four user tools + the task() tool
-    wired to the coordinator's spawner (delegates to researcher)."""
+    wired to the coordinator's spawner (delegates to researcher), plus
+    the supervision tools for the delegations it starts."""
     return AgentDefinition(
         id=AGENT_ID,
         name="Demo Assistant",
         persona=DEMO_PERSONA,
         llm=llm,
-        tools=ToolRegistry([*demo_tools(), task_tool]),
+        tools=ToolRegistry([*demo_tools(), task_tool, *supervision]),
     )
 
 
-def build_researcher_agent(llm: LLMClient, task_tool: TaskTool) -> AgentDefinition:
+def build_researcher_agent(
+    llm: LLMClient, task_tool: TaskTool, supervision: list[Tool]
+) -> AgentDefinition:
     """The researcher subagent. Can fetch, defer to user, AND delegate
     summarization to the `summarizer` leaf subagent."""
     return AgentDefinition(
@@ -106,7 +120,9 @@ def build_researcher_agent(llm: LLMClient, task_tool: TaskTool) -> AgentDefiniti
         name="Researcher",
         persona=RESEARCHER_PERSONA,
         llm=llm,
-        tools=ToolRegistry([FetchUrlTool(), AskUserTool(), RequestApprovalTool(), task_tool]),
+        tools=ToolRegistry(
+            [FetchUrlTool(), AskUserTool(), RequestApprovalTool(), task_tool, *supervision]
+        ),
     )
 
 

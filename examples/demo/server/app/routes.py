@@ -136,15 +136,10 @@ async def list_sub_threads(thread_id: str, request: Request) -> list[dict[str, A
         descendants.extend(found)
         known_parents.update(t.id for t in found)
         remaining = [t for t in remaining if t not in found]
-    return [
-        {
-            "sub_thread_id": t.id,
-            "parent_thread_id": t.parent_thread_id,
-            "parent_tool_call_id": t.parent_tool_call_id,
-        }
-        for t in descendants
-        if t.parent_tool_call_id
-    ]
+    # No spawning tool call in the link any more: the parent's task() call
+    # completes immediately and its stored result names the sub-thread, so
+    # the FE reads the pairing off that result.
+    return [{"sub_thread_id": t.id, "parent_thread_id": t.parent_thread_id} for t in descendants]
 
 
 @router.post("/threads/{thread_id}/messages", status_code=202)

@@ -13,9 +13,9 @@
  *
  * Where ``<json envelope>`` is `{ type, thread_id, data, ... }`.
  * For sub-thread events on a parent's channel, the envelope ALSO
- * carries ``parent_thread_id``, ``parent_tool_call_id``, and
- * ``subagent`` — the publishing hooks stamp these when wired with
- * the coordinator primitives' `publishing_hooks_factory(..., registry)`.
+ * carries ``parent_thread_id`` and ``subagent`` — the publishing hooks
+ * stamp these when wired with the coordinator primitives'
+ * `publishing_hooks_factory(..., registry)`.
  *
  * This module is pure types + a tiny SSE frame parser. No React, no
  * state, no network. Higher layers (sseClient, reducer) consume the
@@ -24,11 +24,11 @@
 
 export type ActantEnvelopeBase = {
   thread_id: string
-  /** Set when this event came from a sub-thread; the FE attributes the
-   * event to the parent's task() row instead of the parent's own
-   * transcript. */
+  /** Set when this event came from a sub-thread; the FE routes the
+   * event into that sub-thread's transcript instead of the parent's
+   * own. Which task() call started it comes from that call's RESULT,
+   * not from here. */
   parent_thread_id?: string
-  parent_tool_call_id?: string
   subagent?: string | null
 }
 

@@ -80,14 +80,12 @@ test('decodeActantFrame: sub-thread events carry parent_thread_id + subagent', (
     thread_id: 'sub_1',
     data: { delta: 'sub work' },
     parent_thread_id: 'thread_parent',
-    parent_tool_call_id: 'tc_task_1',
     subagent: 'researcher',
   }
   const raw = `event: text_delta\ndata: ${JSON.stringify(envelope)}`
   const decoded = decodeActantFrame(parseSseFrame(raw))
   expect(decoded).not.toBeNull()
   expect(decoded?.parent_thread_id).toBe('thread_parent')
-  expect(decoded?.parent_tool_call_id).toBe('tc_task_1')
   expect(decoded?.subagent).toBe('researcher')
 })
 

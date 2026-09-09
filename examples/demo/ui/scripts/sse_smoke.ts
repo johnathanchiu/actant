@@ -261,12 +261,14 @@ function printInvariants(events: Recorded[], mode: Mode) {
     mainComplete.length === 1,
   )
 
-  // 3. Every sub-thread event has both parent_thread_id AND parent_tool_call_id.
+  // 3. Every sub-thread event names which subagent produced it. The
+  //    spawning tool call is NOT stamped any more — a task() call
+  //    completes immediately and its result names the sub-thread.
   const subEvents = events.filter((e) => e.event.parent_thread_id)
-  const subMissingParent = subEvents.filter((e) => !e.event.parent_tool_call_id)
+  const subMissingSubagent = subEvents.filter((e) => !e.event.subagent)
   check(
-    `sub: every event carries parent_tool_call_id (missing on ${subMissingParent.length}/${subEvents.length})`,
-    subMissingParent.length === 0,
+    `sub: every event carries subagent (missing on ${subMissingSubagent.length}/${subEvents.length})`,
+    subMissingSubagent.length === 0,
   )
 
   // 4. Within a single thread, no assistant_message arrives before any turn_start.
@@ -380,9 +382,8 @@ function printInvariants(events: Recorded[], mode: Mode) {
 
   if (mode === 'nested-deferred') {
     // Sub-thread emitted a tool_waiting that surfaced on main's SSE
-    // (carries parent_thread_id + parent_tool_call_id). Our auto-
-    // resolver then unblocked it, and tool_resolved fired on that
-    // sub-thread.
+    // (carries parent_thread_id). Our auto-resolver then unblocked it,
+    // and tool_resolved fired on that sub-thread.
     const subWait = events.find(
       (e) =>
         e.event.type === 'tool_waiting' &&
@@ -394,12 +395,6 @@ function printInvariants(events: Recorded[], mode: Mode) {
       `nested-deferred: a sub-thread tool_waiting surfaced on main SSE (with parent_thread_id)`,
       Boolean(subWait),
     )
-    if (subWait && subWait.event.type === 'tool_waiting') {
-      check(
-        `nested-deferred: that sub-thread wait carries parent_tool_call_id`,
-        Boolean(subWait.event.parent_tool_call_id),
-      )
-    }
     const subResolved = events.filter(
       (e) => e.event.type === 'tool_resolved' && e.event.parent_thread_id,
     )

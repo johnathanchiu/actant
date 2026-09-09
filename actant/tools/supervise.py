@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from actant.core import JSONObject
+
 # Unused by name, but FunctionTool resolves these annotations at build time
 # and JSONObject expands to a form naming JSONValue, which get_type_hints
 # looks up in this module's globals.

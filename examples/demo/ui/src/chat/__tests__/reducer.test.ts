@@ -213,7 +213,6 @@ test('sub-thread events (parent_thread_id set) are IGNORED at top level', () => 
     type: 'text_delta',
     thread_id: 'sub_1',
     parent_thread_id: 't_1',
-    parent_tool_call_id: 'tc_task',
     data: { delta: 'sub work' },
   }
   const entries = applyAll([ts(), td('parent work'), subEvent])
@@ -268,4 +267,48 @@ test('complete only finalizes turns on the matching thread', () => {
   const turnB = entries.find((e) => e.kind === 'turn' && (e as TurnEntry).turnUid === 'tu_b') as TurnEntry
   expect(turnA.isStreaming).toBe(false)
   expect(turnB.isStreaming).toBe(true)
+})
+
+// ─── task() delegation link ─────────────────────────────────────────
+
+test("a task() result links the call to its sub-thread (live SSE shape)", () => {
+  // Live events stringify the result with Python's `str()`.
+  const entries = applyAll([
+    ts(),
+    tcs('tc_task', 'task'),
+    tcCall('tc_task', 'task', { subagent: 'researcher' }),
+    tcResult(
+      'tc_task',
+      "{'subagent': 'researcher', 'thread_id': 'sub_9', 'sub_thread_id': 'sub_9', 'status': 'running'}",
+    ),
+  ])
+  const call = (entries[0] as TurnEntry).toolCalls[0]
+  expect(call.subThreadId).toBe('sub_9')
+  expect(call.subagent).toBe('researcher')
+})
+
+test("a task() result links the call to its sub-thread (persisted JSON shape)", () => {
+  const entries = applyAll([
+    ts(),
+    tcs('tc_task', 'task'),
+    tcResult(
+      'tc_task',
+      JSON.stringify({
+        result: { subagent: 'researcher', sub_thread_id: 'sub_9', status: 'running' },
+        tool_call_id: 'tc_task',
+      }),
+    ),
+  ])
+  const call = (entries[0] as TurnEntry).toolCalls[0]
+  expect(call.subThreadId).toBe('sub_9')
+  expect(call.subagent).toBe('researcher')
+})
+
+test('a non-task tool result leaves subThreadId alone', () => {
+  const entries = applyAll([
+    ts(),
+    tcs('tc_1', 'get_current_time'),
+    tcResult('tc_1', '2026-01-01T00:00:00Z'),
+  ])
+  expect((entries[0] as TurnEntry).toolCalls[0].subThreadId).toBeNull()
 })

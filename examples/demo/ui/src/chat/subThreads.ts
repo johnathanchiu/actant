@@ -25,7 +25,6 @@ import type { ActantEvent } from './wire'
 export type SubThreadActivity = {
   subThreadId: string
   parentThreadId: string
-  parentToolCallId: string
   subagent: string | null
   turns: TurnEntry[]
   isStreaming: boolean
@@ -60,42 +59,18 @@ export function reduceSubThread(
     existing ?? {
       subThreadId,
       parentThreadId: event.parent_thread_id,
-      parentToolCallId: event.parent_tool_call_id ?? '',
       subagent: event.subagent ?? null,
       turns: [],
       isStreaming: true,
     }
 
   const nextActivity = applyEventToActivity(activity, event)
-  let nextMap =
-    nextActivity === activity && existing ? map : { ...map, [subThreadId]: nextActivity }
-
-  // Attach this child to the task() call in its immediate parent's turns.
-  // This is the nested counterpart of useAgentConsole's top-level annotation.
-  const parent = nextMap[event.parent_thread_id]
-  if (parent && event.parent_tool_call_id) {
-    let changed = false
-    const turns = parent.turns.map((turn) => {
-      if (!turn.toolCalls.some((call) => call.id === event.parent_tool_call_id)) return turn
-      changed = true
-      return {
-        ...turn,
-        toolCalls: turn.toolCalls.map((call) =>
-          call.id === event.parent_tool_call_id
-            ? {
-                ...call,
-                subThreadId,
-                subagent: event.subagent ?? call.subagent,
-              }
-            : call,
-        ),
-      }
-    })
-    if (changed) {
-      nextMap = { ...nextMap, [parent.subThreadId]: { ...parent, turns } }
-    }
-  }
-  return nextMap
+  // Attaching this child to the task() call that started it is not done
+  // here: that call's own tool_result names the sub-thread, and
+  // `turnLogic` folds it in wherever the call lives — parent turns or
+  // another sub-thread's turns.
+  if (nextActivity === activity && existing) return map
+  return { ...map, [subThreadId]: nextActivity }
 }
 
 function applyEventToActivity(
@@ -215,7 +190,7 @@ function currentStreamingTurnIdx(turns: TurnEntry[]): number {
  */
 export function backfillSubThread(
   map: SubThreadMap,
-  link: { sub_thread_id: string; parent_thread_id: string; parent_tool_call_id: string },
+  link: { sub_thread_id: string; parent_thread_id: string },
   historyTurns: TurnEntry[],
   subagent: string | null,
 ): SubThreadMap {
@@ -224,31 +199,14 @@ export function backfillSubThread(
     ...t,
     threadId: link.sub_thread_id,
   }))
-  const nextMap: SubThreadMap = {
+  return {
     ...map,
     [link.sub_thread_id]: {
       subThreadId: link.sub_thread_id,
       parentThreadId: link.parent_thread_id,
-      parentToolCallId: link.parent_tool_call_id,
       subagent,
       turns,
       isStreaming: false,
-    },
-  }
-  const parent = nextMap[link.parent_thread_id]
-  if (!parent) return nextMap
-  return {
-    ...nextMap,
-    [parent.subThreadId]: {
-      ...parent,
-      turns: parent.turns.map((turn) => ({
-        ...turn,
-        toolCalls: turn.toolCalls.map((call) =>
-          call.id === link.parent_tool_call_id
-            ? { ...call, subThreadId: link.sub_thread_id, subagent: subagent ?? call.subagent }
-            : call,
-        ),
-      })),
     },
   }
 }
