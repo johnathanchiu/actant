@@ -136,8 +136,17 @@ class AgentThreadWorkflow:
                 if self._cancelled:
                     break
                 await self._run_next_agent_run(payload)
-                if payload.exit_when_idle and not self._inbox:
+                if not self._inbox:
+                    # Nothing left to do, so stop rather than sit open. The
+                    # conversation is not over: history lives in the stores,
+                    # and the next message starts this workflow again with
+                    # the same id. Parking would only mean an idle execution
+                    # per thread, held for as long as the thread exists.
                     return ThreadOutcome.STOPPED.value
+                # Only reached when messages arrived while the last run was
+                # working, so the thread keeps going without ever going idle.
+                # That is the one case where history still accumulates, and
+                # the only reason rotation survives threads that end.
                 self._compact_history_if_needed(payload)
         except asyncio.CancelledError:
             await self._record_cancellation(payload)
@@ -154,7 +163,10 @@ class AgentThreadWorkflow:
         self._current_run_id = run_id
         new_messages = self._drain_inbox()
 
-        await workflow.execute_activity_method(
+        # Seeded from the store, not carried: a thread ends when it is done
+        # and restarts on the next message, so a count held only here would
+        # reset and turn numbers would repeat within one thread.
+        self._turn_count_total = await workflow.execute_activity_method(
             RunActivities.start_run,
             StartRunInput(
                 agent_id=payload.agent_id,

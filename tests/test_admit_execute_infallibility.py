@@ -198,7 +198,6 @@ async def test_admit_tool_swallows_can_execute_exception() -> None:
         roles = [m.role for m in messages]
         assert roles == ["user", "assistant", "tool", "assistant"]
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -265,7 +264,6 @@ async def test_execute_tool_swallows_execute_exception() -> None:
         roles = [m.role for m in messages]
         assert roles == ["user", "assistant", "tool", "assistant"]
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
@@ -336,7 +334,6 @@ async def test_mixed_group_one_explodes_one_succeeds() -> None:
         tool_call_ids = {m.tool_call_id for m in tool_msgs}
         assert tool_call_ids == {boom.id, ok.id}
 
-        await handle.signal(AgentThreadWorkflow.cancel)
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(body, agent=agent)
