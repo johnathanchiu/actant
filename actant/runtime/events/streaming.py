@@ -32,6 +32,10 @@ class StreamListener:
         """Report that a streamed tool-use content block has closed."""
         pass
 
+    async def on_usage(self, response_id: str, model: str, usage: JSONObject, status: str) -> None:
+        """Report provider usage once available; consumers deduplicate by response_id."""
+        pass
+
     def cancel_requested(self) -> bool:
         return False
 
@@ -82,3 +86,9 @@ class PublishingStreamListener(StreamListener):
 
     async def on_tool_call_args_complete(self, tool_call_id: str) -> None:
         await self._emit("tool_call_args_complete", {"tool_call_id": tool_call_id})
+
+    async def on_usage(self, response_id: str, model: str, usage: JSONObject, status: str) -> None:
+        await self._emit(
+            "model_usage",
+            {"response_id": response_id, "model": model, "usage": usage, "status": status},
+        )
