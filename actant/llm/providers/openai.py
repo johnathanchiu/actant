@@ -285,7 +285,9 @@ class OpenAIProvider:
         usage = getattr(response, "usage", None)
         if listener is not None and usage is not None:
             await listener.on_usage(
-                response.id, self.model_id, cast(JSONObject, usage.model_dump(mode="json")),
+                response.id,
+                self.model_id,
+                cast(JSONObject, usage.model_dump(mode="json")),
                 response.status or "unknown",
             )
         input_tokens = _usage_int(usage, "input_tokens")

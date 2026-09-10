@@ -288,39 +288,63 @@ def test_gemini_replays_tool_call_thought_signature() -> None:
     assert content.parts[0].thought_signature == b"sig"
 
 
-def test_astra_request_preserves_requested_reasoning_and_encrypted_state():
-    provider = OpenAIProvider(model_id='gpt-6-astra', api_key='test', thinking_level='low')
-    params = provider._request_params('System', [Message(role='user', content='hello')], [])
-    assert params['reasoning']['effort'] == 'low'
-    assert 'reasoning.encrypted_content' in params['include']
+def test_astra_request_preserves_requested_reasoning_and_encrypted_state() -> None:
+    provider = OpenAIProvider(model_id="gpt-6-astra", api_key="test", thinking_level="low")
+    params = provider._request_params("System", [Message(role="user", content="hello")], [])
+    reasoning = params.get("reasoning")
+    assert reasoning is not None
+    assert reasoning.get("effort") == "low"
+    include = params.get("include")
+    assert include is not None
+    assert "reasoning.encrypted_content" in include
 
 
 @pytest.mark.asyncio
-async def test_openai_usage_callback_retains_cache_details(monkeypatch):
+async def test_openai_usage_callback_retains_cache_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from types import SimpleNamespace
     from actant.runtime.events.streaming import StreamListener
 
-    usage = {'input_tokens': 5040, 'output_tokens': 1090, 'total_tokens': 6130,
-             'input_tokens_details': {'cached_tokens': 0, 'cache_write_tokens': 4912}}
-    response = SimpleNamespace(id='resp-test', status='completed', output=[],
-        usage=SimpleNamespace(**usage, model_dump=lambda **kw: usage))
+    usage = {
+        "input_tokens": 5040,
+        "output_tokens": 1090,
+        "total_tokens": 6130,
+        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 4912},
+    }
+    response = SimpleNamespace(
+        id="resp-test",
+        status="completed",
+        output=[],
+        usage=SimpleNamespace(**usage, model_dump=lambda **kw: usage),
+    )
 
     class Stream:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *args): pass
-        def __aiter__(self): return self
-        async def __anext__(self): raise StopAsyncIteration
-        async def get_final_response(self): return response
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def get_final_response(self):
+            return response
 
     received = []
+
     class Listener(StreamListener):
         async def on_usage(self, response_id, model, usage, status):
             received.append((response_id, model, usage, status))
 
-    provider = OpenAIProvider(model_id='gpt-6-astra', api_key='test')
-    monkeypatch.setattr(provider.client.responses, 'stream', lambda **kw: Stream())
+    provider = OpenAIProvider(model_id="gpt-6-astra", api_key="test")
+    monkeypatch.setattr(provider.client.responses, "stream", lambda **kw: Stream())
     message, total = await provider._stream({}, Listener())
     assert total == 6130
     assert message.input_tokens == 5040
-    assert received == [('resp-test', 'gpt-6-astra', usage, 'completed')]
+    assert received == [("resp-test", "gpt-6-astra", usage, "completed")]
     await provider.client.close()

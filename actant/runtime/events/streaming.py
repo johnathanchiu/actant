@@ -88,5 +88,7 @@ class PublishingStreamListener(StreamListener):
         await self._emit("tool_call_args_complete", {"tool_call_id": tool_call_id})
 
     async def on_usage(self, response_id: str, model: str, usage: JSONObject, status: str) -> None:
-        await self._emit("model_usage", {"response_id": response_id, "model": model,
-                                       "usage": usage, "status": status})
+        await self._emit(
+            "model_usage",
+            {"response_id": response_id, "model": model, "usage": usage, "status": status},
+        )
