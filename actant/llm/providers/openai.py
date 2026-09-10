@@ -17,6 +17,7 @@ from openai.types.responses.response_input_param import ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params.reasoning import Reasoning
 
+from actant.core import JSONObject
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers._shared import (
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-REASONING_MODELS = ("gpt-5", "o1", "o3", "o4")
+REASONING_MODELS = ("gpt-6", "gpt-5", "o1", "o3", "o4")
 REASONING_EFFORT: dict[str, str] = {
     "low": "low",
     "med": "medium",
@@ -282,6 +283,11 @@ class OpenAIProvider:
                     reasoning_items.append(reasoning_item)
 
         usage = getattr(response, "usage", None)
+        if listener is not None and usage is not None:
+            await listener.on_usage(
+                response.id, self.model_id, cast(JSONObject, usage.model_dump(mode="json")),
+                response.status or "unknown",
+            )
         input_tokens = _usage_int(usage, "input_tokens")
         output_tokens = _usage_int(usage, "output_tokens")
         message = Message(
