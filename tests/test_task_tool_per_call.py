@@ -236,7 +236,9 @@ async def test_the_runtime_hands_a_tool_its_call_context() -> None:
         thread_id="thread_from_the_record",
         args={"subagent": "researcher", "message": "go"},
     )
-    activities = ToolActivities(stores=InMemoryRuntimeStores(), agents={})
+    stores = InMemoryRuntimeStores()
+    await stores.threads.get_or_create("demo", "thread_from_the_record")
+    activities = ToolActivities(stores=stores, agents={})
     agent = cast(Any, None)  # no sandbox is requested, so the agent is never consulted
 
     ctx = await activities._call_context(agent, tool, cast(ToolCallRecord, record))
@@ -247,3 +249,11 @@ async def test_the_runtime_hands_a_tool_its_call_context() -> None:
     assert spawner.spawns[0].parent_thread_id == "thread_from_the_record", (
         "the runtime handed the tool its call context, not just the arguments"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_cannot_spawn_subagents() -> None:
+    """Delegation is one level deep: a thread with a parent is refused."""
+    tool = TaskTool(spawner=_CapturingSpawner())
+    with pytest.raises(ValueError, match="cannot spawn"):
+        await tool.build({"name": "x", "message": "y"}, _ctx("child-1", parent_thread_id="root"))

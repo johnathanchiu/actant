@@ -180,6 +180,7 @@ class ToolActivities(ActivityContext):
         sandbox = None
         if getattr(tool, "needs_sandbox", False):
             sandbox = await self._sandbox_for(agent, record.thread_id)
+        thread = await self.stores.threads.get(record.agent_id, record.thread_id)
         return CallContext(
             agent_id=record.agent_id,
             thread_id=record.thread_id,
@@ -187,6 +188,7 @@ class ToolActivities(ActivityContext):
             tool_call_id=record.id,
             turn_id=record.turn_id,
             sandbox=sandbox,
+            parent_thread_id=thread.parent_thread_id,
         )
 
     async def _materialise(

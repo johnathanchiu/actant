@@ -230,7 +230,9 @@ agent = AgentDefinition(
 `exec(argv, cwd=, timeout=, env=)`, `close`. Paths are relative to the
 thread's root. A class-based tool sets `needs_sandbox = True` and reads
 `ctx.sandbox` in `build`. A `CallContext` parameter alone gives a tool its
-agent, thread, run and call ids without a sandbox.
+agent, thread, run and call ids without a sandbox. `ctx.parent_thread_id` is
+set when the calling thread is a subagent; `TaskTool` refuses to spawn from
+one, so delegation is one level deep.
 
 Backends: `local` (a directory under `mount`, subprocesses; always
 registered) and `modal` (`actant[modal]`: a network-blocked `modal.Sandbox`

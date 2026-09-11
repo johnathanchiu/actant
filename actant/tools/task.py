@@ -174,7 +174,13 @@ class TaskTool:
 
         Plain arguments cannot serve background mode: the parent thread id is
         not in them, and it is the whole point of the call.
+
+        Delegation is one level deep: a subagent that asks for a subagent is
+        refused, so a person's approval never has to travel up more than one
+        thread.
         """
+        if ctx.parent_thread_id is not None:
+            raise ValueError("a subagent cannot spawn subagents")
         return TaskInvocation(
             params,
             invoker=self.invoker,

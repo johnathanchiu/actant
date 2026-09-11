@@ -89,6 +89,9 @@ class CallContext:
     tool_call_id: str
     turn_id: str
     sandbox: Sandbox | None = None
+    #: Set when the calling thread is itself a subagent. One level of delegation
+    #: only: a tool that spawns threads refuses when this is set.
+    parent_thread_id: str | None = None
 
 
 class Tool(Protocol):

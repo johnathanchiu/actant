@@ -6,6 +6,8 @@ affect users.
 
 ## 0.8.1
 
+- Delegation is one level deep: `CallContext.parent_thread_id` is set for a subagent's
+  calls and `TaskTool` refuses to spawn from one.
 - Modal backend on Modal 1.5: the legacy `Sandbox.open`/`mkdir` file API was removed by
   Modal, so reads and writes go through `Sandbox.filesystem`; the `modal` extra requires
   `modal>=1.5`. `close` waits for termination so `attach` on a closed sandbox raises.
