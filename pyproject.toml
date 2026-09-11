@@ -1,6 +1,6 @@
 [project]
 name = "actant"
-version = "0.7.1"
+version = "0.8.1"
 description = "Temporal-native runtime for persistent agents with durable inboxes, governed tools, and replay"
 readme = "README.md"
 license = "MIT"
@@ -32,6 +32,9 @@ anthropic = ["anthropic>=0.40"]
 gemini = ["google-genai>=1.0"]
 openai = ["openai>=1.60"]
 qwen = ["openai>=1.60"]
+# The Modal sandbox backend. Products bring their own object storage; the
+# mount only needs the bucket keys as a Modal secret.
+modal = ["modal>=1.5,<2"]
 providers = [
   "anthropic>=0.40",
   "google-genai>=1.0",

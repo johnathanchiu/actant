@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 
 @dataclass(frozen=True)
 class RunCompletion:
-    """Facts available after a run and its thread projection are finalized."""
+    """Facts available after a run and its thread projection are finalized.
+
+    ``artifacts`` are the deliverables terminal tool results named, as the
+    product's artifact sink stored them (``ArtifactRef.to_dict()`` shape).
+    ``stop_reason`` is set when the outcome alone does not explain the end.
+    """
 
     agent_id: str
     thread_id: str
     run_id: str
     outcome: str
+    stop_reason: str | None = None
+    artifacts: tuple[dict[str, object], ...] = field(default_factory=tuple)
 
     @property
     def succeeded(self) -> bool:

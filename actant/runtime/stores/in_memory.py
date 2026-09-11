@@ -89,13 +89,22 @@ class InMemoryRunStore:
     async def update(self, run: AgentRun) -> None:
         self._runs[run.id] = run
 
-    async def finish(self, run_id: str, status: RunStatus) -> None:
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[AgentRun]:
+        runs = [
+            r for r in self._runs.values() if (r.agent_id, r.thread_id) == (agent_id, thread_id)
+        ]
+        return list(reversed(runs))
+
+    async def finish(
+        self, run_id: str, status: RunStatus, *, stop_reason: str | None = None
+    ) -> None:
         # Idempotent: missing run = nothing to finalize. See
         # SQLAlchemyRunStore.finish for rationale.
         run = self._runs.get(run_id)
         if run is None:
             return
         run.status = status
+        run.stop_reason = stop_reason
         self._runs[run_id] = run
 
 

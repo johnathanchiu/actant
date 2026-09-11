@@ -47,6 +47,9 @@ class AgentThread:
     parent_thread_id: str | None = None
     parent_turn_id: str | None = None
     parent_tool_call_id: str | None = None
+    #: The thread's sandbox, when a sandboxed tool has opened one; a worker
+    #: reattaches by it instead of opening a second sandbox over the same files.
+    sandbox_id: str | None = None
 
 
 @dataclass
@@ -57,6 +60,9 @@ class AgentRun:
     status: RunStatus = RunStatus.ACTIVE
     turn_count: int = 0
     max_turns: int = 25
+    #: Why a run ended when the status alone does not say (an exhausted task
+    #: agent that stopped without finishing, for one).
+    stop_reason: str | None = None
 
     @property
     def remaining_turns(self) -> int:

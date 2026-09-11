@@ -53,7 +53,13 @@ class RunStore(Protocol):
 
     async def update(self, run: AgentRun) -> None: ...
 
-    async def finish(self, run_id: str, status: RunStatus) -> None: ...
+    async def finish(
+        self, run_id: str, status: RunStatus, *, stop_reason: str | None = None
+    ) -> None: ...
+
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[AgentRun]:
+        """A thread's runs, newest first: how a product finds what the last run delivered."""
+        ...
 
 
 class MessageStore(Protocol):

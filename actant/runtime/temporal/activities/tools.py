@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import cast
+import asyncio
+import inspect
+import mimetypes
+from typing import Any, cast
 
 from temporalio import activity
 
+from actant.agents import AgentDefinition
 from actant.runtime.events import AgentThreadHooks
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
@@ -28,8 +31,10 @@ from actant.tools.admission import (
     ToolResolution,
     ToolResolve,
 )
-from actant.tools.base import Tool, ToolInvocation, ToolResult
+from actant.tools.base import CallContext, Tool, ToolInvocation, ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
+
+HEARTBEAT_SECONDS = 30.0
 
 
 class ToolActivities(ActivityContext):
@@ -57,7 +62,9 @@ class ToolActivities(ActivityContext):
             # gets the same invocation in both places. Building one way here
             # and another there is how can_execute ends up inspecting an
             # object unlike the one that will actually run.
-            invocation = await _build_invocation(tool, record)
+            invocation = await tool.build(
+                record.args, await self._call_context(agent, tool, record)
+            )
         except Exception as exc:  # noqa: BLE001
             return await self._deny(record, hooks, f"Tool build error: {exc}")
 
@@ -141,14 +148,24 @@ class ToolActivities(ActivityContext):
         tool = agent.tools.get(record.name)
         if tool is None:
             return await self._execute_failed(record.id, f"Tool {record.name} not found")
+        # A tool that runs code can take minutes, and opening its sandbox can
+        # too (an image builds on first use). Heartbeats keep Temporal from
+        # mistaking a long healthy activity for a dead worker, and let a
+        # cancellation reach it; they start before anything slow.
+        beat = asyncio.create_task(_heartbeat())
         try:
-            invocation = await _build_invocation(tool, record)
-        except Exception as exc:  # noqa: BLE001
-            return await self._execute_failed(record.id, f"Tool build error: {exc}")
-        try:
+            try:
+                ctx = await self._call_context(agent, tool, record)
+                invocation = await tool.build(record.args, ctx)
+            except Exception as exc:  # noqa: BLE001
+                return await self._execute_failed(record.id, f"Tool build error: {exc}")
             result = await invocation.execute()
         except Exception as exc:  # noqa: BLE001
             result = ToolResult.fail(f"Tool execution error: {exc}")
+        else:
+            result = await self._materialise(agent, record, ctx, result)
+        finally:
+            beat.cancel()
 
         result.tool_call_id = record.id
         status = ToolCallStatus.COMPLETED if result.error is None else ToolCallStatus.FAILED
@@ -156,6 +173,68 @@ class ToolActivities(ActivityContext):
         thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
         await self._hooks(thread).on_tool_result(record.id, result, record.turn_id)
         return _outcome(record.id, result)
+
+    async def _call_context(
+        self, agent: AgentDefinition, tool: object, record: ToolCallRecord
+    ) -> CallContext:
+        """What the tool is being built for. The sandbox is opened only for tools
+        that declared they need it, so a plain tool never waits on one."""
+        sandbox = None
+        if getattr(tool, "needs_sandbox", False):
+            sandbox = await self._sandbox_for(agent, record.thread_id)
+        thread = await self.stores.threads.get(record.agent_id, record.thread_id)
+        return CallContext(
+            agent_id=record.agent_id,
+            thread_id=record.thread_id,
+            run_id=record.run_id,
+            tool_call_id=record.id,
+            turn_id=record.turn_id,
+            sandbox=sandbox,
+            parent_thread_id=thread.parent_thread_id,
+        )
+
+    async def _materialise(
+        self,
+        agent: AgentDefinition,
+        record: ToolCallRecord,
+        ctx: CallContext,
+        result: ToolResult,
+    ) -> ToolResult:
+        """Store the deliverables a terminal result names, and attach their refs.
+
+        Any terminal result may list ``deliverables`` (workspace paths); the
+        ``finish`` tool is the explicit way to do it. A missing file or sink is
+        the tool's failure, and not terminal, so the model can correct it.
+        """
+        raw = result.metadata.get("deliverables")
+        if not result.metadata.get("terminal") or not raw:
+            return result
+        paths = [str(item) for item in raw] if isinstance(raw, list) else []
+        if not paths:
+            return result
+        if self.artifact_sink is None:
+            failed = ToolResult.fail(
+                "deliverables were listed but the worker has no artifact sink"
+            )
+            failed.metadata = {k: v for k, v in result.metadata.items() if k != "terminal"}
+            return failed
+        sandbox = ctx.sandbox
+        if sandbox is None:
+            sandbox = await self._sandbox_for(agent, record.thread_id)
+        refs: list[dict[str, object]] = []
+        for path in paths:
+            try:
+                data = await sandbox.read(path)
+            except Exception as exc:  # noqa: BLE001 -- the path is the model's claim
+                failed = ToolResult.fail(f"deliverable {path!r} could not be read: {exc}")
+                failed.metadata = {k: v for k, v in result.metadata.items() if k != "terminal"}
+                return failed
+            mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            name = path.rsplit("/", 1)[-1]
+            ref = await self.artifact_sink.save(record.thread_id, name, data, mime)
+            refs.append(ref.to_dict())
+        result.metadata["artifacts"] = refs
+        return result
 
     async def _execute_failed(self, tool_call_id: str, reason: str) -> ExecuteOutcome:
         result = ToolResult.fail(reason)
@@ -214,7 +293,14 @@ class ToolActivities(ActivityContext):
             tool = agent.tools.get(record.name)
             if tool is not None and callable(getattr(tool, "on_resolve", None)):
                 try:
-                    return await cast(ToolResolve, tool).on_resolve(record, resolution)
+                    resolve = cast(ToolResolve, tool).on_resolve
+                    # A tool that runs after approval needs the same context it
+                    # would have had at execution (its sandbox, its ids).
+                    if "ctx" in inspect.signature(resolve).parameters:
+                        ctx = await self._call_context(agent, tool, record)
+                        # The protocol has no ``ctx``; a tool that takes one opts in.
+                        return await cast(Any, resolve)(record, resolution, ctx=ctx)
+                    return await resolve(record, resolution)
                 except Exception as exc:  # noqa: BLE001
                     return ToolResult.fail(f"on_resolve failed: {exc}")
         output: dict[str, object] = {
@@ -275,20 +361,11 @@ def _outcome_from_record(record: ToolCallRecord) -> ExecuteOutcome:
     return _outcome(record.id, _result_from_record(record))
 
 
-async def _build_invocation(tool: object, record: ToolCallRecord) -> ToolInvocation:
-    """Build a tool's invocation, giving it the call when it wants one.
-
-    Most tools are a pure function of their arguments, so ``build(args)`` is
-    all they need. A few are about the call itself -- delegating to a subagent
-    is "this thread starts that one", which the arguments cannot express.
-
-    Discovered structurally, like ``can_execute`` and ``on_resolve``: a tool
-    opts in by defining ``build_for_call`` and nothing else changes.
-    """
-    builder = cast(
-        "Callable[[ToolCallRecord], Awaitable[ToolInvocation]] | None",
-        getattr(tool, "build_for_call", None),
-    )
-    if callable(builder):
-        return await builder(record)
-    return await cast(Tool, tool).build(record.args)
+async def _heartbeat() -> None:
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            activity.heartbeat()
+        except RuntimeError:
+            # Not inside an activity (a direct call from a test); nothing to report to.
+            return

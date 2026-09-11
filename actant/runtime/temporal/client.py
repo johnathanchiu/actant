@@ -72,8 +72,14 @@ class TemporalRuntimeClient:
         agent_id: str,
         thread_id: str,
         content: str | list[dict[str, object]],
+        *,
+        parent_thread_id: str | None = None,
     ) -> str:
         """Signal the thread workflow with a new inbound message.
+
+        ``parent_thread_id`` marks the thread as a subagent's; pass it when
+        starting a sub-thread so the runtime records the link and its tools
+        see ``CallContext.parent_thread_id``.
 
         Uses ``signal_with_start`` so the workflow is created on first
         contact and signalled on every subsequent call. Idempotent:
@@ -89,6 +95,7 @@ class TemporalRuntimeClient:
             max_turns_per_run=agent_max_turns,
             external_resolution_timeout_seconds=(self.config.external_resolution_timeout_seconds),
             history_size_threshold=self.config.history_size_threshold,
+            parent_thread_id=parent_thread_id,
         )
         await client.start_workflow(
             AgentThreadWorkflow.run,

@@ -4,6 +4,63 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.8.1
+
+- Review fixes: a sandbox is reattached by its persisted id on every call, so one the
+  backend reclaimed is reopened instead of served stale; closing a sandbox never raises
+  and the id is forgotten first; `execute_tool` heartbeats from before the sandbox opens;
+  `ls` cannot leave the sandbox root; a missing artifact sink is a non-terminal failure;
+  approval-gated function tools get their `CallContext` on resolve.
+- `send_message(..., parent_thread_id=)` / `ThreadInput.parent_thread_id` record a
+  sub-thread's parent on the thread row.
+- Delegation is one level deep: `CallContext.parent_thread_id` is set for a subagent's
+  calls and `TaskTool` refuses to spawn from one.
+- Modal backend on Modal 1.5: the legacy `Sandbox.open`/`mkdir` file API was removed by
+  Modal, so reads and writes go through `Sandbox.filesystem`; the `modal` extra requires
+  `modal>=1.5`. `close` waits for termination so `attach` on a closed sandbox raises.
+- `RunStore.list_for_thread` lists a thread's runs, newest first.
+- Local backend: the interpreter's directory is first on `PATH`.
+
+## 0.8.0
+
+**Breaking:** `Tool.build` now takes the call: `build(params, ctx: CallContext)`.
+Every tool receives who is calling, from which thread and run, and, when it
+asked for one, the thread's sandbox. `build_for_call` is gone; `TaskTool`
+reads its parent thread from the context. A workflow started before the
+deploy is unaffected: no history payload changed shape, and the new
+`RunTurnInput`/`TurnResult`/`FinalizeRunInput` fields are defaulted.
+
+### Sandboxes
+
+A tool that runs code declares it (`needs_sandbox = True`, or a `Sandbox`
+parameter on a function tool) and the runtime opens one sandbox per thread,
+lazily, from the backend named by `AgentDefinition.sandbox`. `local` is a
+directory and a subprocess; `modal` (extra `actant[modal]`) is a
+network-blocked `modal.Sandbox` over a bucket prefix mounted from the
+product's own object storage. The sandbox id is persisted on the thread, so
+any worker reattaches. `SandboxRegistry`, `SandboxProvider`, `LocalSandbox`.
+
+### The exit point
+
+`FinishTool`: `finish(summary, paths=[])` ends the run and names the
+deliverables. Any terminal tool result may list `metadata["deliverables"]`;
+the runtime reads them from the sandbox, stores them through the worker's
+`ArtifactSink`, and reports them as `metadata["artifacts"]` and
+`RunCompletion.artifacts`.
+
+`AgentDefinition.completion="terminal"`: a task agent's run completes only
+on a terminal result; a text-only turn gets one persisted reminder, a second
+ends the run as exhausted with `stop_reason="stopped without finishing"`
+(`AgentRun.stop_reason`, `RunCompletion.stop_reason`). `"reply"` keeps chat behaviour.
+
+### Runtime
+
+- `execute_tool` heartbeats every 30 s and carries a 2-minute heartbeat
+  timeout, so a worker that dies mid-tool is noticed in minutes.
+- Migration `0002_sandbox_and_run_reason`: `actant_threads.sandbox_id`,
+  `actant_runs.stop_reason`.
+- `TemporalRuntimeWorker(sandbox_providers=..., artifact_sink=...)`.
+
 ## 0.7.0
 
 **Breaking, and requires draining in-flight workflows before deploy.**

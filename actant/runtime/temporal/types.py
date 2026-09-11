@@ -130,6 +130,9 @@ class ThreadInput:
     agent_id: str
     thread_id: str
     max_turns_per_run: int = 25
+    #: Set when this thread is a subagent of another; recorded on the thread
+    #: row so its tools see ``CallContext.parent_thread_id``.
+    parent_thread_id: str | None = None
     external_resolution_timeout_seconds: int = 7 * 24 * 60 * 60
     # Carry-forward state for continue_as_new. Empty on initial start.
     carry_inbox: list[InboundMessage] = field(default_factory=list)
@@ -151,6 +154,7 @@ class StartRunInput:
     thread_id: str
     run_id: str
     max_turns: int
+    parent_thread_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +164,7 @@ class FinalizeRunInput:
     run_id: str
     outcome: str  # RunOutcome value
     turn_count: int
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +177,9 @@ class RunTurnInput:
     # Inbox messages to apply before the turn. Only non-empty on the first
     # turn of a run; subsequent turns of the same run pass [].
     new_messages: list[InboundMessage] = field(default_factory=list)
+    # How many text-only turns this run has already answered with a
+    # reminder. Only meaningful for ``completion="terminal"`` agents.
+    text_only_turns: int = 0
 
 
 @dataclass(frozen=True)
@@ -195,6 +203,11 @@ class TurnResult:
     turn_id: str
     turn_index: int
     tool_calls: list[ToolCallSpec] = field(default_factory=list)
+    # Set by a ``completion="terminal"`` agent's turn that had no tool calls:
+    # ``reminded`` when the activity appended the reminder and the run should
+    # continue, ``stop_reason`` when it should end as exhausted.
+    reminded: bool = False
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True)

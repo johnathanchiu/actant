@@ -26,6 +26,14 @@ from actant.runtime.types.context import TurnContext
 from actant.runtime.types.threads import RunStatus, ThreadStatus
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
+FINISH_REMINDER = (
+    "<finish_required>\n"
+    "This run ends only when you call `finish` with your summary and deliverable paths, "
+    "or when a tool result is terminal. Call `finish` now, or keep working with your tools.\n"
+    "</finish_required>"
+)
+STOPPED_WITHOUT_FINISHING = "stopped without finishing"
+
 
 class RunActivities(ActivityContext):
     """Activities for the lifecycle and LLM turns of an agent run."""
@@ -56,6 +64,8 @@ class RunActivities(ActivityContext):
         thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
         thread.active_run_id = payload.run_id
         thread.status = ThreadStatus.ACTIVE
+        if payload.parent_thread_id and thread.parent_thread_id is None:
+            thread.parent_thread_id = payload.parent_thread_id
         await self.stores.threads.update(thread)
         return thread.turn_count
 
@@ -124,6 +134,24 @@ class RunActivities(ActivityContext):
         await self.stores.threads.update(thread)
         await self.stores.runs.update(run)
 
+        if not records and agent.completion == "terminal":
+            # A task agent does not end by silence. Once: remind it, persisted
+            # so the transcript (and any replay) shows the nudge. Twice: the
+            # run ends, and the reason says why.
+            if payload.text_only_turns == 0:
+                await self.stores.messages.append_user(
+                    payload.agent_id, payload.thread_id, FINISH_REMINDER
+                )
+                await hooks.on_user_message(FINISH_REMINDER)
+                return TurnResult(
+                    turn_id=payload.turn_id, turn_index=payload.turn_index, reminded=True
+                )
+            return TurnResult(
+                turn_id=payload.turn_id,
+                turn_index=payload.turn_index,
+                stop_reason=STOPPED_WITHOUT_FINISHING,
+            )
+
         return TurnResult(
             turn_id=payload.turn_id,
             turn_index=payload.turn_index,
@@ -154,11 +182,23 @@ class RunActivities(ActivityContext):
                     result={"status": "cancelled", "reason": "session_cancelled"},
                 )
 
-        await self.stores.runs.finish(payload.run_id, _run_status(payload.outcome))
+        await self.stores.runs.finish(
+            payload.run_id, _run_status(payload.outcome), stop_reason=payload.stop_reason
+        )
         thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
         thread.active_run_id = None
         thread.status = _thread_status(payload.outcome)
         await self.stores.threads.update(thread)
+
+        # Deliverables are read back from the run's tool calls, so a retried
+        # finalization reports the same list.
+        artifacts: list[dict[str, object]] = []
+        for record in await self.stores.tool_calls.get_by_run(payload.run_id):
+            raw = record.result if isinstance(record.result, dict) else {}
+            metadata = raw.get("metadata")
+            refs = metadata.get("artifacts") if isinstance(metadata, dict) else None
+            if isinstance(refs, list):
+                artifacts.extend(ref for ref in refs if isinstance(ref, dict))
 
         if self.run_completion_handler is not None:
             await self.run_completion_handler(
@@ -167,11 +207,13 @@ class RunActivities(ActivityContext):
                     thread_id=payload.thread_id,
                     run_id=payload.run_id,
                     outcome=payload.outcome,
+                    stop_reason=payload.stop_reason,
+                    artifacts=tuple(artifacts),
                 )
             )
         await self._hooks(thread).on_complete(
             success=payload.outcome == RunOutcome.COMPLETED.value,
-            reason=payload.outcome,
+            reason=payload.stop_reason or payload.outcome,
             message="",
         )
 

@@ -14,6 +14,7 @@ from actant.tools.admission import (
 from actant.tools.base import (
     BaseDeclarativeTool,
     BaseToolInvocation,
+    CallContext,
     ToolInvocation,
     ToolResult,
     make_tool_schema,
@@ -38,7 +39,7 @@ class GetCurrentTimeTool(BaseDeclarativeTool):
             ),
         )
 
-    async def build(self, params: JSONObject) -> ToolInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> ToolInvocation:
         return _GetCurrentTimeInvocation(None)
 
 
@@ -128,7 +129,7 @@ class GetWeatherTool(BaseDeclarativeTool):
             ),
         )
 
-    async def build(self, params: JSONObject) -> ToolInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> ToolInvocation:
         return _GetWeatherInvocation(dict(params))
 
     async def can_execute(self, call, invocation, context):  # type: ignore[no-untyped-def]
@@ -187,7 +188,7 @@ class FetchUrlTool(BaseDeclarativeTool):
             ),
         )
 
-    async def build(self, params: JSONObject) -> ToolInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> ToolInvocation:
         return _FetchUrlInvocation(dict(params))
 
 
@@ -247,7 +248,7 @@ class RequestApprovalTool(BaseDeclarativeTool):
             ),
         )
 
-    async def build(self, params: JSONObject) -> ToolInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> ToolInvocation:
         action = str(params.get("action", ""))
         return _DeferredInvocation(dict(params), f"Awaiting approval: {action}")
 
@@ -314,7 +315,7 @@ class AskUserTool(BaseDeclarativeTool):
             ),
         )
 
-    async def build(self, params: JSONObject) -> ToolInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> ToolInvocation:
         question = str(params.get("question", ""))
         return _DeferredInvocation(dict(params), f"Awaiting choice: {question}")
 

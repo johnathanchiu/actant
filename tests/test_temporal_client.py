@@ -37,6 +37,7 @@ from actant.tools.base import (
 from actant.tools.calls import ToolCallStatus
 from actant.tools.registry import ToolRegistry
 from actant.tools import tool
+from actant.tools.base import CallContext
 
 _AGENT = "test_agent"
 _THREAD = "test_thread"
@@ -176,7 +177,7 @@ class _ApprovalTool(BaseDeclarativeTool):
             }
         )
 
-    async def build(self, params: JSONObject) -> _ApprovalInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _ApprovalInvocation:
         return _ApprovalInvocation(params)
 
 

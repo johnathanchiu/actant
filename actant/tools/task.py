@@ -44,6 +44,7 @@ from actant.tools.admission import (
 )
 from actant.tools.base import (
     BaseToolInvocation,
+    CallContext,
     ToolInvocation,
     ToolResult,
     ToolSchema,
@@ -97,12 +98,11 @@ class TaskTool:
     Pass exactly one of ``invoker`` (sync) or ``spawner`` (background).
 
     **Parent-thread resolution (background mode):** ``parent_thread_id``
-    is optional — if unset, the tool reads ``call.thread_id``
-    from each invocation (which the runtime always stamps on
-    ``ToolCallView``). This means a single ``TaskTool`` instance can be
-    shared across many threads in one ``AgentDefinition``, instead of
-    requiring per-thread agent construction just to pin a different
-    ``parent_thread_id`` on each TaskTool.
+    is optional — if unset, the tool reads the thread from the
+    :class:`CallContext` every ``build`` receives. This means a single
+    ``TaskTool`` instance can be shared across many threads in one
+    ``AgentDefinition``, instead of requiring per-thread agent construction
+    just to pin a different ``parent_thread_id`` on each TaskTool.
 
     Setting ``parent_thread_id`` at construction time still works and
     overrides the per-call value — useful when an app builds a fresh
@@ -169,22 +169,23 @@ class TaskTool:
             required=["subagent", "message"],
         )
 
-    async def build(self, params: JSONObject) -> "TaskInvocation":
-        return TaskInvocation(params, invoker=self.invoker)
+    async def build(self, params: JSONObject, ctx: CallContext) -> "TaskInvocation":
+        """The context carries the thread doing the delegating.
 
-    async def build_for_call(self, call: ToolCallView) -> "TaskInvocation":
-        """The call carries the thread doing the delegating.
+        Plain arguments cannot serve background mode: the parent thread id is
+        not in them, and it is the whole point of the call.
 
-        Discovered structurally by the runtime (see ``_build_invocation``).
-        Plain ``build`` cannot serve background mode: the parent thread id is
-        not in the tool's arguments, and it is the whole point of the call.
+        Delegation is one level deep: a subagent that asks for a subagent is
+        refused, so a person's approval never has to travel up more than one
+        thread.
         """
-        args: JSONObject = call.args if isinstance(call.args, dict) else {}
+        if ctx.parent_thread_id is not None:
+            raise ValueError("a subagent cannot spawn subagents")
         return TaskInvocation(
-            args,
+            params,
             invoker=self.invoker,
             spawner=self.spawner,
-            parent_thread_id=self._parent_thread_id(call),
+            parent_thread_id=self.parent_thread_id or ctx.thread_id or None,
         )
 
     # ``can_execute`` validates and nothing more. Starting the subagent is

@@ -114,7 +114,7 @@ state, full admission context, or specialized resolution behavior:
 
 ```python
 from actant.core import JSONObject
-from actant.tools import BaseDeclarativeTool, BaseToolInvocation
+from actant.tools import BaseDeclarativeTool, BaseToolInvocation, CallContext
 from actant.tools import ToolResult, make_tool_schema
 
 
@@ -138,7 +138,7 @@ class EchoTool(BaseDeclarativeTool):
             ),
         )
 
-    async def build(self, params: JSONObject) -> EchoInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> EchoInvocation:
         return EchoInvocation(params)
 ```
 
@@ -167,6 +167,17 @@ return ToolResult.ok(
 )
 ```
 
+Three metadata keys mean something to the runtime:
+
+- `terminal=True` ends the run after this tool group, without another model
+  turn. `FinishTool` sets it; a verifier tool can too.
+- `deliverables=[...]` on a terminal result names workspace paths the runtime
+  reads from the thread's sandbox and stores through the worker's
+  `ArtifactSink`. The stored refs come back as `metadata["artifacts"]` and on
+  `RunCompletion.artifacts`. A path that cannot be read fails the tool and
+  drops `terminal`, so the model can correct it.
+- `artifacts` is written by the runtime, never by a tool.
+
 Use `content_blocks` when the tool result needs multimodal provider input or
 rich persisted blocks:
 
@@ -188,6 +199,66 @@ return ToolResult(
 
 Products may interpret metadata and content blocks to emit artifacts, render UI
 previews, or feed future agent turns.
+
+## Sandboxed tools
+
+A tool that runs code should not run it on the worker. Declare a `Sandbox`
+parameter and the runtime opens one sandbox per thread, from the backend the
+agent definition names, and hands it in. The parameter never appears in the
+schema.
+
+```python
+from actant.sandbox import Sandbox, SandboxSpec
+from actant.tools import tool
+
+
+@tool
+async def run_script(path: str, sandbox: Sandbox) -> dict:
+    """Run a Python file in the workspace."""
+    result = await sandbox.exec(["python", path], timeout=120)
+    return {"returncode": result.returncode, "stdout": result.stdout[-4000:]}
+
+
+agent = AgentDefinition(
+    ...,
+    sandbox=SandboxSpec(backend="local", mount="/srv/agent-workspaces"),
+    completion="terminal",
+)
+```
+
+`Sandbox` is a filesystem plus `exec`: `read`, `write` (whole file), `ls`,
+`exec(argv, cwd=, timeout=, env=)`, `close`. Paths are relative to the
+thread's root. A class-based tool sets `needs_sandbox = True` and reads
+`ctx.sandbox` in `build`. A `CallContext` parameter alone gives a tool its
+agent, thread, run and call ids without a sandbox. `ctx.parent_thread_id` is
+set when the calling thread is a subagent; `TaskTool` refuses to spawn from
+one, so delegation is one level deep.
+
+Backends: `local` (a directory under `mount`, subprocesses; always
+registered) and `modal` (`actant[modal]`: a network-blocked `modal.Sandbox`
+over a bucket prefix mounted from your object storage, so the files live
+with you, not on Modal). Register providers on the worker:
+
+```python
+TemporalRuntimeWorker(
+    ...,
+    sandbox_providers={"modal": ModalSandboxProvider("my-app", bucket="agents", secret_name="r2")},
+    artifact_sink=my_sink,
+)
+```
+
+The sandbox id is stored on the thread, so another worker reattaches rather
+than opening a second one over the same files. An exec's `timeout` must stay
+under the ten-minute tool activity. Mounted buckets write whole files only
+(no append, no seek), which is what `write` promises anyway.
+
+## Finishing a task
+
+A chat agent is done when it answers. A task agent has to say so. Give it
+`FinishTool` and `completion="terminal"`: the run completes only on a
+terminal result; a turn with no tool calls gets one reminder, a second ends
+the run as exhausted with the stop reason stored on the run. `finish(summary,
+paths=[...])` names the deliverables, which the runtime stores as artifacts.
 
 ## Advanced admission: Allow, Block, Wait
 
@@ -264,7 +335,7 @@ See [pauses and deferred work](pauses-and-resume.md) for details.
 Unit-test a function tool directly:
 
 ```python
-invocation = await weather.build({"city": "Paris", "days": 2})
+invocation = await weather.build({"city": "Paris", "days": 2}, ctx)
 result = await invocation.execute()
 assert result.output["city"] == "Paris"
 ```

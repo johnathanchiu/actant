@@ -53,6 +53,7 @@ from actant.tools.base import (
 )
 from actant.tools.calls import ToolCallStatus
 from actant.tools.registry import ToolRegistry
+from actant.tools.base import CallContext
 
 _AGENT = "test_agent"
 _THREAD = "test_thread"
@@ -177,7 +178,7 @@ class _EchoTool(BaseDeclarativeTool):
     def __init__(self) -> None:
         super().__init__("echo", make_tool_schema("echo", "Echo back"))
 
-    async def build(self, params: JSONObject) -> _EchoInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _EchoInvocation:
         return _EchoInvocation(params)
 
 
@@ -190,7 +191,7 @@ class _TerminalTool(BaseDeclarativeTool):
     def __init__(self) -> None:
         super().__init__("finish", make_tool_schema("finish", "Stop the run"))
 
-    async def build(self, params: JSONObject) -> _TerminalInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _TerminalInvocation:
         return _TerminalInvocation(params)
 
 
@@ -219,7 +220,7 @@ class _ParallelTool(BaseDeclarativeTool):
         self.started = started
         self.release = release
 
-    async def build(self, params: JSONObject) -> _ParallelInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _ParallelInvocation:
         return _ParallelInvocation(params, self.started, self.release)
 
 
@@ -382,7 +383,7 @@ class _ApprovalTool(BaseDeclarativeTool):
             ToolWaitRequest(kind="approval", prompt="approve?", payload={})
         )
 
-    async def build(self, params: JSONObject) -> _ApprovalInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _ApprovalInvocation:
         return _ApprovalInvocation(params)
 
 

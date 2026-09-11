@@ -15,12 +15,27 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from typing import cast
+from typing import Any, cast
 
+from actant.agents import AgentDefinition
 from actant.core import JSONObject
 from actant.runtime.events.lifecycle import PublishingThreadHooks
 from actant.tools.admission import ToolDecisionKind
+from actant.tools.calls import ToolCallRecord
 from actant.tools.task import TaskTool
+from actant.tools.base import CallContext
+
+
+def _ctx(thread_id: str = "thread-1", **overrides: object) -> CallContext:
+    values: dict[str, object] = {
+        "agent_id": "demo",
+        "thread_id": thread_id,
+        "run_id": "run-1",
+        "tool_call_id": "tc-1",
+        "turn_id": "turn-1",
+    }
+    values.update(overrides)
+    return CallContext(**values)  # type: ignore[arg-type]
 
 
 @dataclass
@@ -87,7 +102,7 @@ async def test_construction_time_parent_thread_id_wins() -> None:
     # Admission does not spawn: it runs for calls that never execute.
     assert spawner.spawns == []
 
-    result = await (await tool.build_for_call(call)).execute()
+    result = await (await tool.build(call.args, _ctx(call.thread_id))).execute()
     assert len(spawner.spawns) == 1
     assert spawner.spawns[0].parent_thread_id == "thread_constructed"
     assert result.output == {
@@ -120,8 +135,8 @@ async def test_per_call_thread_id_fallback() -> None:
     assert (await tool.can_execute(call_a, None, None)).kind == ToolDecisionKind.EXECUTE
     assert (await tool.can_execute(call_b, None, None)).kind == ToolDecisionKind.EXECUTE
 
-    await (await tool.build_for_call(call_a)).execute()
-    await (await tool.build_for_call(call_b)).execute()
+    await (await tool.build(call_a.args, _ctx(call_a.thread_id))).execute()
+    await (await tool.build(call_b.args, _ctx(call_b.thread_id))).execute()
     assert len(spawner.spawns) == 2
     assert spawner.spawns[0].parent_thread_id == "thread_alpha"
     assert spawner.spawns[1].parent_thread_id == "thread_beta"
@@ -191,7 +206,7 @@ async def test_the_sub_thread_id_survives_the_event_a_viewer_sees() -> None:
     tool = TaskTool(spawner=spawner, parent_thread_id="thread_1")
     call = _FakeCall(id="tc_1", thread_id="thread_1", args={"subagent": "r", "message": "go"})
 
-    result = await (await tool.build_for_call(call)).execute()
+    result = await (await tool.build(call.args, _ctx(call.thread_id))).execute()
     hooks = PublishingThreadHooks("thread_1", _Publisher())
     await hooks.on_tool_result("tc_1", result)
 
@@ -205,17 +220,15 @@ async def test_the_sub_thread_id_survives_the_event_a_viewer_sees() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_runtime_builds_a_task_invocation_with_its_call() -> None:
-    """The structural hook is what makes delegation work, so exercise it.
+async def test_the_runtime_hands_a_tool_its_call_context() -> None:
+    """Every build receives the call's context, so delegation knows its thread.
 
-    Every other test here calls ``build_for_call`` directly, which proves
-    the method and not the dispatch. If the runtime stopped finding it --
-    a renamed hook, a changed getattr -- it would silently fall back to
-    ``build(args)``, producing an invocation with no spawner, and every
-    delegation would fail at runtime against a fully green suite.
+    Exercised through the activity's own context builder rather than
+    ``TaskTool.build`` directly: if the runtime stopped passing the thread,
+    every delegation would fail at runtime against a fully green suite.
     """
-    from actant.runtime.temporal.activities.tools import _build_invocation
-    from actant.tools.calls import ToolCallRecord
+    from actant.runtime.stores.in_memory import InMemoryRuntimeStores
+    from actant.runtime.temporal.activities.tools import ToolActivities
 
     spawner = _CapturingSpawner()
     tool = TaskTool(spawner=spawner)
@@ -224,13 +237,48 @@ async def test_the_runtime_builds_a_task_invocation_with_its_call() -> None:
         thread_id="thread_from_the_record",
         args={"subagent": "researcher", "message": "go"},
     )
+    stores = InMemoryRuntimeStores()
+    await stores.threads.get_or_create("demo", "thread_from_the_record")
+    activities = ToolActivities(stores=stores, agents={})
+    agent = cast(Any, None)  # no sandbox is requested, so the agent is never consulted
 
-    # _FakeCall is not a ToolCallRecord, but _build_invocation only reads
-    # what ToolCallView declares -- which is the point of the hook.
-    invocation = await _build_invocation(tool, cast(ToolCallRecord, record))
+    ctx = await activities._call_context(agent, tool, cast(ToolCallRecord, record))
+    invocation = await tool.build(record.args, ctx)
     result = await invocation.execute()
 
     assert result.error is None, result.error
     assert spawner.spawns[0].parent_thread_id == "thread_from_the_record", (
-        "the runtime handed the tool its call, not just the arguments"
+        "the runtime handed the tool its call context, not just the arguments"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_cannot_spawn_subagents() -> None:
+    """Delegation is one level deep: a thread with a parent is refused."""
+    tool = TaskTool(spawner=_CapturingSpawner())
+    with pytest.raises(ValueError, match="cannot spawn"):
+        await tool.build({"name": "x", "message": "y"}, _ctx("child-1", parent_thread_id="root"))
+
+
+@pytest.mark.asyncio
+async def test_the_parent_passed_at_thread_start_reaches_the_call_context() -> None:
+    from actant.runtime.stores.in_memory import InMemoryRuntimeStores
+    from actant.runtime.temporal.activities.runs import RunActivities
+    from actant.runtime.temporal.activities.tools import ToolActivities
+    from actant.runtime.temporal.types import StartRunInput
+
+    stores = InMemoryRuntimeStores()
+    await RunActivities(stores=stores, agents={}).start_run(
+        StartRunInput(
+            agent_id="demo", thread_id="child", run_id="r1", max_turns=5, parent_thread_id="root"
+        )
+    )
+    record = _FakeCall(id="tc-9", thread_id="child")
+    ctx = await ToolActivities(stores=stores, agents={})._call_context(
+        cast(AgentDefinition, object()),
+        TaskTool(spawner=_CapturingSpawner()),
+        cast(ToolCallRecord, record),
+    )
+    assert ctx.parent_thread_id == "root"
+    with pytest.raises(ValueError, match="cannot spawn"):
+        await TaskTool(spawner=_CapturingSpawner()).build({"name": "x", "message": "y"}, ctx)

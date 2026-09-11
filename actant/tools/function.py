@@ -18,7 +18,14 @@ from actant.tools.admission import (
     ToolWaitRequest,
     TurnContextView,
 )
-from actant.tools.base import BaseToolInvocation, ToolInvocation, ToolResult, ToolSchema
+from actant.sandbox.base import Sandbox
+from actant.tools.base import (
+    BaseToolInvocation,
+    CallContext,
+    ToolInvocation,
+    ToolResult,
+    ToolSchema,
+)
 
 ToolFunction: TypeAlias = Callable[..., object]
 ToolArguments: TypeAlias = dict[str, object]
@@ -33,15 +40,18 @@ AwaitedT = TypeVar("AwaitedT")
 class FunctionToolInvocation(BaseToolInvocation[ToolArguments, object]):
     """One validated invocation of a :class:`FunctionTool`."""
 
-    def __init__(self, tool: FunctionTool, params: ToolArguments) -> None:
+    def __init__(
+        self, tool: FunctionTool, params: ToolArguments, ctx: CallContext | None = None
+    ) -> None:
         super().__init__(params)
         self._tool = tool
+        self._ctx = ctx
 
     def get_description(self) -> str:
         return f"Running {self._tool.name}"
 
     async def execute(self) -> ToolResult:
-        return await self._tool._execute(self.params)
+        return await self._tool._execute(self.params, self._ctx)
 
 
 class FunctionTool:
@@ -65,7 +75,11 @@ class FunctionTool:
         self.approval = approval
         self.admission = admission
         self.resolve = resolve
-        self._params_model = _parameter_model(function, self.name)
+        self._params_model, self._injected = _parameter_model(function, self.name)
+        # A ``Sandbox`` parameter is the declaration: the runtime opens the
+        # thread's sandbox before building this tool. ``CallContext`` alone
+        # only asks for the call's identity.
+        self.needs_sandbox = any(kind is Sandbox for kind in self._injected.values())
         if isinstance(approval, str):
             _validate_approval_template(approval, set(self._params_model.model_fields))
         self._schema: ToolSchema = {
@@ -81,8 +95,12 @@ class FunctionTool:
     def schema(self) -> ToolSchema:
         return self._schema
 
-    async def build(self, params: JSONObject) -> FunctionToolInvocation:
-        return FunctionToolInvocation(self, self._validated_params(params))
+    async def build(self, params: JSONObject, ctx: CallContext) -> FunctionToolInvocation:
+        if self.needs_sandbox and ctx.sandbox is None:
+            raise RuntimeError(
+                f"Tool {self.name!r} takes a Sandbox; the agent definition declares none"
+            )
+        return FunctionToolInvocation(self, self._validated_params(params), ctx)
 
     def _validated_params(self, params: JSONObject) -> ToolArguments:
         try:
@@ -120,11 +138,12 @@ class FunctionTool:
         self,
         call: ToolCallView,
         resolution: ToolResolution,
+        ctx: CallContext | None = None,
     ) -> ToolResult:
         if self.approval is not None:
             if resolution.approved is not True:
                 return ToolResult.fail("Tool call was not approved")
-            return await self._execute(self._validated_params(call.args))
+            return await self._execute(self._validated_params(call.args), ctx)
         if self.resolve is not None:
             return _as_result(
                 await _invoke_resolution(
@@ -140,11 +159,23 @@ class FunctionTool:
         output.update(resolution.payload)
         return ToolResult.ok(output)
 
-    async def _execute(self, params: ToolArguments) -> ToolResult:
+    async def _execute(self, params: ToolArguments, ctx: CallContext | None) -> ToolResult:
+        arguments = dict(params)
+        for name, kind in self._injected.items():
+            if kind is Sandbox:
+                if ctx is None or ctx.sandbox is None:
+                    return ToolResult.fail(
+                        f"Tool {self.name!r} needs a sandbox and none was given"
+                    )
+                arguments[name] = ctx.sandbox
+            else:
+                if ctx is None:
+                    return ToolResult.fail(f"Tool {self.name!r} needs its call context")
+                arguments[name] = ctx
         if inspect.iscoroutinefunction(self.function):
-            output = await self.function(**params)
+            output = await self.function(**arguments)
         else:
-            output = await asyncio.to_thread(self.function, **params)
+            output = await asyncio.to_thread(self.function, **arguments)
         return _as_result(output)
 
 
@@ -190,10 +221,18 @@ def tool(
     return create(function) if function is not None else create
 
 
-def _parameter_model(function: ToolFunction, tool_name: str) -> type[BaseModel]:
+def _parameter_model(
+    function: ToolFunction, tool_name: str
+) -> tuple[type[BaseModel], dict[str, object]]:
+    """The model for the parameters the model fills in, and the ones the runtime injects.
+
+    A parameter annotated ``CallContext`` or ``Sandbox`` is the runtime's to
+    supply: it is left out of the schema and out of validation.
+    """
     signature = inspect.signature(function)
     hints = get_type_hints(function, include_extras=True)
     fields: dict[str, tuple[object, object]] = {}
+    injected: dict[str, object] = {}
     for parameter in signature.parameters.values():
         if parameter.kind in {
             inspect.Parameter.POSITIONAL_ONLY,
@@ -206,15 +245,19 @@ def _parameter_model(function: ToolFunction, tool_name: str) -> type[BaseModel]:
         annotation = hints.get(parameter.name, parameter.annotation)
         if annotation is inspect.Parameter.empty:
             raise TypeError(f"Tool parameter {parameter.name!r} requires a type annotation")
+        if annotation is CallContext or annotation is Sandbox:
+            injected[parameter.name] = annotation
+            continue
         default = ... if parameter.default is inspect.Parameter.empty else parameter.default
         fields[parameter.name] = (annotation, default)
     # Pydantic intentionally accepts dynamic field definitions through
     # ``**fields``; its static overloads cannot express a runtime signature.
-    return create_model(  # pyright: ignore[reportCallIssue, reportArgumentType]
+    model = create_model(  # pyright: ignore[reportCallIssue, reportArgumentType]
         f"{tool_name.title().replace('_', '')}Params",
         __config__=ConfigDict(extra="forbid"),
         **fields,  # pyright: ignore[reportArgumentType]
     )
+    return model, injected
 
 
 def _validate_approval_template(template: str, parameter_names: set[str]) -> None:

@@ -71,6 +71,7 @@ class SQLAlchemyThreadStore:
                 model.parent_thread_id = thread.parent_thread_id
                 model.parent_turn_id = thread.parent_turn_id
                 model.parent_tool_call_id = thread.parent_tool_call_id
+                model.sandbox_id = thread.sandbox_id
                 model.updated_at = datetime.now(UTC)
 
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]:
@@ -123,7 +124,21 @@ class SQLAlchemyRunStore:
                 model.max_turns = run.max_turns
                 model.updated_at = datetime.now(UTC)
 
-    async def finish(self, run_id: str, status: RunStatus) -> None:
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[AgentRun]:
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                select(ActantRunModel)
+                .where(
+                    ActantRunModel.agent_id == agent_id,
+                    ActantRunModel.thread_id == thread_id,
+                )
+                .order_by(ActantRunModel.created_at.desc())
+            )
+            return [run_from_row(row) for row in rows.scalars()]
+
+    async def finish(
+        self, run_id: str, status: RunStatus, *, stop_reason: str | None = None
+    ) -> None:
         # Idempotent: missing run = nothing to finalize. Temporal can
         # redeliver ``finalize_run`` after the row has been cleaned up
         # (test teardown, manual cleanup, retention policy); raising
@@ -134,6 +149,7 @@ class SQLAlchemyRunStore:
                 if model is None:
                     return
                 model.status = status.value
+                model.stop_reason = stop_reason
                 model.updated_at = datetime.now(UTC)
 
 
