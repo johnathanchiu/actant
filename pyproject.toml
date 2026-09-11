@@ -34,7 +34,7 @@ openai = ["openai>=1.60"]
 qwen = ["openai>=1.60"]
 # The Modal sandbox backend. Products bring their own object storage; the
 # mount only needs the bucket keys as a Modal secret.
-modal = ["modal>=1.4,<2"]
+modal = ["modal>=1.5,<2"]
 providers = [
   "anthropic>=0.40",
   "google-genai>=1.0",

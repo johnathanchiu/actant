@@ -98,15 +98,12 @@ class ModalSandbox:
         return path
 
     async def read(self, path: str) -> bytes:
-        async with await self._sandbox.open.aio(f"{MOUNT_PATH}/{self._check(path)}", "rb") as f:
-            return await f.read.aio()
+        return await self._sandbox.filesystem.read_bytes.aio(f"{MOUNT_PATH}/{self._check(path)}")
 
     async def write(self, path: str, data: bytes) -> None:
         target = f"{MOUNT_PATH}/{self._check(path)}"
-        parent = target.rpartition("/")[0]
-        await self._sandbox.mkdir.aio(parent, parents=True)
-        async with await self._sandbox.open.aio(target, "wb") as f:
-            await f.write.aio(data)
+        await self._sandbox.filesystem.make_directory.aio(target.rpartition("/")[0])
+        await self._sandbox.filesystem.write_bytes.aio(data, target)
 
     async def ls(self, pattern: str) -> list[Entry]:
         result = await self.exec(["python", "-c", _LS, MOUNT_PATH, pattern], timeout=60)
