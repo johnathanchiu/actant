@@ -42,10 +42,13 @@ class LocalSandbox:
         await asyncio.to_thread(_write)
 
     async def ls(self, pattern: str) -> list[Entry]:
+        if pattern.startswith("/") or ".." in pattern.split("/"):
+            raise ValueError(f"path escapes the sandbox: {pattern!r}")
+
         def _ls() -> list[Entry]:
             entries = []
             for match in sorted(self.root.glob(pattern)):
-                if match.is_file():
+                if match.is_file() and self.root in match.resolve().parents:
                     stat = match.stat()
                     entries.append(
                         Entry(str(match.relative_to(self.root)), stat.st_size, stat.st_mtime)

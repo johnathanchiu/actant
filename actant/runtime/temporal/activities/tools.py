@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import mimetypes
 from typing import cast
 
@@ -147,16 +148,17 @@ class ToolActivities(ActivityContext):
         tool = agent.tools.get(record.name)
         if tool is None:
             return await self._execute_failed(record.id, f"Tool {record.name} not found")
-        try:
-            ctx = await self._call_context(agent, tool, record)
-            invocation = await tool.build(record.args, ctx)
-        except Exception as exc:  # noqa: BLE001
-            return await self._execute_failed(record.id, f"Tool build error: {exc}")
-        # A tool that runs code can take minutes. Heartbeats keep Temporal
-        # from mistaking a long healthy activity for a dead worker, and let
-        # a cancellation reach it.
+        # A tool that runs code can take minutes, and opening its sandbox can
+        # too (an image builds on first use). Heartbeats keep Temporal from
+        # mistaking a long healthy activity for a dead worker, and let a
+        # cancellation reach it; they start before anything slow.
         beat = asyncio.create_task(_heartbeat())
         try:
+            try:
+                ctx = await self._call_context(agent, tool, record)
+                invocation = await tool.build(record.args, ctx)
+            except Exception as exc:  # noqa: BLE001
+                return await self._execute_failed(record.id, f"Tool build error: {exc}")
             result = await invocation.execute()
         except Exception as exc:  # noqa: BLE001
             result = ToolResult.fail(f"Tool execution error: {exc}")
@@ -211,9 +213,11 @@ class ToolActivities(ActivityContext):
         if not paths:
             return result
         if self.artifact_sink is None:
-            return ToolResult.fail(
-                "deliverables were listed but the worker has no artifact sink", **result.metadata
+            failed = ToolResult.fail(
+                "deliverables were listed but the worker has no artifact sink"
             )
+            failed.metadata = {k: v for k, v in result.metadata.items() if k != "terminal"}
+            return failed
         sandbox = ctx.sandbox
         if sandbox is None:
             sandbox = await self._sandbox_for(agent, record.thread_id)
@@ -289,7 +293,13 @@ class ToolActivities(ActivityContext):
             tool = agent.tools.get(record.name)
             if tool is not None and callable(getattr(tool, "on_resolve", None)):
                 try:
-                    return await cast(ToolResolve, tool).on_resolve(record, resolution)
+                    resolve = cast(ToolResolve, tool).on_resolve
+                    # A tool that runs after approval needs the same context it
+                    # would have had at execution (its sandbox, its ids).
+                    if "ctx" in inspect.signature(resolve).parameters:
+                        ctx = await self._call_context(agent, tool, record)
+                        return await resolve(record, resolution, ctx=ctx)
+                    return await resolve(record, resolution)
                 except Exception as exc:  # noqa: BLE001
                     return ToolResult.fail(f"on_resolve failed: {exc}")
         output: dict[str, object] = {

@@ -175,6 +175,7 @@ class AgentThreadWorkflow:
                 thread_id=payload.thread_id,
                 run_id=run_id,
                 max_turns=payload.max_turns_per_run,
+                parent_thread_id=payload.parent_thread_id,
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )

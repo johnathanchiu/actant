@@ -17,9 +17,11 @@ import pytest
 
 from typing import Any, cast
 
+from actant.agents import AgentDefinition
 from actant.core import JSONObject
 from actant.runtime.events.lifecycle import PublishingThreadHooks
 from actant.tools.admission import ToolDecisionKind
+from actant.tools.calls import ToolCallRecord
 from actant.tools.task import TaskTool
 from actant.tools.base import CallContext
 
@@ -227,7 +229,6 @@ async def test_the_runtime_hands_a_tool_its_call_context() -> None:
     """
     from actant.runtime.stores.in_memory import InMemoryRuntimeStores
     from actant.runtime.temporal.activities.tools import ToolActivities
-    from actant.tools.calls import ToolCallRecord
 
     spawner = _CapturingSpawner()
     tool = TaskTool(spawner=spawner)
@@ -257,3 +258,27 @@ async def test_a_subagent_cannot_spawn_subagents() -> None:
     tool = TaskTool(spawner=_CapturingSpawner())
     with pytest.raises(ValueError, match="cannot spawn"):
         await tool.build({"name": "x", "message": "y"}, _ctx("child-1", parent_thread_id="root"))
+
+
+@pytest.mark.asyncio
+async def test_the_parent_passed_at_thread_start_reaches_the_call_context() -> None:
+    from actant.runtime.stores.in_memory import InMemoryRuntimeStores
+    from actant.runtime.temporal.activities.runs import RunActivities
+    from actant.runtime.temporal.activities.tools import ToolActivities
+    from actant.runtime.temporal.types import StartRunInput
+
+    stores = InMemoryRuntimeStores()
+    await RunActivities(stores=stores, agents={}).start_run(
+        StartRunInput(
+            agent_id="demo", thread_id="child", run_id="r1", max_turns=5, parent_thread_id="root"
+        )
+    )
+    record = _FakeCall(id="tc-9", thread_id="child")
+    ctx = await ToolActivities(stores=stores, agents={})._call_context(
+        cast(AgentDefinition, object()),
+        TaskTool(spawner=_CapturingSpawner()),
+        cast(ToolCallRecord, record),
+    )
+    assert ctx.parent_thread_id == "root"
+    with pytest.raises(ValueError, match="cannot spawn"):
+        await TaskTool(spawner=_CapturingSpawner()).build({"name": "x", "message": "y"}, ctx)

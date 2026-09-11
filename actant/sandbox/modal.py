@@ -11,6 +11,7 @@ without it.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import shlex
@@ -106,6 +107,7 @@ class ModalSandbox:
         await self._sandbox.filesystem.write_bytes.aio(data, target)
 
     async def ls(self, pattern: str) -> list[Entry]:
+        pattern = self._check(pattern)
         result = await self.exec(["python", "-c", _LS, MOUNT_PATH, pattern], timeout=60)
         if result.returncode != 0:
             raise RuntimeError(f"ls failed: {result.stderr}")
@@ -136,7 +138,9 @@ class ModalSandbox:
     async def close(self) -> None:
         # ``terminate`` only requests the stop; wait so ``attach`` sees it finished.
         await self._sandbox.terminate.aio()
-        await self._sandbox.wait.aio(raise_on_termination=False)
+        # ``wait`` raises for a sandbox that ended by timeout; that is still closed.
+        with contextlib.suppress(Exception):
+            await self._sandbox.wait.aio(raise_on_termination=False)
 
     def __repr__(self) -> str:
         return f"ModalSandbox({shlex.quote(self.id)})"

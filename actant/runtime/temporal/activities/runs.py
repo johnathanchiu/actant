@@ -64,6 +64,8 @@ class RunActivities(ActivityContext):
         thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
         thread.active_run_id = payload.run_id
         thread.status = ThreadStatus.ACTIVE
+        if payload.parent_thread_id and thread.parent_thread_id is None:
+            thread.parent_thread_id = payload.parent_thread_id
         await self.stores.threads.update(thread)
         return thread.turn_count
 

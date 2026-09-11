@@ -138,11 +138,12 @@ class FunctionTool:
         self,
         call: ToolCallView,
         resolution: ToolResolution,
+        ctx: CallContext | None = None,
     ) -> ToolResult:
         if self.approval is not None:
             if resolution.approved is not True:
                 return ToolResult.fail("Tool call was not approved")
-            return await self._execute(self._validated_params(call.args), None)
+            return await self._execute(self._validated_params(call.args), ctx)
         if self.resolve is not None:
             return _as_result(
                 await _invoke_resolution(

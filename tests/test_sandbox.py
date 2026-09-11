@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import asyncio
 import pytest
 
 from actant.runtime.stores import InMemoryRuntimeStores
@@ -96,14 +97,15 @@ async def test_registry_opens_once_persists_the_id_and_reattaches(tmp_path: Path
     assert provider.opened == 1
     assert (await stores.threads.get("a", "t")).sandbox_id == first.id
 
-    # Same process: the live handle, no second open.
-    assert await registry.for_thread(spec, thread) is first
-    assert provider.opened == 1
+    # Same process: reattached by the persisted id on every call, no second open,
+    # so a sandbox the backend reclaimed is noticed rather than served stale.
+    assert (await registry.for_thread(spec, thread)).id == first.id
+    assert provider.opened == 1 and provider.attached == [first.id]
 
-    # Another worker: nothing live, so it attaches by the persisted id.
+    # Another worker: the same attach by the persisted id.
     other = SandboxRegistry({"fake": provider}, stores.threads)
     again = await other.for_thread(spec, await stores.threads.get("a", "t"))
-    assert again.id == first.id and provider.attached == [first.id] and provider.opened == 1
+    assert again.id == first.id and provider.attached == [first.id] * 2 and provider.opened == 1
 
     # The sandbox died: attach fails, a fresh one is opened and recorded.
     provider.gone.add(first.id)
@@ -158,3 +160,16 @@ async def test_a_call_context_parameter_tells_a_tool_its_thread() -> None:
     assert whoami.schema["function"]["parameters"]["properties"] == {}  # type: ignore[index]
     result = await (await whoami.build({}, _ctx())).execute()
     assert result.output == "t"
+
+
+def test_local_ls_cannot_leave_the_root(tmp_path) -> None:
+    from actant.sandbox.local import LocalSandbox
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (tmp_path / "outside.txt").write_text("x")
+    sandbox = LocalSandbox(root)
+    with pytest.raises(ValueError, match="escapes"):
+        asyncio.run(sandbox.ls("../*"))
+    with pytest.raises(ValueError, match="escapes"):
+        asyncio.run(sandbox.ls("/etc/*"))

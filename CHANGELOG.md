@@ -6,6 +6,13 @@ affect users.
 
 ## 0.8.1
 
+- Review fixes: a sandbox is reattached by its persisted id on every call, so one the
+  backend reclaimed is reopened instead of served stale; closing a sandbox never raises
+  and the id is forgotten first; `execute_tool` heartbeats from before the sandbox opens;
+  `ls` cannot leave the sandbox root; a missing artifact sink is a non-terminal failure;
+  approval-gated function tools get their `CallContext` on resolve.
+- `send_message(..., parent_thread_id=)` / `ThreadInput.parent_thread_id` record a
+  sub-thread's parent on the thread row.
 - Delegation is one level deep: `CallContext.parent_thread_id` is set for a subagent's
   calls and `TaskTool` refuses to spawn from one.
 - Modal backend on Modal 1.5: the legacy `Sandbox.open`/`mkdir` file API was removed by

@@ -130,6 +130,9 @@ class ThreadInput:
     agent_id: str
     thread_id: str
     max_turns_per_run: int = 25
+    #: Set when this thread is a subagent of another; recorded on the thread
+    #: row so its tools see ``CallContext.parent_thread_id``.
+    parent_thread_id: str | None = None
     external_resolution_timeout_seconds: int = 7 * 24 * 60 * 60
     # Carry-forward state for continue_as_new. Empty on initial start.
     carry_inbox: list[InboundMessage] = field(default_factory=list)
@@ -151,6 +154,7 @@ class StartRunInput:
     thread_id: str
     run_id: str
     max_turns: int
+    parent_thread_id: str | None = None
 
 
 @dataclass(frozen=True)
