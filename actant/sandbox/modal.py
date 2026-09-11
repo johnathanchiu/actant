@@ -134,7 +134,9 @@ class ModalSandbox:
         return ExecResult(code, stdout, stderr, timed_out=code == 124)
 
     async def close(self) -> None:
+        # ``terminate`` only requests the stop; wait so ``attach`` sees it finished.
         await self._sandbox.terminate.aio()
+        await self._sandbox.wait.aio(raise_on_termination=False)
 
     def __repr__(self) -> str:
         return f"ModalSandbox({shlex.quote(self.id)})"

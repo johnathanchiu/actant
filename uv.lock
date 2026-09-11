@@ -59,7 +59,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'providers'", specifier = ">=0.40" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "google-genai", marker = "extra == 'providers'", specifier = ">=1.0" },
-    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.4,<2" },
+    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.5,<2" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.60" },
     { name = "openai", marker = "extra == 'providers'", specifier = ">=1.60" },
     { name = "openai", marker = "extra == 'qwen'", specifier = ">=1.60" },
