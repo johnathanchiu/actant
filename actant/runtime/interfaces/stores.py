@@ -57,6 +57,10 @@ class RunStore(Protocol):
         self, run_id: str, status: RunStatus, *, reason: str | None = None
     ) -> None: ...
 
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[AgentRun]:
+        """A thread's runs, newest first: how a product finds what the last run delivered."""
+        ...
+
 
 class MessageStore(Protocol):
     async def append_user(

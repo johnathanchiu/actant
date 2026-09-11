@@ -124,6 +124,15 @@ class SQLAlchemyRunStore:
                 model.max_turns = run.max_turns
                 model.updated_at = datetime.now(UTC)
 
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[AgentRun]:
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                select(ActantRunModel)
+                .where(ActantRunModel.agent_id == agent_id, ActantRunModel.thread_id == thread_id)
+                .order_by(ActantRunModel.created_at.desc())
+            )
+            return [run_from_row(row) for row in rows.scalars()]
+
     async def finish(self, run_id: str, status: RunStatus, *, reason: str | None = None) -> None:
         # Idempotent: missing run = nothing to finalize. Temporal can
         # redeliver ``finalize_run`` after the row has been cleaned up
