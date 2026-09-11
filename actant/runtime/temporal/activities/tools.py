@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import mimetypes
-from typing import cast
+from typing import Any, cast
 
 from temporalio import activity
 
@@ -298,7 +298,8 @@ class ToolActivities(ActivityContext):
                     # would have had at execution (its sandbox, its ids).
                     if "ctx" in inspect.signature(resolve).parameters:
                         ctx = await self._call_context(agent, tool, record)
-                        return await resolve(record, resolution, ctx=ctx)
+                        # The protocol has no ``ctx``; a tool that takes one opts in.
+                        return await cast(Any, resolve)(record, resolution, ctx=ctx)
                     return await resolve(record, resolution)
                 except Exception as exc:  # noqa: BLE001
                     return ToolResult.fail(f"on_resolve failed: {exc}")
