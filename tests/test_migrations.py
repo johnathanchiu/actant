@@ -52,4 +52,4 @@ def test_the_second_revision_adds_the_sandbox_and_reason_columns() -> None:
     source = (versions_path() / "0002_sandbox_and_run_reason.py").read_text()
     assert 'down_revision: str | None = "0001_actant_runtime"' in source
     assert "sandbox_id" in ActantThreadModel.__table__.columns  # type: ignore[attr-defined]
-    assert "reason" in ActantRunModel.__table__.columns  # type: ignore[attr-defined]
+    assert "stop_reason" in ActantRunModel.__table__.columns  # type: ignore[attr-defined]

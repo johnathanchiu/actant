@@ -255,7 +255,7 @@ under the ten-minute tool activity. Mounted buckets write whole files only
 A chat agent is done when it answers. A task agent has to say so. Give it
 `FinishTool` and `completion="terminal"`: the run completes only on a
 terminal result; a turn with no tool calls gets one reminder, a second ends
-the run as exhausted with the reason stored on the run. `finish(summary,
+the run as exhausted with the stop reason stored on the run. `finish(summary,
 paths=[...])` names the deliverables, which the runtime stores as artifacts.
 
 ## Advanced admission: Allow, Block, Wait

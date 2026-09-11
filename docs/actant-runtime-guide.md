@@ -27,7 +27,7 @@ put workspaces somewhere durable. `actant[modal]` adds
 `actant.sandbox.modal.ModalSandboxProvider`.
 
 Migration `0002_sandbox_and_run_reason` adds `actant_threads.sandbox_id` and
-`actant_runs.reason`; run `alembic upgrade actant@head` as for any Actant
+`actant_runs.stop_reason`; run `alembic upgrade actant@head` as for any Actant
 revision.
 
 ## Install

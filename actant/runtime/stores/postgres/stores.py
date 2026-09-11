@@ -128,12 +128,17 @@ class SQLAlchemyRunStore:
         async with self.session_factory() as session:
             rows = await session.execute(
                 select(ActantRunModel)
-                .where(ActantRunModel.agent_id == agent_id, ActantRunModel.thread_id == thread_id)
+                .where(
+                    ActantRunModel.agent_id == agent_id,
+                    ActantRunModel.thread_id == thread_id,
+                )
                 .order_by(ActantRunModel.created_at.desc())
             )
             return [run_from_row(row) for row in rows.scalars()]
 
-    async def finish(self, run_id: str, status: RunStatus, *, reason: str | None = None) -> None:
+    async def finish(
+        self, run_id: str, status: RunStatus, *, stop_reason: str | None = None
+    ) -> None:
         # Idempotent: missing run = nothing to finalize. Temporal can
         # redeliver ``finalize_run`` after the row has been cleaned up
         # (test teardown, manual cleanup, retention policy); raising
@@ -144,7 +149,7 @@ class SQLAlchemyRunStore:
                 if model is None:
                     return
                 model.status = status.value
-                model.reason = reason
+                model.stop_reason = stop_reason
                 model.updated_at = datetime.now(UTC)
 
 

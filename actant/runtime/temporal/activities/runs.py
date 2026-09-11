@@ -181,7 +181,7 @@ class RunActivities(ActivityContext):
                 )
 
         await self.stores.runs.finish(
-            payload.run_id, _run_status(payload.outcome), reason=payload.reason
+            payload.run_id, _run_status(payload.outcome), stop_reason=payload.stop_reason
         )
         thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
         thread.active_run_id = None
@@ -205,13 +205,13 @@ class RunActivities(ActivityContext):
                     thread_id=payload.thread_id,
                     run_id=payload.run_id,
                     outcome=payload.outcome,
-                    reason=payload.reason,
+                    stop_reason=payload.stop_reason,
                     artifacts=tuple(artifacts),
                 )
             )
         await self._hooks(thread).on_complete(
             success=payload.outcome == RunOutcome.COMPLETED.value,
-            reason=payload.reason or payload.outcome,
+            reason=payload.stop_reason or payload.outcome,
             message="",
         )
 

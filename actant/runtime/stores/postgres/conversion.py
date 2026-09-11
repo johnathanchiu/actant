@@ -42,7 +42,7 @@ def run_from_row(row: ActantRunModel) -> AgentRun:
         status=RunStatus(row.status),
         turn_count=row.turn_count,
         max_turns=row.max_turns,
-        reason=row.reason,
+        stop_reason=row.stop_reason,
     )
 
 

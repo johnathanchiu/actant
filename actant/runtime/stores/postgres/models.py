@@ -55,7 +55,7 @@ class ActantRunModel(ActantRuntimeBase):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     turn_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_turns: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("25"))
-    reason: Mapped[str | None] = mapped_column(Text)
+    stop_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

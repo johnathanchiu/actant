@@ -95,14 +95,16 @@ class InMemoryRunStore:
         ]
         return list(reversed(runs))
 
-    async def finish(self, run_id: str, status: RunStatus, *, reason: str | None = None) -> None:
+    async def finish(
+        self, run_id: str, status: RunStatus, *, stop_reason: str | None = None
+    ) -> None:
         # Idempotent: missing run = nothing to finalize. See
         # SQLAlchemyRunStore.finish for rationale.
         run = self._runs.get(run_id)
         if run is None:
             return
         run.status = status
-        run.reason = reason
+        run.stop_reason = stop_reason
         self._runs[run_id] = run
 
 

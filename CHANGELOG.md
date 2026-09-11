@@ -41,15 +41,15 @@ the runtime reads them from the sandbox, stores them through the worker's
 
 `AgentDefinition.completion="terminal"`: a task agent's run completes only
 on a terminal result; a text-only turn gets one persisted reminder, a second
-ends the run as exhausted with `reason="stopped without finishing"`
-(`AgentRun.reason`, `RunCompletion.reason`). `"reply"` keeps chat behaviour.
+ends the run as exhausted with `stop_reason="stopped without finishing"`
+(`AgentRun.stop_reason`, `RunCompletion.stop_reason`). `"reply"` keeps chat behaviour.
 
 ### Runtime
 
 - `execute_tool` heartbeats every 30 s and carries a 2-minute heartbeat
   timeout, so a worker that dies mid-tool is noticed in minutes.
 - Migration `0002_sandbox_and_run_reason`: `actant_threads.sandbox_id`,
-  `actant_runs.reason`.
+  `actant_runs.stop_reason`.
 - `TemporalRuntimeWorker(sandbox_providers=..., artifact_sink=...)`.
 
 ## 0.7.0

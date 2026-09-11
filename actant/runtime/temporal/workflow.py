@@ -188,7 +188,7 @@ class AgentThreadWorkflow:
                 run_id=run_id,
                 outcome=outcome.value,
                 turn_count=self._turn_count_total,
-                reason=self._stop_reason,
+                stop_reason=self._stop_reason,
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )

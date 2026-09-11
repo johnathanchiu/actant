@@ -14,8 +14,8 @@ async def test_runs_list_for_a_thread_newest_first() -> None:
     await stores.runs.create("a", "t", run_id="r1", max_turns=5)
     await stores.runs.create("a", "t", run_id="r2", max_turns=5)
     await stores.runs.create("a", "other", run_id="r3", max_turns=5)
-    await stores.runs.finish("r2", RunStatus.EXHAUSTED, reason="stopped without finishing")
+    await stores.runs.finish("r2", RunStatus.EXHAUSTED, stop_reason="stopped without finishing")
 
     runs = await stores.runs.list_for_thread("a", "t")
     assert [r.id for r in runs] == ["r2", "r1"]
-    assert runs[0].reason == "stopped without finishing"
+    assert runs[0].stop_reason == "stopped without finishing"

@@ -54,7 +54,7 @@ class RunStore(Protocol):
     async def update(self, run: AgentRun) -> None: ...
 
     async def finish(
-        self, run_id: str, status: RunStatus, *, reason: str | None = None
+        self, run_id: str, status: RunStatus, *, stop_reason: str | None = None
     ) -> None: ...
 
     async def list_for_thread(self, agent_id: str, thread_id: str) -> list[AgentRun]:

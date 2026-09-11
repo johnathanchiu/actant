@@ -62,7 +62,7 @@ class AgentRun:
     max_turns: int = 25
     #: Why a run ended when the status alone does not say (an exhausted task
     #: agent that stopped without finishing, for one).
-    reason: str | None = None
+    stop_reason: str | None = None
 
     @property
     def remaining_turns(self) -> int:

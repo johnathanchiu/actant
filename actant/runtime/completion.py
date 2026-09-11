@@ -12,14 +12,14 @@ class RunCompletion:
 
     ``artifacts`` are the deliverables terminal tool results named, as the
     product's artifact sink stored them (``ArtifactRef.to_dict()`` shape).
-    ``reason`` is set when the outcome alone does not explain the end.
+    ``stop_reason`` is set when the outcome alone does not explain the end.
     """
 
     agent_id: str
     thread_id: str
     run_id: str
     outcome: str
-    reason: str | None = None
+    stop_reason: str | None = None
     artifacts: tuple[dict[str, object], ...] = field(default_factory=tuple)
 
     @property

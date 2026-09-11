@@ -1,4 +1,4 @@
-"""Sandbox id on threads, reason on runs
+"""Sandbox id on threads, stop reason on runs
 
 Revision ID: 0002_sandbox_and_run_reason
 Revises: 0001_actant_runtime
@@ -21,9 +21,9 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("actant_threads", sa.Column("sandbox_id", sa.Text(), nullable=True))
-    op.add_column("actant_runs", sa.Column("reason", sa.Text(), nullable=True))
+    op.add_column("actant_runs", sa.Column("stop_reason", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("actant_runs", "reason")
+    op.drop_column("actant_runs", "stop_reason")
     op.drop_column("actant_threads", "sandbox_id")

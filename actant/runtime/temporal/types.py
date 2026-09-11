@@ -160,7 +160,7 @@ class FinalizeRunInput:
     run_id: str
     outcome: str  # RunOutcome value
     turn_count: int
-    reason: str | None = None
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True)

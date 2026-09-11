@@ -161,7 +161,7 @@ async def test_finish_stores_the_deliverables_and_ends_the_run(tmp_path: Path) -
     async def body(s: _Setup) -> None:
         handle = await s.start("go")
         completion = await s.finished()
-        assert completion.succeeded and completion.reason is None
+        assert completion.succeeded and completion.stop_reason is None
         assert [(name, data) for _, name, data, _ in s.sink.saved] == [("result.json", b"{}")]
         assert completion.artifacts == (
             {
@@ -223,13 +223,13 @@ async def test_a_task_agent_that_stops_talking_is_reminded_then_exhausted(tmp_pa
         handle = await s.start("go")
         completion = await s.finished()
         assert completion.outcome == "exhausted"
-        assert completion.reason == "stopped without finishing"
+        assert completion.stop_reason == "stopped without finishing"
         messages = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
         roles = [m.role for m in messages]
         assert roles == ["user", "assistant", "user", "assistant"]
         assert "finish_required" in str(messages[2].content)
         run = await s.stores.runs.get(completion.run_id)
-        assert run.reason == "stopped without finishing"
+        assert run.stop_reason == "stopped without finishing"
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(agent, body)
