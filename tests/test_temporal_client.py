@@ -61,7 +61,7 @@ def _tool_call(name: str, args: str = "{}") -> ToolCall:
 async def _wait_for(
     predicate: Callable[[], Awaitable[bool]] | Callable[[], bool],
     *,
-    timeout: float = 10.0,
+    timeout: float = 30.0,  # a cold Temporal test server can take that long on CI
     poll: float = 0.05,
 ) -> None:
     start = asyncio.get_event_loop().time()
