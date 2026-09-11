@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -64,7 +65,15 @@ class LocalSandbox:
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=self._path(cwd) if cwd else self.root,
-            env={**os.environ, **self._env, **(env or {})},
+            # ``python`` in argv is this interpreter: the one the tools'
+            # own package is installed in, which is what a container backend
+            # bakes into its image.
+            env={
+                **os.environ,
+                "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
+                **self._env,
+                **(env or {}),
+            },
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
