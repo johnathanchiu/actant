@@ -19,6 +19,19 @@ from actant.tools import (
     tool,
 )
 from actant.tools.admission import ToolCallView, ToolDecisionKind, TurnContextView
+from actant.tools.base import CallContext
+
+
+def _ctx(thread_id: str = "thread-1", **overrides: object) -> CallContext:
+    values: dict[str, object] = {
+        "agent_id": "demo",
+        "thread_id": thread_id,
+        "run_id": "run-1",
+        "tool_call_id": "tc-1",
+        "turn_id": "turn-1",
+    }
+    values.update(overrides)
+    return CallContext(**values)  # type: ignore[arg-type]
 
 
 @dataclass
@@ -54,12 +67,12 @@ async def test_tool_builds_schema_validates_and_wraps_native_result() -> None:
     assert parameters["required"] == ["city"]
     assert parameters["additionalProperties"] is False
 
-    invocation = await weather.build({"city": "Paris", "days": "2"})
+    invocation = await weather.build({"city": "Paris", "days": "2"}, _ctx())
     result = await invocation.execute()
     assert result.output == {"city": "Paris", "days": 2}
 
     with pytest.raises(ValueError, match="Invalid arguments for weather"):
-        await weather.build({"unknown": True})
+        await weather.build({"unknown": True}, _ctx())
 
 
 @pytest.mark.asyncio
@@ -71,7 +84,7 @@ async def test_sync_tool_runs_off_the_event_loop_thread() -> None:
         """Return the execution thread."""
         return threading.get_ident()
 
-    result = await (await thread_id.build({})).execute()
+    result = await (await thread_id.build({}, _ctx())).execute()
     assert result.output != caller_thread
 
 
@@ -82,7 +95,7 @@ async def test_explicit_tool_result_is_preserved() -> None:
         """Return a structured failure."""
         return ToolResult.fail(reason, retryable=False)
 
-    result = await (await fail_cleanly.build({"reason": "nope"})).execute()
+    result = await (await fail_cleanly.build({"reason": "nope"}, _ctx())).execute()
     assert result.error == "nope"
     assert result.metadata == {"retryable": False}
 
@@ -100,7 +113,7 @@ async def test_approval_waits_then_executes_only_when_approved() -> None:
     call = _call({"city": "Paris"})
     decision = await weather.can_execute(
         call,
-        await weather.build(call.args),
+        await weather.build(call.args, _ctx()),
         cast(TurnContextView, object()),
     )
     assert decision.kind is ToolDecisionKind.AWAIT_HUMAN
@@ -139,7 +152,7 @@ async def test_custom_admission_and_resolution_callbacks() -> None:
     call = _call({"city": "Paris"})
     decision = await weather.can_execute(
         call,
-        await weather.build(call.args),
+        await weather.build(call.args, _ctx()),
         cast(TurnContextView, object()),
     )
     assert decision.kind is ToolDecisionKind.AWAIT_HUMAN

@@ -9,6 +9,8 @@ from actant.tools.admission import (
 from actant.tools.base import (
     BaseDeclarativeTool,
     BaseToolInvocation,
+    CallContext,
+    SandboxedTool,
     Tool,
     ToolInvocation,
     ToolResult,
@@ -16,6 +18,7 @@ from actant.tools.base import (
     make_tool_schema,
 )
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
+from actant.tools.finish import FinishTool
 from actant.tools.function import FunctionTool, FunctionToolInvocation, ToolArguments, tool
 from actant.tools.registry import ToolRegistry
 from actant.tools.supervise import SubagentSupervisor, supervision_tools
@@ -30,11 +33,14 @@ __all__ = [
     "InMemorySubagentRegistry",
     "BaseDeclarativeTool",
     "BaseToolInvocation",
+    "CallContext",
+    "FinishTool",
     "FunctionTool",
     "FunctionToolInvocation",
     "SubagentInvoker",
     "SubagentSpawner",
     "SubagentSupervisor",
+    "SandboxedTool",
     "TaskTool",
     "Tool",
     "ToolArguments",

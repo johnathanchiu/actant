@@ -160,6 +160,7 @@ class FinalizeRunInput:
     run_id: str
     outcome: str  # RunOutcome value
     turn_count: int
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,9 @@ class RunTurnInput:
     # Inbox messages to apply before the turn. Only non-empty on the first
     # turn of a run; subsequent turns of the same run pass [].
     new_messages: list[InboundMessage] = field(default_factory=list)
+    # How many text-only turns this run has already answered with a
+    # reminder. Only meaningful for ``completion="terminal"`` agents.
+    text_only_turns: int = 0
 
 
 @dataclass(frozen=True)
@@ -195,6 +199,11 @@ class TurnResult:
     turn_id: str
     turn_index: int
     tool_calls: list[ToolCallSpec] = field(default_factory=list)
+    # Set by a ``completion="terminal"`` agent's turn that had no tool calls:
+    # ``reminded`` when the activity appended the reminder and the run should
+    # continue, ``stop_reason`` when it should end as exhausted.
+    reminded: bool = False
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True)

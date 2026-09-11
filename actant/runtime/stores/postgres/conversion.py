@@ -30,6 +30,7 @@ def thread_from_row(row: ActantThreadModel) -> AgentThread:
         parent_thread_id=row.parent_thread_id,
         parent_turn_id=row.parent_turn_id,
         parent_tool_call_id=row.parent_tool_call_id,
+        sandbox_id=row.sandbox_id,
     )
 
 
@@ -41,6 +42,7 @@ def run_from_row(row: ActantRunModel) -> AgentRun:
         status=RunStatus(row.status),
         turn_count=row.turn_count,
         max_turns=row.max_turns,
+        reason=row.reason,
     )
 
 

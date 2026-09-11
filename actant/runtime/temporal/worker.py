@@ -22,6 +22,9 @@ from actant.runtime.temporal.activities import (
 from actant.runtime.temporal.types import TemporalRuntimeConfig
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.types.threads import AgentThread
+from actant.sandbox.base import ArtifactSink, SandboxProvider
+from actant.sandbox.local import LocalSandboxProvider
+from actant.sandbox.registry import SandboxRegistry
 
 
 def _publishing_hooks_factory(sink: EventSink) -> HookFactory:
@@ -57,6 +60,8 @@ class TemporalRuntimeWorker:
         message_preprocessor: MessagePreprocessor | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
         event_sink: EventSink | None = None,
+        sandbox_providers: Mapping[str, SandboxProvider] | None = None,
+        artifact_sink: ArtifactSink | None = None,
     ) -> None:
         self.config = config or TemporalRuntimeConfig()
         sink = event_sink or getattr(stores, "publisher", None)
@@ -71,6 +76,11 @@ class TemporalRuntimeWorker:
             listener_factory=listener_factory,
             message_preprocessor=message_preprocessor,
             run_completion_handler=run_completion_handler,
+            # ``local`` is always available; products register the rest.
+            sandboxes=SandboxRegistry(
+                {"local": LocalSandboxProvider(), **(sandbox_providers or {})}, stores.threads
+            ),
+            artifact_sink=artifact_sink,
         )
 
     async def run(self) -> None:

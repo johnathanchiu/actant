@@ -53,7 +53,9 @@ class RunStore(Protocol):
 
     async def update(self, run: AgentRun) -> None: ...
 
-    async def finish(self, run_id: str, status: RunStatus) -> None: ...
+    async def finish(
+        self, run_id: str, status: RunStatus, *, reason: str | None = None
+    ) -> None: ...
 
 
 class MessageStore(Protocol):

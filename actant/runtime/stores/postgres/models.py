@@ -37,6 +37,7 @@ class ActantThreadModel(ActantRuntimeBase):
     parent_thread_id: Mapped[str | None] = mapped_column(Text)
     parent_turn_id: Mapped[str | None] = mapped_column(Text)
     parent_tool_call_id: Mapped[str | None] = mapped_column(Text)
+    sandbox_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -54,6 +55,7 @@ class ActantRunModel(ActantRuntimeBase):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     turn_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_turns: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("25"))
+    reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

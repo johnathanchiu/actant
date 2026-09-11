@@ -6,6 +6,30 @@ signals workflows; worker code hosts the model, tools, stores, and activities.
 Read [core concepts](concepts.md) first if thread, run, and turn are not yet
 familiar.
 
+## Sandboxes and artifacts
+
+Tools that run code get a per-thread sandbox from the worker (see the tools
+guide). Wire the backends and the artifact sink on the worker:
+
+```python
+from actant.sandbox.local import LocalSandboxProvider
+
+worker = TemporalRuntimeWorker(
+    stores=stores,
+    agents=agents,
+    sandbox_providers={"local": LocalSandboxProvider(Path("/srv/agent-workspaces"))},
+    artifact_sink=sink,  # async save(thread_id, name, data, mime) -> ArtifactRef
+)
+```
+
+`local` is registered by default with a temporary root; pass your own to
+put workspaces somewhere durable. `actant[modal]` adds
+`actant.sandbox.modal.ModalSandboxProvider`.
+
+Migration `0002_sandbox_and_run_reason` adds `actant_threads.sandbox_id` and
+`actant_runs.reason`; run `alembic upgrade actant@head` as for any Actant
+revision.
+
 ## Install
 
 Install the provider-neutral runtime plus the model SDKs your worker uses:

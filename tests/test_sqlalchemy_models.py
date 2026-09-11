@@ -49,6 +49,7 @@ def test_sqlalchemy_models_match_key_runtime_columns() -> None:
         "parent_thread_id",
         "parent_turn_id",
         "parent_tool_call_id",
+        "sandbox_id",
         "created_at",
         "updated_at",
     } == thread_columns

@@ -4,6 +4,46 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.8.0
+
+**Breaking:** `Tool.build` now takes the call: `build(params, ctx: CallContext)`.
+Every tool receives who is calling, from which thread and run, and, when it
+asked for one, the thread's sandbox. `build_for_call` is gone; `TaskTool`
+reads its parent thread from the context. A workflow started before the
+deploy is unaffected: no history payload changed shape, and the new
+`RunTurnInput`/`TurnResult`/`FinalizeRunInput` fields are defaulted.
+
+### Sandboxes
+
+A tool that runs code declares it (`needs_sandbox = True`, or a `Sandbox`
+parameter on a function tool) and the runtime opens one sandbox per thread,
+lazily, from the backend named by `AgentDefinition.sandbox`. `local` is a
+directory and a subprocess; `modal` (extra `actant[modal]`) is a
+network-blocked `modal.Sandbox` over a bucket prefix mounted from the
+product's own object storage. The sandbox id is persisted on the thread, so
+any worker reattaches. `SandboxRegistry`, `SandboxProvider`, `LocalSandbox`.
+
+### The exit point
+
+`FinishTool`: `finish(summary, paths=[])` ends the run and names the
+deliverables. Any terminal tool result may list `metadata["deliverables"]`;
+the runtime reads them from the sandbox, stores them through the worker's
+`ArtifactSink`, and reports them as `metadata["artifacts"]` and
+`RunCompletion.artifacts`.
+
+`AgentDefinition.completion="terminal"`: a task agent's run completes only
+on a terminal result; a text-only turn gets one persisted reminder, a second
+ends the run as exhausted with `reason="stopped without finishing"`
+(`AgentRun.reason`, `RunCompletion.reason`). `"reply"` keeps chat behaviour.
+
+### Runtime
+
+- `execute_tool` heartbeats every 30 s and carries a 2-minute heartbeat
+  timeout, so a worker that dies mid-tool is noticed in minutes.
+- Migration `0002_sandbox_and_run_reason`: `actant_threads.sandbox_id`,
+  `actant_runs.reason`.
+- `TemporalRuntimeWorker(sandbox_providers=..., artifact_sink=...)`.
+
 ## 0.7.0
 
 **Breaking, and requires draining in-flight workflows before deploy.**

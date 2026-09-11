@@ -57,6 +57,7 @@ from actant.runtime.temporal.types import (
 
 _RUN_TURN_TIMEOUT = timedelta(minutes=10)
 _TOOL_TIMEOUT = timedelta(minutes=10)
+_TOOL_HEARTBEAT_TIMEOUT = timedelta(minutes=2)
 _FINALIZE_TIMEOUT = timedelta(seconds=60)
 _PROJECTION_TIMEOUT = timedelta(seconds=30)
 
@@ -87,6 +88,7 @@ class AgentThreadWorkflow:
         # logical identity without parsing workflow_id strings.
         self._agent_id: str = ""
         self._thread_id: str = ""
+        self._stop_reason: str | None = None
 
     # === Signals ===
 
@@ -176,6 +178,7 @@ class AgentThreadWorkflow:
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )
+        self._stop_reason = None
         outcome = await self._run_agent(payload, run_id, new_messages)
         await workflow.execute_activity_method(
             RunActivities.finalize_run,
@@ -185,6 +188,7 @@ class AgentThreadWorkflow:
                 run_id=run_id,
                 outcome=outcome.value,
                 turn_count=self._turn_count_total,
+                reason=self._stop_reason,
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )
@@ -198,6 +202,7 @@ class AgentThreadWorkflow:
     ) -> RunOutcome:
         """Run agent turns until a stop condition or the turn budget."""
         turns_remaining = payload.max_turns_per_run
+        text_only_turns = 0
 
         while turns_remaining > 0 and not self._cancelled:
             turn_id = workflow.uuid4().hex
@@ -213,6 +218,7 @@ class AgentThreadWorkflow:
                         turn_id=turn_id,
                         turn_index=turn_index,
                         new_messages=new_messages,
+                        text_only_turns=text_only_turns,
                     ),
                     start_to_close_timeout=_RUN_TURN_TIMEOUT,
                     retry_policy=RetryPolicy(maximum_attempts=1),
@@ -229,6 +235,14 @@ class AgentThreadWorkflow:
             turns_remaining -= 1
 
             if not turn.tool_calls:
+                if turn.reminded:
+                    # A task agent answered in prose; the activity appended the
+                    # reminder, so the next turn sees it.
+                    text_only_turns += 1
+                    continue
+                if turn.stop_reason:
+                    self._stop_reason = turn.stop_reason
+                    return RunOutcome.EXHAUSTED
                 return RunOutcome.COMPLETED
 
             should_stop = await self._run_tool_group(payload, turn)
@@ -294,6 +308,10 @@ class AgentThreadWorkflow:
                             tool_call_id=spec.id,
                         ),
                         start_to_close_timeout=_TOOL_TIMEOUT,
+                        # The activity heartbeats while a tool runs, so a
+                        # worker that dies mid-tool is noticed in minutes
+                        # rather than at the ten-minute ceiling.
+                        heartbeat_timeout=_TOOL_HEARTBEAT_TIMEOUT,
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
                 )

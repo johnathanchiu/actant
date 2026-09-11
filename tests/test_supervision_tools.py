@@ -13,6 +13,19 @@ import pytest
 
 from actant.core import JSONObject
 from actant.tools.supervise import supervision_tools
+from actant.tools.base import CallContext
+
+
+def _ctx(thread_id: str = "thread-1", **overrides: object) -> CallContext:
+    values: dict[str, object] = {
+        "agent_id": "demo",
+        "thread_id": thread_id,
+        "run_id": "run-1",
+        "tool_call_id": "tc-1",
+        "turn_id": "turn-1",
+    }
+    values.update(overrides)
+    return CallContext(**values)  # type: ignore[arg-type]
 
 
 @dataclass
@@ -38,7 +51,7 @@ def _by_name(supervisor: _Supervisor) -> dict[str, object]:
 
 
 async def _run(tool: object, **args: object) -> JSONObject:
-    invocation = await tool.build(args)  # type: ignore[attr-defined]
+    invocation = await tool.build(args, _ctx())  # type: ignore[attr-defined]
     result = await invocation.execute()
     assert result.error is None, result.error
     return result.output  # type: ignore[return-value]
@@ -102,7 +115,7 @@ async def test_a_failing_host_surfaces_rather_than_reporting_success() -> None:
             raise RuntimeError("temporal is down")
 
     tool = _by_name(_Broken())["check_subagent"]
-    invocation = await tool.build({"thread_id": "sub_1"})  # type: ignore[attr-defined]
+    invocation = await tool.build({"thread_id": "sub_1"}, _ctx())  # type: ignore[attr-defined]
 
     with pytest.raises(RuntimeError, match="temporal is down"):
         await invocation.execute()

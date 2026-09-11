@@ -49,6 +49,7 @@ from actant.tools.base import (
 )
 from actant.tools.calls import ToolCallStatus
 from actant.tools.registry import ToolRegistry
+from actant.tools.base import CallContext
 
 _AGENT = "test_agent"
 _THREAD = "test_thread"
@@ -141,7 +142,7 @@ class _CanExecuteRaisesTool(BaseDeclarativeTool):
         del call, invocation, context
         raise RuntimeError("simulated can_execute crash")
 
-    async def build(self, params: JSONObject) -> _BoomInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _BoomInvocation:
         return _BoomInvocation(params)
 
 
@@ -218,7 +219,7 @@ class _ExecuteRaisesTool(BaseDeclarativeTool):
     def __init__(self) -> None:
         super().__init__("execute_raises", make_tool_schema("execute_raises", "kaboom"))
 
-    async def build(self, params: JSONObject) -> _ExecuteRaisesInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _ExecuteRaisesInvocation:
         return _ExecuteRaisesInvocation(params)
 
 
@@ -281,7 +282,7 @@ class _OkTool(BaseDeclarativeTool):
     def __init__(self) -> None:
         super().__init__("ok_tool", make_tool_schema("ok_tool", "always works"))
 
-    async def build(self, params: JSONObject) -> _OkInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _OkInvocation:
         return _OkInvocation(params)
 
 

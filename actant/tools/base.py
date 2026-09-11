@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Generic, Protocol, TypeVar
 
 from actant.core import JSONObject
+from actant.sandbox.base import Sandbox
 
 ToolSchema = dict[str, object]
 ParamsT = TypeVar("ParamsT")
@@ -73,13 +74,37 @@ class ToolInvocation(Protocol):
     async def execute(self) -> ToolResult: ...
 
 
+@dataclass(frozen=True)
+class CallContext:
+    """The call a tool is being built for: who is calling, from which thread and run.
+
+    Every ``build`` receives one, so a tool never has to learn its thread from
+    its arguments. ``sandbox`` is set only for tools that declared
+    ``needs_sandbox``; for everything else it is ``None``.
+    """
+
+    agent_id: str
+    thread_id: str
+    run_id: str
+    tool_call_id: str
+    turn_id: str
+    sandbox: Sandbox | None = None
+
+
 class Tool(Protocol):
     name: str
 
     @property
     def schema(self) -> ToolSchema: ...
 
-    async def build(self, params: JSONObject) -> ToolInvocation: ...
+    async def build(self, params: JSONObject, ctx: CallContext) -> ToolInvocation: ...
+
+
+class SandboxedTool(Tool, Protocol):
+    """A tool that runs in the thread's sandbox: ``needs_sandbox`` is ``True`` and
+    ``ctx.sandbox`` is set when ``build`` is called."""
+
+    needs_sandbox: bool
 
 
 class BaseToolInvocation(Generic[ParamsT, OutputT]):
@@ -102,5 +127,5 @@ class BaseDeclarativeTool:
     def schema(self) -> ToolSchema:
         return self._schema
 
-    async def build(self, params: JSONObject) -> ToolInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> ToolInvocation:
         raise NotImplementedError

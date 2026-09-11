@@ -54,6 +54,7 @@ from actant.tools.base import (
 )
 from actant.tools.calls import ToolCallStatus
 from actant.tools.registry import ToolRegistry
+from actant.tools.base import CallContext
 
 _AGENT = "test_agent"
 _THREAD = "test_thread"
@@ -154,7 +155,7 @@ class _ParkTool(BaseDeclarativeTool):
             ToolWaitRequest(kind="approval", prompt="approve?", payload={})
         )
 
-    async def build(self, params: JSONObject) -> _ParkInvocation:
+    async def build(self, params: JSONObject, ctx: CallContext) -> _ParkInvocation:
         return _ParkInvocation(params)
 
 

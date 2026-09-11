@@ -89,13 +89,14 @@ class InMemoryRunStore:
     async def update(self, run: AgentRun) -> None:
         self._runs[run.id] = run
 
-    async def finish(self, run_id: str, status: RunStatus) -> None:
+    async def finish(self, run_id: str, status: RunStatus, *, reason: str | None = None) -> None:
         # Idempotent: missing run = nothing to finalize. See
         # SQLAlchemyRunStore.finish for rationale.
         run = self._runs.get(run_id)
         if run is None:
             return
         run.status = status
+        run.reason = reason
         self._runs[run_id] = run
 
 

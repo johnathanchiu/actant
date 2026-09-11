@@ -44,3 +44,12 @@ def test_every_runtime_table_is_created_by_a_revision() -> None:
         created.update(re.findall(r"op\.create_table\(\s*['\"]([^'\"]+)", revision.read_text()))
 
     assert set(ACTANT_RUNTIME_METADATA.tables) <= created
+
+
+def test_the_second_revision_adds_the_sandbox_and_reason_columns() -> None:
+    from actant.runtime.stores.postgres import ActantRunModel, ActantThreadModel
+
+    source = (versions_path() / "0002_sandbox_and_run_reason.py").read_text()
+    assert 'down_revision: str | None = "0001_actant_runtime"' in source
+    assert "sandbox_id" in ActantThreadModel.__table__.columns  # type: ignore[attr-defined]
+    assert "reason" in ActantRunModel.__table__.columns  # type: ignore[attr-defined]
