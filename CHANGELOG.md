@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.8.1
+
+- Modal backend on Modal 1.5: the legacy `Sandbox.open`/`mkdir` file API was removed by
+  Modal, so reads and writes go through `Sandbox.filesystem`; the `modal` extra requires
+  `modal>=1.5`. `close` waits for termination so `attach` on a closed sandbox raises.
+- `RunStore.list_for_thread` lists a thread's runs, newest first.
+- Local backend: the interpreter's directory is first on `PATH`.
+
 ## 0.8.0
 
 **Breaking:** `Tool.build` now takes the call: `build(params, ctx: CallContext)`.
