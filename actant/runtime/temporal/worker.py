@@ -22,7 +22,7 @@ from actant.runtime.temporal.activities import (
 from actant.runtime.temporal.types import TemporalRuntimeConfig
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.types.threads import AgentThread
-from actant.sandbox.base import ArtifactSink, SandboxProvider
+from actant.sandbox.base import ArtifactSink, Backend, SandboxProvider
 from actant.sandbox.local import LocalSandboxProvider
 from actant.sandbox.registry import SandboxRegistry
 
@@ -78,7 +78,8 @@ class TemporalRuntimeWorker:
             run_completion_handler=run_completion_handler,
             # ``local`` is always available; products register the rest.
             sandboxes=SandboxRegistry(
-                {"local": LocalSandboxProvider(), **(sandbox_providers or {})}, stores.threads
+                {Backend.LOCAL: LocalSandboxProvider(), **(sandbox_providers or {})},
+                stores.threads,
             ),
             artifact_sink=artifact_sink,
         )

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Protocol
 
 
@@ -81,6 +82,22 @@ class Sandbox(Protocol):
     async def close(self) -> None: ...
 
 
+class Backend(StrEnum):
+    """The backends actant ships. ``SandboxSpec.backend`` stays a ``str``: a product
+    may register its own provider under any name."""
+
+    LOCAL = "local"
+    MODAL = "modal"
+
+
+class Storage(StrEnum):
+    #: The bucket prefix is the filesystem (whole-file writes only).
+    MOUNT = "mount"
+    #: A local disk, restored from the prefix on open and pushed back with
+    #: :meth:`Sandbox.sync` -- ordinary file semantics, a few seconds behind the bucket.
+    DISK_SYNC = "disk_sync"
+
+
 @dataclass(frozen=True)
 class SandboxSpec:
     """What an agent's tools need from their sandbox. Lives on the agent definition.
@@ -91,7 +108,7 @@ class SandboxSpec:
     ``modal.Image`` for Modal) and ignored by ``local``.
     """
 
-    backend: str = "local"
+    backend: str = Backend.LOCAL
     mount: str | None = None
     image: object | None = None
     cpu: int = 2
@@ -108,10 +125,12 @@ class SandboxSpec:
     #: Environment variables removed from commands the agent's own code runs, so a
     #: script never sees the service keys that ``secrets`` put in the sandbox.
     scrub_env: tuple[str, ...] = ()
-    #: ``"mount"``: the bucket prefix is the filesystem (whole-file writes only).
-    #: ``"disk_sync"``: a local disk, restored from the prefix on open and pushed back
-    #: with :meth:`sync` -- ordinary file semantics, a few seconds behind the bucket.
-    storage: str = "mount"
+    #: How a cloud backend keeps files; see :class:`Storage`.
+    storage: Storage = Storage.MOUNT
+
+    def __post_init__(self) -> None:
+        # Coerce (and validate) a plain string from an untyped config.
+        object.__setattr__(self, "storage", Storage(self.storage))
 
 
 class SandboxProvider(Protocol):

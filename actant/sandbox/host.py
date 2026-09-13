@@ -14,7 +14,7 @@ backend extra, and this module must import there.
 
 Protocol, one JSON line each way per connection::
 
-    {"context": str, "init": dict | null, "tool": "pkg.mod:fn", "args": dict}
+    {"context": str, "init": dict | null, "tool": "pkg.mod:fn", "args": dict}  (Field)
     {"text": str, "images": [{"path": str, "data": base64}], "error": str | null}
 """
 
@@ -33,10 +33,46 @@ import socket as socketlib
 import sys
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from enum import StrEnum
 from pathlib import Path
 
 PING = "__ping__"
+#: Names the variables ``exec`` and :func:`scrubbed_env` remove, comma-separated.
+SCRUB_ENV_VAR = "ACTANT_SCRUB_ENV"
+#: Per-sandbox state, relative to the sandbox root; kept out of storage sync.
+STATE_DIR = ".actant"
+#: Request files ``call`` reads and deletes.
+REQUESTS_DIR = f"{STATE_DIR}/requests"
+#: Default socket; ``{key}`` is a short hash of the sandbox id (paths cap at ~104 bytes).
+SOCKET_TEMPLATE = "/tmp/actant-host-{key}.sock"
+#: What ``call`` prints when nothing listens; the worker restarts the host on it.
+NO_HOST = "no actant host"
+
+
+class Command(StrEnum):
+    SERVE = "serve"
+    CALL = "call"
+
+
+class Field(StrEnum):
+    """Keys of the request and response lines."""
+
+    CONTEXT = "context"
+    INIT = "init"
+    TOOL = "tool"
+    ARGS = "args"
+    TEXT = "text"
+    IMAGES = "images"
+    PATH = "path"
+    DATA = "data"
+    ERROR = "error"
+
+
+def response(
+    text: str, images: Sequence[dict[str, str]] = (), error: str | None = None
+) -> dict[str, object]:
+    return {Field.TEXT: text, Field.IMAGES: list(images), Field.ERROR: error}
 
 
 def scrubbed_env() -> dict[str, str]:
@@ -49,7 +85,7 @@ def scrubbed_env() -> dict[str, str]:
     Best effort, not a security boundary: code running as the same user can
     still read ``/proc/<pid>/environ`` of the server or talk to its socket.
     """
-    scrub = {name.strip() for name in os.environ.get("ACTANT_SCRUB_ENV", "").split(",")}
+    scrub = {name.strip() for name in os.environ.get(SCRUB_ENV_VAR, "").split(",")}
     return {key: value for key, value in os.environ.items() if key not in scrub}
 
 
@@ -71,7 +107,7 @@ def adapt(output: object) -> dict[str, object]:
     and anything else (``/proc/self/environ``, a key file) would leave the sandbox.
     """
     if isinstance(output, str):
-        return {"text": output, "images": [], "error": None}
+        return response(output)
     if hasattr(output, "text") and hasattr(output, "images"):
         text = str(output.text)  # pyright: ignore[reportAttributeAccessIssue]
         images = []
@@ -83,19 +119,19 @@ def adapt(output: object) -> dict[str, object]:
                 text += f"\n(dropped {path}: not an image file under the working directory)"
                 continue
             data = base64.b64encode(target.read_bytes()).decode()
-            images.append({"path": str(path), "data": data})
-        return {"text": text, "images": images, "error": None}
+            images.append({Field.PATH: str(path), Field.DATA: data})
+        return response(text, images)
     try:
         text = json.dumps(output, default=str)
     except (TypeError, ValueError):
         text = str(output)
-    return {"text": text, "images": [], "error": None}
+    return response(text)
 
 
 def failure(error: BaseException) -> dict[str, object]:
     """An exception as a response the model can correct from; the tail keeps it short."""
     tail = "".join(traceback.format_exception(error)[-3:])
-    return {"text": tail, "images": [], "error": f"{type(error).__name__}: {error}"}
+    return response(tail, error=f"{type(error).__name__}: {error}")
 
 
 async def invoke(fn: Callable[..., object], ctx: object, args: dict[str, object]) -> object:
@@ -130,15 +166,15 @@ class Server:
             raise
 
     async def handle(self, request: dict[str, object]) -> dict[str, object]:
-        if request.get("tool") == PING:
-            return {"text": "pong", "images": [], "error": None}
+        if request.get(Field.TOOL) == PING:
+            return response("pong")
         try:
-            init = request.get("init")
-            args = request.get("args") or {}
+            init = request.get(Field.INIT)
+            args = request.get(Field.ARGS) or {}
             if not isinstance(init, dict | None) or not isinstance(args, dict):
                 raise TypeError("`init` and `args` must be JSON objects")
-            ctx = await self.context(str(request["context"]), init)
-            return adapt(await invoke(resolve(str(request["tool"])), ctx, args))
+            ctx = await self.context(str(request[Field.CONTEXT]), init)
+            return adapt(await invoke(resolve(str(request[Field.TOOL])), ctx, args))
         except Exception as error:
             return failure(error)
         finally:
@@ -149,10 +185,10 @@ class Server:
         try:
             line = await reader.readline()
             try:
-                response = await self.handle(json.loads(line))
+                reply = await self.handle(json.loads(line))
             except ValueError as error:
-                response = failure(error)
-            writer.write(json.dumps(response).encode() + b"\n")
+                reply = failure(error)
+            writer.write(json.dumps(reply).encode() + b"\n")
             await writer.drain()
         finally:
             writer.close()
@@ -211,7 +247,7 @@ def call(socket_path: str, request_file: str, wait: float) -> int:
         except (FileNotFoundError, ConnectionRefusedError) as error:
             sock.close()
             if time.monotonic() >= deadline:
-                print(f"no actant host at {socket_path}: {error}", file=sys.stderr)
+                print(f"{NO_HOST} at {socket_path}: {error}", file=sys.stderr)
                 return 1
             time.sleep(0.05)
     with sock, sock.makefile("rwb") as stream:
@@ -228,16 +264,16 @@ def call(socket_path: str, request_file: str, wait: float) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m actant.sandbox.host")
     commands = parser.add_subparsers(dest="command", required=True)
-    serve_cmd = commands.add_parser("serve")
+    serve_cmd = commands.add_parser(Command.SERVE)
     serve_cmd.add_argument("--socket", required=True)
     serve_cmd.add_argument("--factory", required=True, help="pkg.mod:fn(key, init) -> ctx")
     serve_cmd.add_argument("--after", help="shell command run (debounced) after requests")
-    call_cmd = commands.add_parser("call")
+    call_cmd = commands.add_parser(Command.CALL)
     call_cmd.add_argument("--socket", required=True)
     call_cmd.add_argument("--request-file", required=True, help="JSON request; deleted once read")
     call_cmd.add_argument("--wait", type=float, default=30.0)
     args = parser.parse_args(argv)
-    if args.command == "serve":
+    if args.command == Command.SERVE:
         asyncio.run(serve(args.socket, args.factory, args.after))
         return 0
     return call(args.socket, args.request_file, args.wait)

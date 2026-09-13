@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from actant.sandbox import SandboxSpec
+from actant.sandbox import SandboxSpec, Storage
 from actant.sandbox.local import LocalSandbox
 from actant.sandbox.modal import (
     DISK_PATH,
@@ -120,7 +120,7 @@ async def test_disk_sync_restores_on_open_and_pushes_on_sync(
     _use(monkeypatch, fake)
     spec = SandboxSpec(
         backend="modal",
-        storage="disk_sync",
+        storage=Storage.DISK_SYNC,
         gpu="L4",
         network=True,
         secrets=("openai",),
@@ -194,7 +194,7 @@ async def test_disk_sync_open_fails_when_the_restore_fails(
     _use(monkeypatch, _FakeModal(restore_code=1, restore_stderr="access denied"))
     with pytest.raises(RuntimeError, match="access denied"):
         await provider.open(
-            SandboxSpec(backend="modal", storage="disk_sync"), agent_id="a", thread_id="t1"
+            SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), agent_id="a", thread_id="t1"
         )
 
 
@@ -210,7 +210,7 @@ async def test_inline_bucket_env_against_a_tunnelled_minio(
         bucket_env={"AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"},
     )
     await provider.open(
-        SandboxSpec(backend="modal", storage="disk_sync"), agent_id="a", thread_id="t"
+        SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), agent_id="a", thread_id="t"
     )
     creds = {"AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"}
     assert fake.created["secrets"] == [("dict", creds)]
@@ -230,3 +230,10 @@ def test_with_s5cmd_installs_the_pinned_binary() -> None:
 
 async def test_local_sync_is_a_no_op(tmp_path: Any) -> None:
     assert (await LocalSandbox(tmp_path).sync()).returncode == 0
+
+
+def test_storage_accepts_the_enum_or_its_string_and_rejects_others() -> None:
+    assert SandboxSpec(storage="disk_sync").storage is Storage.DISK_SYNC  # pyright: ignore[reportArgumentType]
+    assert SandboxSpec().storage is Storage.MOUNT
+    with pytest.raises(ValueError):
+        SandboxSpec(storage="nfs")  # pyright: ignore[reportArgumentType]

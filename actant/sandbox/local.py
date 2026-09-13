@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from actant.sandbox.base import Entry, ExecResult, Sandbox, SandboxSpec
+from actant.sandbox.host import SCRUB_ENV_VAR
 
 
 class LocalSandbox:
@@ -27,7 +28,7 @@ class LocalSandbox:
         self._scrub = tuple(scrub_env)
         if self._scrub:
             # What the Modal backend sets in the container, so the tool host scrubs alike.
-            self._env["ACTANT_SCRUB_ENV"] = ",".join(self._scrub)
+            self._env[SCRUB_ENV_VAR] = ",".join(self._scrub)
 
     def _path(self, path: str) -> Path:
         target = (self.root / path).resolve()

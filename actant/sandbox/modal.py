@@ -37,7 +37,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from actant.sandbox.base import Entry, ExecResult, Sandbox, SandboxSpec
+from actant.sandbox.base import Entry, ExecResult, Sandbox, SandboxSpec, Storage
+from actant.sandbox.host import SCRUB_ENV_VAR, STATE_DIR
 
 MOUNT_PATH = "/mnt/sandbox"
 DISK_PATH = "/root/sandbox"
@@ -45,8 +46,8 @@ THREAD_TAG = "actant_thread"
 SYNC_TIMEOUT_S = 1800
 #: How long ``close`` lets the final push run before terminating anyway.
 CLOSE_SYNC_TIMEOUT_S = 300
-#: Tool-host request files (:data:`actant.sandbox.remote.REQUESTS_DIR`): never synced.
-SYNC_EXCLUDE = ".actant/*"
+#: Tool-host state (request files): never synced.
+SYNC_EXCLUDE = f"{STATE_DIR}/*"
 S5CMD_VERSION = "2.3.0"
 S5CMD_URL = (
     f"https://github.com/peak/s5cmd/releases/download/v{S5CMD_VERSION}/"
@@ -96,11 +97,11 @@ class ModalSandboxProvider:
         else:
             bucket_secret = None
         secrets = [modal.Secret.from_name(name) for name in spec.secrets]
-        if spec.storage == "disk_sync":
+        if spec.storage == Storage.DISK_SYNC:
             root, volumes = DISK_PATH, {}
             if bucket_secret is not None:
                 secrets.append(bucket_secret)
-        elif spec.storage == "mount":
+        else:  # Storage.MOUNT; SandboxSpec rejects anything else
             root = MOUNT_PATH
             volumes = {
                 MOUNT_PATH: modal.CloudBucketMount(
@@ -110,8 +111,6 @@ class ModalSandboxProvider:
                     secret=bucket_secret,
                 )
             }
-        else:
-            raise ValueError(f"unknown sandbox storage: {spec.storage!r}")
         sandbox = await modal.Sandbox.create.aio(
             app=app,
             image=spec.image,
@@ -124,14 +123,14 @@ class ModalSandboxProvider:
             secrets=secrets,
             # Not scrubbed here: the tool server needs these. In-sandbox code reads
             # ACTANT_SCRUB_ENV and removes them from what the agent's own code runs.
-            env={"ACTANT_SCRUB_ENV": ",".join(spec.scrub_env)} if spec.scrub_env else None,
+            env={SCRUB_ENV_VAR: ",".join(spec.scrub_env)} if spec.scrub_env else None,
             # ``attach`` gets no thread id; the tag carries it for ``sync``.
             tags={THREAD_TAG: thread_id},
             volumes=volumes,
             workdir=root,
             client=self.client,
         )
-        if spec.storage == "mount":
+        if spec.storage == Storage.MOUNT:
             return ModalSandbox(sandbox, spec.env, scrub_env=spec.scrub_env)
         handle = ModalSandbox(
             sandbox,
@@ -158,7 +157,7 @@ class ModalSandboxProvider:
             raise KeyError(sandbox_id) from exc
         if await sandbox.poll.aio() is not None:
             raise KeyError(sandbox_id)
-        if spec.storage != "disk_sync":
+        if spec.storage != Storage.DISK_SYNC:
             return ModalSandbox(sandbox, spec.env, scrub_env=spec.scrub_env)
         # A live sandbox still has its disk: nothing to restore.
         thread_id = (await sandbox.get_tags.aio())[THREAD_TAG]

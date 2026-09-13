@@ -7,11 +7,13 @@ from typing import TYPE_CHECKING, Any
 from actant.sandbox.base import (
     ArtifactRef,
     ArtifactSink,
+    Backend,
     Entry,
     ExecResult,
     Sandbox,
     SandboxProvider,
     SandboxSpec,
+    Storage,
 )
 from actant.sandbox.local import LocalSandbox, LocalSandboxProvider
 
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ArtifactRef",
     "ArtifactSink",
+    "Backend",
     "Entry",
     "ExecResult",
     "LocalSandbox",
@@ -31,6 +34,7 @@ __all__ = [
     "Sandbox",
     "SandboxProvider",
     "SandboxSpec",
+    "Storage",
 ]
 
 

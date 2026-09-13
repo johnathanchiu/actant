@@ -22,6 +22,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import actant.sandbox.host as host_module
+from actant.sandbox.host import (
+    NO_HOST,
+    PING,
+    REQUESTS_DIR,
+    SCRUB_ENV_VAR,
+    SOCKET_TEMPLATE,
+    Command,
+    Field,
+)
 from actant.sandbox.base import Sandbox
 from actant.tools.base import CallContext, ToolResult
 from actant.tools.function import FunctionTool, ToolArguments, ToolFunction
@@ -38,16 +47,13 @@ class RemoteResult:
     @classmethod
     def parse(cls, response: Mapping[str, object]) -> RemoteResult:
         images = [
-            (str(image["path"]), base64.b64decode(str(image["data"])))
-            for image in response.get("images") or []  # pyright: ignore[reportGeneralTypeIssues]
+            (str(image[Field.PATH]), base64.b64decode(str(image[Field.DATA])))
+            for image in response.get(Field.IMAGES) or []  # pyright: ignore[reportGeneralTypeIssues]
         ]
-        error = response.get("error")
-        return cls(str(response.get("text") or ""), images, None if error is None else str(error))
-
-
-#: Where request files are written, relative to the sandbox root. Excluded from
-#: ``disk_sync`` pushes and restores (see :mod:`actant.sandbox.modal`).
-REQUESTS_DIR = ".actant/requests"
+        error = response.get(Field.ERROR)
+        return cls(
+            str(response.get(Field.TEXT) or ""), images, None if error is None else str(error)
+        )
 
 
 class RemoteHost:
@@ -64,7 +70,7 @@ class RemoteHost:
         self.sandbox = sandbox
         if socket is None:
             digest = hashlib.sha256(sandbox.id.encode()).hexdigest()[:16]
-            socket = f"/tmp/actant-host-{digest}.sock"
+            socket = SOCKET_TEMPLATE.format(key=digest)
         self.socket = socket
         self.python = python
         self.log_path = socket.removesuffix(".sock") + ".log"
@@ -89,22 +95,23 @@ class RemoteHost:
         """
         self._started = (factory, {"cwd": cwd, "after": after, "scrub": scrub, "env": env})
         async with self._start_lock:
-            if (await self._request({"tool": host_module.PING}, wait=0, timeout=30)).error is None:
+            if (await self._request({Field.TOOL: PING}, wait=0, timeout=30)).error is None:
                 return
-            argv = [self.python, "-m", "actant.sandbox.host", "serve"]
+            argv = [self.python, "-m", host_module.__name__, Command.SERVE]
             argv += ["--socket", self.socket, "--factory", factory]
             if after:
                 argv += ["--after", after]
             command = f"nohup {shlex.join(argv)} >{shlex.quote(self.log_path)} 2>&1 &"
             if scrub:
                 extra = shlex.quote(",".join(scrub))
-                command = f'ACTANT_SCRUB_ENV="${{ACTANT_SCRUB_ENV:+$ACTANT_SCRUB_ENV,}}"{extra} {command}'
+                var = SCRUB_ENV_VAR
+                command = f'{var}="${{{var}:+${var},}}"{extra} {command}'
             launched = await self.sandbox.exec(
                 ["sh", "-c", command], cwd=cwd, timeout=30, env=env, keep_env=True
             )
             if launched.returncode != 0:
                 raise RuntimeError(f"could not launch the actant host: {launched.stderr[-2000:]}")
-            pong = await self._request({"tool": host_module.PING}, wait=30, timeout=60)
+            pong = await self._request({Field.TOOL: PING}, wait=30, timeout=60)
             if pong.error is not None:
                 raise RuntimeError(
                     f"actant host did not come up: {pong.error}\n{await self.log()}"
@@ -124,9 +131,14 @@ class RemoteHost:
         The short wait is safe because ``start`` returns only once the host answers;
         a longer one would only delay noticing a dead host.
         """
-        request = {"context": context, "init": init, "tool": tool, "args": dict(args)}
+        request = {
+            Field.CONTEXT: context,
+            Field.INIT: init,
+            Field.TOOL: tool,
+            Field.ARGS: dict(args),
+        }
         result = await self._request(request, wait=5, timeout=timeout)
-        if self._started is not None and "no actant host" in (result.error or ""):
+        if self._started is not None and NO_HOST in (result.error or ""):
             factory, options = self._started
             try:
                 await self.start(factory, **options)  # pyright: ignore[reportArgumentType]
@@ -142,7 +154,7 @@ class RemoteHost:
     async def _request(self, request: object, *, wait: float, timeout: float) -> RemoteResult:
         # A file, not argv: Linux caps one argument at 128 KiB. ``call`` deletes it.
         request_file = f"{REQUESTS_DIR}/{uuid.uuid4().hex}.json"
-        argv = [self.python, "-m", "actant.sandbox.host", "call", "--socket", self.socket]
+        argv = [self.python, "-m", host_module.__name__, Command.CALL, "--socket", self.socket]
         argv += ["--request-file", request_file, "--wait", str(wait)]
         try:
             await self.sandbox.write(request_file, json.dumps(request).encode())
