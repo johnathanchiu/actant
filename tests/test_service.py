@@ -667,14 +667,23 @@ def _script(code: str) -> list[str]:
 _EMPTY = _script("import sys; print('ERROR no object found', file=sys.stderr)")
 
 
-def _seed(tmp_path: Path, *, copy: str = "", pull: str = "") -> SeedConfig:
-    """A seed whose pull writes ``a.txt`` and whose copy marks ``copied`` after a delay."""
+def _seed(
+    tmp_path: Path, *, copy: str = "", pull: str = "", check: str = "", marker: Path | None = None
+) -> SeedConfig:
+    """A seed whose pull writes ``a.txt``, whose copy marks ``copied`` after a delay and
+    whose marker is the file ``marker`` (in another directory: never pulled)."""
+    marker = marker or tmp_path.parent / f"{tmp_path.name}.marker"
+    has_marker = (
+        f"import os, sys; os.path.exists({str(marker)!r}) or sys.exit('ERROR no object found')"
+    )
     listed = json.dumps(
         {"key": "s3://b/seed/a.txt", "last_modified": "2026-01-02T03:04:05Z", "size": 3}
     )
     return SeedConfig(
         argv=_script(pull or f"open({str(tmp_path / 'a.txt')!r}, 'w').write('abc')"),
         copy_argv=_script(copy or f"import time; time.sleep(0.5); open({str(tmp_path / 'copied')!r}, 'w').close()"),
+        write_marker_argv=_script(f"open({str(marker)!r}, 'w').close()"),
+        check_marker_argv=_script(check or has_marker),
         stamp=StampConfig(argv=_script(f"print({listed!r})"), prefix="s3://b/seed/", root=str(tmp_path)),
     )  # fmt: skip
 
@@ -687,14 +696,27 @@ def test_a_new_run_pulls_its_seed_and_waits_for_the_copy(tmp_path: Path) -> None
     assert (tmp_path / "copied").exists()
     # Stamped with the seed object's time, never later than its copy: a push skips it.
     assert int((tmp_path / "a.txt").stat().st_mtime) == 1767323045
+    assert (tmp_path.parent / f"{tmp_path.name}.marker").exists()
 
 
 def test_a_run_with_files_ignores_its_seed(tmp_path: Path) -> None:
     from actant.sandbox.entry import restore
 
     own = _script(f"open({str(tmp_path / 'own.txt')!r}, 'w').close()")
+    (tmp_path.parent / f"{tmp_path.name}.marker").touch()
     assert restore(RestoreConfig(argv=own, seed=_seed(tmp_path)))
     assert sorted(p.name for p in tmp_path.iterdir()) == ["own.txt"]
+
+
+def test_a_run_with_files_and_no_seed_marker_fails_startup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from actant.sandbox.entry import INCOMPLETE_SEED, restore
+
+    own = _script(f"open({str(tmp_path / 'own.txt')!r}, 'w').close()")
+    assert not restore(RestoreConfig(argv=own, seed=_seed(tmp_path)))
+    assert INCOMPLETE_SEED in capsys.readouterr().err
+    assert not (tmp_path / "copied").exists()  # never copied again over the partial run
 
 
 def test_a_failed_run_pull_does_not_fall_back_to_the_seed(tmp_path: Path) -> None:
@@ -717,6 +739,8 @@ def test_a_failed_seed_copy_or_pull_fails_startup_after_both_end(
     assert not restore(RestoreConfig(argv=_EMPTY, seed=seed, timeout_s=10))
     if broken == "pull":
         assert (tmp_path / "copied").exists()  # the copy was waited for, not leaked
+    # Only a finished copy is marked.
+    assert (tmp_path.parent / f"{tmp_path.name}.marker").exists() == (broken == "pull")
 
 
 def test_a_hung_seed_copy_fails_startup_within_the_timeout(tmp_path: Path) -> None:

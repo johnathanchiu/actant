@@ -106,10 +106,15 @@ class StampConfig(_Message):
 
 class SeedConfig(_Message):
     """A new run's files: when the run's prefix is empty, pull ``argv`` (the seed) onto the
-    disk while ``copy_argv`` copies the seed into the run's prefix. Startup waits for both."""
+    disk while ``copy_argv`` copies the seed into the run's prefix, then write the marker.
+    Startup waits for all of it."""
 
     argv: list[str] = Field(min_length=1)
     copy_argv: list[str] = Field(min_length=1)
+    #: Writes the marker (from empty stdin) once the copy finished.
+    write_marker_argv: list[str] = Field(min_length=1)
+    #: Lists the marker: a run's prefix with files and no marker is incompletely seeded.
+    check_marker_argv: list[str] = Field(min_length=1)
     stamp: StampConfig | None = None
 
 

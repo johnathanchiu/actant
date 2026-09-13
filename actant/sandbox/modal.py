@@ -10,8 +10,8 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     Files live on the container's own disk under :data:`DISK_PATH`, with normal
     POSIX semantics. ``open`` restores the prefix onto the disk with s5cmd (an empty
     prefix restores ``SandboxSpec.seed`` instead, copied into the prefix at the same
-    time) and :meth:`ModalSandbox.sync` pushes it back, deleting remote files removed
-    locally; a service host also pushes after its calls and every
+    time and then marked done) and :meth:`ModalSandbox.sync` pushes it back, deleting
+    remote files removed locally; a service host also pushes after its calls and every
     ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
     pushes once more. Restored files get their objects' mtimes, so a push
     uploads only what changed. The tradeoff: s5cmd
@@ -77,6 +77,8 @@ SYNC_TIMEOUT_S = 1800
 #: Slack over a command's own timeout for Modal's API round trips.
 API_SLACK_S = 60
 S5CMD_VERSION = "2.3.0"
+#: Appended to a thread's key (not inside its prefix) for its seed marker object.
+SEED_MARKER_SUFFIX = ".actant-seeded"
 S5CMD_URL = (
     f"https://github.com/peak/s5cmd/releases/download/v{S5CMD_VERSION}/"
     f"s5cmd_{S5CMD_VERSION}_Linux-64bit.tar.gz"
@@ -287,11 +289,19 @@ class ModalSandboxProvider:
     def seed_config(self, thread_id: str, seed: str) -> SeedConfig:
         """Pull ``seed`` onto a new thread's disk while copying it into the thread's prefix."""
         source = f"s3://{self.bucket}/{seed}"
+        marker = self.seed_marker(thread_id)
         return SeedConfig(
             argv=self._pull_argv(source),
             copy_argv=self._s5cmd("cp", f"{source}*", self._remote(thread_id)),
+            write_marker_argv=self._s5cmd("pipe", marker),
+            check_marker_argv=self._s5cmd("ls", marker),
             stamp=self._stamp_config(source),
         )
+
+    def seed_marker(self, thread_id: str) -> str:
+        """The object that says a thread's seed copy finished: a sibling of its prefix
+        (``sandboxes/t1`` + :data:`SEED_MARKER_SUFFIX`), so no pull or push touches it."""
+        return f"s3://{self.bucket}/{self.key_prefix}{thread_id}{SEED_MARKER_SUFFIX}"
 
     def _pull_argv(self, source: str) -> list[str]:
         return self._s5cmd("sync", f"{source}*", f"{DISK_PATH}/")

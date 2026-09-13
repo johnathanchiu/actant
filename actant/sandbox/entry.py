@@ -14,7 +14,10 @@ timed-out restore exits non-zero, which ends the sandbox. An empty bucket prefix
 
 ``restore.seed``: when the run's prefix is empty, the seed is pulled onto the disk
 while ``copy_argv`` copies it into the run's prefix; startup waits for both, so
-the host's first push never races the copy. A run with files ignores its seed.
+the host's first push never races the copy. Once the copy finishes, a marker
+object (outside the run's prefix, so never pulled or pushed) records it. A run
+with files ignores its seed, but without the marker its copy was cut off, and
+startup fails rather than serve a partial workspace.
 
 ``stamp`` lists the prefix a pull reads (``s5cmd --json ls`` lines, alongside the
 pull) and then sets each pulled file's mtime to its object's ``last_modified``.
@@ -48,6 +51,11 @@ from actant.sandbox.protocol import EntryConfig, RestoreConfig, StampConfig
 READY_FILE = "/tmp/actant-ready"
 #: What s5cmd prints for a prefix with no objects.
 EMPTY_PREFIX = "no object found"
+#: Why startup fails on a run's prefix with files and a seed but no seed marker.
+INCOMPLETE_SEED = (
+    "the run's prefix has files but no seed marker: its seed copy never finished; "
+    "delete the prefix to seed it again"
+)
 
 
 class ListedObject(BaseModel):
@@ -86,7 +94,9 @@ def stamp_mtimes(listing: Iterable[str], prefix: str, root: Path) -> int:
 def _run(argv: Sequence[str], timeout: float) -> subprocess.CompletedProcess[str] | str:
     """The finished command, or why it did not finish."""
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout
+        )
     except subprocess.TimeoutExpired:
         return f"timed out after {timeout:g}s"
     except OSError as error:
@@ -114,10 +124,23 @@ class Pulled(StrEnum):
 def restore(config: RestoreConfig) -> bool:
     """Pull the run's prefix onto the disk (a new run's seed instead, while it is copied
     into the run's prefix), then stamp mtimes; whether startup may continue."""
-    pulled = pull(config.argv, config.stamp, config.timeout_s)
-    if pulled != Pulled.EMPTY or config.seed is None:
-        return pulled != Pulled.FAILED
     seed = config.seed
+    if seed is None:
+        return pull(config.argv, config.stamp, config.timeout_s) != Pulled.FAILED
+    with ThreadPoolExecutor(1) as pool:
+        checking = pool.submit(_run, seed.check_marker_argv, config.timeout_s)
+        pulled = pull(config.argv, config.stamp, config.timeout_s)
+        checked = checking.result()
+    if pulled == Pulled.FAILED:
+        return False
+    if pulled == Pulled.FILES:
+        if not isinstance(checked, str) and EMPTY_PREFIX in checked.stderr:
+            print(f"restore: {INCOMPLETE_SEED}", file=sys.stderr)
+            return False
+        if (failed := _failure(checked)) is not None:
+            print(f"seed marker check {failed}", file=sys.stderr)
+            return False
+        return True
     # Both finish before the host starts, so no push can race the copy.
     with ThreadPoolExecutor(1) as pool:
         copying = pool.submit(_run, seed.copy_argv, config.timeout_s)
@@ -125,6 +148,10 @@ def restore(config: RestoreConfig) -> bool:
         copied = copying.result()
     if (failed := _failure(copied)) is not None:
         print(f"seed copy {failed}", file=sys.stderr)
+        return False
+    # Only a finished copy is marked, so an interrupted one fails the next startup.
+    if (failed := _failure(_run(seed.write_marker_argv, config.timeout_s))) is not None:
+        print(f"seed marker {failed}", file=sys.stderr)
         return False
     return pulled != Pulled.FAILED
 
