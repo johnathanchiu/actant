@@ -592,11 +592,17 @@ async def serve(host: Host, bind: str, port: int) -> None:
             writer.close()
 
 
-def main(config: HostConfig) -> int:
-    """Serve ``config`` until stopped (:mod:`actant.sandbox.entry` is the command line)."""
+def load_services(config: HostConfig) -> dict[str, type]:
+    """``config``'s service classes, imported."""
+    return {name: load(path) for name, path in config.services.items()}
+
+
+def main(config: HostConfig, services: Mapping[str, type] | None = None) -> int:
+    """Serve ``config`` (its ``services`` when already loaded) until stopped
+    (:mod:`actant.sandbox.entry` is the command line)."""
     global _scrub
     _scrub = frozenset(config.scrub)
-    services = {name: load(path) for name, path in config.services.items()}
+    services = load_services(config) if services is None else services
     host = Host(services, token=os.environ.pop(TOKEN_ENV, None), push=config.push)
     asyncio.run(serve(host, config.bind, config.port))
     return 0

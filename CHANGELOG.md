@@ -4,6 +4,22 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+## 0.12.0
+
+- `SandboxSpec.seed` (`disk_sync`): a key prefix that starts a new thread. When the
+  thread's prefix is empty, the sandbox pulls the seed while it is copied into the
+  thread's prefix; startup waits for both, then writes a marker object beside the
+  prefix. A thread with files ignores its seed; one without the marker (a copy cut off)
+  fails startup.
+- A `disk_sync` sandbox starts sooner: the services' modules import and the mtime
+  listing runs while the restore pulls. Importing a service module must not read the
+  restored files.
+- **Breaking:** `RestoreConfig.seed` (`SeedConfig`) in the entry config;
+  `host.main(config, services=None)` takes already loaded services
+  (`host.load_services`).
+
 ## 0.11.0
 
 **Breaking:** toolsets are now services. The sandbox host serves plain classes whose

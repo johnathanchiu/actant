@@ -371,6 +371,15 @@ bounded the same way, so shutdown finishes even when storage is unreachable;
 exceeds 30 minutes fails startup. Restored files take their objects' mtimes,
 so a push uploads only files changed since.
 
+`SandboxSpec.seed` (a bucket key prefix ending in `/`) starts a new thread from a
+template. When the thread's prefix is empty, the sandbox pulls the seed while
+s5cmd copies it into the thread's prefix, and startup waits for both, so no push
+races the copy; a failed copy fails startup. A finished copy writes a marker
+object beside the prefix (`<thread>.actant-seeded`, never pulled or pushed). A
+thread whose prefix has files restores those and ignores the seed, unless the
+marker is missing: then the copy was cut off, and startup fails instead of
+serving a partial workspace (delete the prefix to seed it again).
+
 ## Finishing a task
 
 A chat agent is done when it answers. A task agent has to say so. Give it

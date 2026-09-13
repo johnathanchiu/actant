@@ -155,12 +155,20 @@ class SandboxSpec:
     #: ``disk_sync``: a push running longer is killed; the next one still runs.
     #: :meth:`Sandbox.sync` and ``close`` are bounded by it too.
     sync_timeout_s: float = 300.0
+    #: ``disk_sync``: a bucket key prefix (``"templates/base/"``) that starts a new thread.
+    #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
+    #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
+    seed: str | None = None
 
     def __post_init__(self) -> None:
         # Coerce (and validate) a plain string from an untyped config.
         object.__setattr__(self, "storage", Storage(self.storage))
         if self.sync_interval_s <= 0 or self.sync_timeout_s <= 0:
             raise ValueError("sync_interval_s and sync_timeout_s must be positive")
+        if self.seed is not None and (
+            self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
+        ):
+            raise ValueError("seed is a key prefix ending in '/', for disk_sync storage")
 
 
 class SandboxProvider(Protocol):
