@@ -96,7 +96,7 @@ class HostConfig(_Message):
 
 
 class StampConfig(_Message):
-    """After a restore, list ``prefix`` with ``argv`` (``s5cmd --json ls``) and give each
+    """Alongside a pull, list ``prefix`` with ``argv`` (``s5cmd --json ls``) and give each
     restored file under ``root`` its object's mtime."""
 
     argv: list[str] = Field(min_length=1)
@@ -104,11 +104,23 @@ class StampConfig(_Message):
     root: str
 
 
+class SeedConfig(_Message):
+    """A new run's files: when the run's prefix is empty, pull ``argv`` (the seed) onto the
+    disk while ``copy_argv`` copies the seed into the run's prefix. Startup waits for both."""
+
+    argv: list[str] = Field(min_length=1)
+    copy_argv: list[str] = Field(min_length=1)
+    stamp: StampConfig | None = None
+
+
 class RestoreConfig(_Message):
-    #: Pulls storage onto the disk; failing or exceeding ``timeout_s`` fails startup.
+    #: Pulls the run's prefix onto the disk; each command failing or exceeding
+    #: ``timeout_s`` fails startup.
     argv: list[str] = Field(min_length=1)
     timeout_s: PositiveFloat = 1800.0
     stamp: StampConfig | None = None
+    #: Used only when the run's prefix is empty.
+    seed: SeedConfig | None = None
 
 
 class EntryConfig(_Message):

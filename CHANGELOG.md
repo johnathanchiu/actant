@@ -6,11 +6,17 @@ affect users.
 
 ## Unreleased
 
-- `SandboxSpec.seed` (`disk_sync`): a new thread's disk restores from another bucket
-  prefix (a template) instead of its own; pushes still go to the thread's prefix.
+## 0.12.0
+
+- `SandboxSpec.seed` (`disk_sync`): a key prefix that starts a new thread. When the
+  thread's prefix is empty, the sandbox pulls the seed while it is copied into the
+  thread's prefix; startup waits for both. A thread with files ignores its seed.
 - A `disk_sync` sandbox starts sooner: the services' modules import and the mtime
   listing runs while the restore pulls. Importing a service module must not read the
-  restored files. `host.main` takes already loaded services.
+  restored files.
+- **Breaking:** `RestoreConfig.seed` (`SeedConfig`) in the entry config;
+  `host.main(config, services=None)` takes already loaded services
+  (`host.load_services`).
 
 ## 0.11.0
 

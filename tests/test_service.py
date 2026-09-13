@@ -25,8 +25,9 @@ from actant.sandbox.protocol import (
     HostConfig,
     PushConfig,
     RestoreConfig,
-    StampConfig,
     Route,
+    SeedConfig,
+    StampConfig,
 )
 from actant.tools import tool_schemas, tools
 from actant.tools.service import to_tool_result
@@ -656,3 +657,72 @@ def test_entry_imports_services_and_lists_the_stamp_while_the_restore_runs(
     finally:
         process.terminate()
         process.wait()
+
+
+def _script(code: str) -> list[str]:
+    return [sys.executable, "-c", code]
+
+
+#: What s5cmd 2.3's sync does on an empty prefix: says so, and exits 0.
+_EMPTY = _script("import sys; print('ERROR no object found', file=sys.stderr)")
+
+
+def _seed(tmp_path: Path, *, copy: str = "", pull: str = "") -> SeedConfig:
+    """A seed whose pull writes ``a.txt`` and whose copy marks ``copied`` after a delay."""
+    listed = json.dumps(
+        {"key": "s3://b/seed/a.txt", "last_modified": "2026-01-02T03:04:05Z", "size": 3}
+    )
+    return SeedConfig(
+        argv=_script(pull or f"open({str(tmp_path / 'a.txt')!r}, 'w').write('abc')"),
+        copy_argv=_script(copy or f"import time; time.sleep(0.5); open({str(tmp_path / 'copied')!r}, 'w').close()"),
+        stamp=StampConfig(argv=_script(f"print({listed!r})"), prefix="s3://b/seed/", root=str(tmp_path)),
+    )  # fmt: skip
+
+
+def test_a_new_run_pulls_its_seed_and_waits_for_the_copy(tmp_path: Path) -> None:
+    from actant.sandbox.entry import restore
+
+    assert restore(RestoreConfig(argv=_EMPTY, seed=_seed(tmp_path)))
+    # The copy finished before startup continues, so no push can race it.
+    assert (tmp_path / "copied").exists()
+    # Stamped with the seed object's time, never later than its copy: a push skips it.
+    assert int((tmp_path / "a.txt").stat().st_mtime) == 1767323045
+
+
+def test_a_run_with_files_ignores_its_seed(tmp_path: Path) -> None:
+    from actant.sandbox.entry import restore
+
+    own = _script(f"open({str(tmp_path / 'own.txt')!r}, 'w').close()")
+    assert restore(RestoreConfig(argv=own, seed=_seed(tmp_path)))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["own.txt"]
+
+
+def test_a_failed_run_pull_does_not_fall_back_to_the_seed(tmp_path: Path) -> None:
+    from actant.sandbox.entry import restore
+
+    assert not restore(
+        RestoreConfig(argv=_script("import sys; sys.exit('denied')"), seed=_seed(tmp_path))
+    )
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("broken", ["copy", "pull"])
+def test_a_failed_seed_copy_or_pull_fails_startup_after_both_end(
+    tmp_path: Path, broken: str
+) -> None:
+    from actant.sandbox.entry import restore
+
+    fail = "import sys; sys.exit('denied')"
+    seed = _seed(tmp_path, **{broken: fail})
+    assert not restore(RestoreConfig(argv=_EMPTY, seed=seed, timeout_s=10))
+    if broken == "pull":
+        assert (tmp_path / "copied").exists()  # the copy was waited for, not leaked
+
+
+def test_a_hung_seed_copy_fails_startup_within_the_timeout(tmp_path: Path) -> None:
+    from actant.sandbox.entry import restore
+
+    seed = _seed(tmp_path, copy="import time; time.sleep(60)")
+    started = time.monotonic()
+    assert not restore(RestoreConfig(argv=_EMPTY, seed=seed, timeout_s=0.5))
+    assert time.monotonic() - started < 10

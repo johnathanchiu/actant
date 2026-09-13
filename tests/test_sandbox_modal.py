@@ -355,24 +355,28 @@ async def test_sync_and_close_are_bounded_when_modal_hangs(
     await asyncio.wait_for(sandbox.close(), 5)  # neither hangs nor raises
 
 
-async def test_a_seed_restores_a_new_thread_from_its_prefix_and_pushes_to_the_thread(
+async def test_a_seed_restores_and_copies_only_into_an_empty_thread_prefix(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
     fake = _FakeModal()
     _use(monkeypatch, fake)
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/room/")
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
     await provider.open(spec, agent_id="a", thread_id="t1")
     config = EntryConfig.model_validate_json(fake.created[0][3])
-    assert config.restore is not None and config.restore.stamp is not None
-    assert config.restore.argv == [*S5, "sync", "s3://b/templates/room/*", f"{DISK_PATH}/"]
-    assert config.restore.stamp.prefix == "s3://b/templates/room/"
-    assert config.restore.stamp.argv[-1] == "s3://b/templates/room/*"
+    restore = config.restore
+    assert restore is not None and restore.seed is not None and restore.seed.stamp is not None
+    # The thread's own prefix first; the seed only if that is empty.
+    assert restore.argv == [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
+    assert restore.seed.argv == [*S5, "sync", "s3://b/templates/base/*", f"{DISK_PATH}/"]
+    assert restore.seed.copy_argv == [*S5, "cp", "s3://b/templates/base/*", "s3://b/sandboxes/t1/"]
+    assert restore.seed.stamp.prefix == "s3://b/templates/base/"
+    assert restore.seed.stamp.argv[-1] == "s3://b/templates/base/*"
     push = provider.sync_argv("t1")
     assert push == [*S5, "sync", "--delete", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
 
 
 def test_seed_is_a_disk_sync_key_prefix() -> None:
     with pytest.raises(ValueError, match="seed"):
-        SandboxSpec(backend="modal", storage=Storage.MOUNT, seed="templates/room/")
+        SandboxSpec(backend="modal", storage=Storage.MOUNT, seed="templates/base/")
     with pytest.raises(ValueError, match="seed"):
         SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/room")

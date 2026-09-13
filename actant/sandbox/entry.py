@@ -8,14 +8,21 @@ One :class:`~actant.sandbox.protocol.EntryConfig` document, validated before
 anything runs. The restore runs to completion before the host binds its port, so
 a readiness probe on that port (or on :data:`READY_FILE` without a host) only
 passes once the files are in place. The services' modules are imported while the
-restore runs, so importing one must not read the restored files. A failed or timed-out restore exits non-zero,
-which ends the sandbox. An empty bucket prefix (a new thread) is not a failure.
+restore runs, so importing one must not read the restored files. A failed or
+timed-out restore exits non-zero, which ends the sandbox. An empty bucket prefix
+(a new run) is not a failure.
 
-``restore.stamp`` lists the prefix (``s5cmd --json ls`` lines, alongside the
-restore) and then sets each restored file's mtime to its object's ``last_modified``. Downloads get the current
-time, and s5cmd's sync uploads any file newer than its object, so without this
-every push after a restore re-uploads the whole workspace. A stamp failure only
-costs that re-upload, so it is logged, not fatal.
+``restore.seed``: when the run's prefix is empty, the seed is pulled onto the disk
+while ``copy_argv`` copies it into the run's prefix; startup waits for both, so
+the host's first push never races the copy. A run with files ignores its seed.
+
+``stamp`` lists the prefix a pull reads (``s5cmd --json ls`` lines, alongside the
+pull) and then sets each pulled file's mtime to its object's ``last_modified``.
+Downloads get the current time, and s5cmd's sync uploads any file newer than its
+object, so without this every push after a restore re-uploads the whole
+workspace. A seeded file takes the seed object's time, never later than its copy
+in the run's prefix, so a push skips it too. A stamp failure only costs that
+re-upload, so it is logged, not fatal.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ import tempfile
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
@@ -85,32 +93,67 @@ def _run(argv: Sequence[str], timeout: float) -> subprocess.CompletedProcess[str
         return f"could not start: {error}"
 
 
+def _failure(done: subprocess.CompletedProcess[str] | str) -> str | None:
+    """Why an s5cmd command failed; ``None`` on success or an empty prefix."""
+    if isinstance(done, str):
+        return done
+    if done.returncode != 0 and EMPTY_PREFIX not in done.stderr:
+        return f"exited {done.returncode}: {done.stderr[-4000:]}"
+    return None
+
+
+class Pulled(StrEnum):
+    """How a pull ended."""
+
+    FILES = "files"
+    #: The prefix has no objects: a new run.
+    EMPTY = "empty"
+    FAILED = "failed"
+
+
 def restore(config: RestoreConfig) -> bool:
-    """Pull storage onto the disk, then stamp mtimes; whether startup may continue.
-    The stamp's listing runs alongside the pull, into a file (a pipe would stall it)."""
+    """Pull the run's prefix onto the disk (a new run's seed instead, while it is copied
+    into the run's prefix), then stamp mtimes; whether startup may continue."""
+    pulled = pull(config.argv, config.stamp, config.timeout_s)
+    if pulled != Pulled.EMPTY or config.seed is None:
+        return pulled != Pulled.FAILED
+    seed = config.seed
+    # Both finish before the host starts, so no push can race the copy.
+    with ThreadPoolExecutor(1) as pool:
+        copying = pool.submit(_run, seed.copy_argv, config.timeout_s)
+        pulled = pull(seed.argv, seed.stamp, config.timeout_s)
+        copied = copying.result()
+    if (failed := _failure(copied)) is not None:
+        print(f"seed copy {failed}", file=sys.stderr)
+        return False
+    return pulled != Pulled.FAILED
+
+
+def pull(argv: Sequence[str], stamp_config: StampConfig | None, timeout: float) -> Pulled:
+    """Run the pull ``argv``, with the stamp's listing alongside it (into a file: a pipe
+    would stall it), then apply the listing."""
     with tempfile.TemporaryFile("w+") as listing:
         lister = None
-        if config.stamp is not None:
+        if stamp_config is not None:
             try:
-                lister = subprocess.Popen(config.stamp.argv, stdout=listing, stderr=listing)
+                lister = subprocess.Popen(stamp_config.argv, stdout=listing, stderr=listing)
             except OSError as error:
                 print(f"mtime stamp skipped: could not start: {error}", file=sys.stderr)
-        done = _run(config.argv, config.timeout_s)
-        if isinstance(done, str):
-            failed = done
-        elif done.returncode != 0 and EMPTY_PREFIX not in done.stderr:
-            failed = f"exited {done.returncode}: {done.stderr[-4000:]}"
-        else:
-            failed = None
-        if failed is not None:
+        done = _run(argv, timeout)
+        failed = _failure(done)
+        # s5cmd 2.3's sync exits 0 on an empty prefix, but still says so.
+        empty = not isinstance(done, str) and EMPTY_PREFIX in done.stderr
+        if failed is not None or empty:
             if lister is not None:
                 lister.kill()
                 lister.wait()
+            if failed is None:
+                return Pulled.EMPTY
             print(f"restore {failed}", file=sys.stderr)
-            return False
-        if lister is not None and config.stamp is not None:
-            stamp(lister, listing, config.stamp, config.timeout_s)
-    return True
+            return Pulled.FAILED
+        if lister is not None and stamp_config is not None:
+            stamp(lister, listing, stamp_config, timeout)
+    return Pulled.FILES
 
 
 def stamp(
