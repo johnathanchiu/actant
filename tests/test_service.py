@@ -735,7 +735,7 @@ def test_a_failed_seed_copy_or_pull_fails_startup_after_both_end(
     from actant.sandbox.entry import restore
 
     fail = "import sys; sys.exit('denied')"
-    seed = _seed(tmp_path, **{broken: fail})
+    seed = _seed(tmp_path, copy=fail) if broken == "copy" else _seed(tmp_path, pull=fail)
     assert not restore(RestoreConfig(argv=_EMPTY, seed=seed, timeout_s=10))
     if broken == "pull":
         assert (tmp_path / "copied").exists()  # the copy was waited for, not leaked
