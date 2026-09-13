@@ -101,6 +101,10 @@ class LocalSandbox:
             stderr.decode(errors="replace"),
         )
 
+    async def sync(self) -> ExecResult:
+        """The directory is already durable; nothing to push."""
+        return ExecResult(0, "", "")
+
     async def close(self) -> None:
         """The directory is the durable root; nothing to release."""
 
