@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Generic, Protocol, TypeVar
 
 from actant.core import JSONObject
@@ -32,6 +33,19 @@ def make_tool_schema(
             },
         },
     }
+
+
+class MetadataKey(StrEnum):
+    """``ToolResult.metadata`` keys with a meaning to the runtime or a runner."""
+
+    #: ``True`` ends the run after this tool group.
+    TERMINAL = "terminal"
+    #: Workspace paths a terminal result hands to the ``ArtifactSink``.
+    DELIVERABLES = "deliverables"
+    #: The stored refs of ``deliverables``; written by the runtime, never by a tool.
+    ARTIFACTS = "artifacts"
+    #: A toolset host's :class:`~actant.sandbox.protocol.StorageStatus`, as JSON.
+    STORAGE = "storage"
 
 
 @dataclass

@@ -324,7 +324,8 @@ makes one call from product code (with `await sandbox.endpoint()`); every
 runner encodes results the same way.
 
 A sandbox serves several named toolsets from one host (`python -m
-actant.sandbox.entry -- --toolset=name=pkg.mod:Class ...`). Give the model its
+actant.sandbox.entry '{"host": {"toolsets": {"name": "pkg.mod:Class"}}}'`, an
+`actant.sandbox.protocol.EntryConfig`). Give the model its
 tools on one class and put the product's own calls on another, instead of
 filtering methods. The host keeps one instance per toolset and thread and runs
 calls concurrently. Toolsets do not share instances: two classes over the same
@@ -333,7 +334,7 @@ state build it from the same `init` (the sandbox's files, or an object their
 start scripts should pass `env=actant.sandbox.host.script_env()` so the
 scripts do not inherit `scrub_env`. On Modal the host is the sandbox
 entrypoint, readiness is a TCP probe on `toolset_port`, `disk_sync` storage is
-restored before it listens and pushed after calls, and requests go through a
+restored before it listens and pushed after calls and periodically, and requests go through a
 Modal connect token (cached, re-minted on a 401), so no port is public.
 Connections are kept alive and pooled, so a call costs one round trip.
 `Sandbox.close` asks the host to shut down: it calls each instance's `close`,
@@ -341,6 +342,28 @@ pushes `disk_sync` storage once more, and exits (SIGTERM, SIGINT and SIGHUP do
 the same). Modal's `terminate`, `timeout` and `idle_timeout` kill the container
 outright, so `close` does not run on those paths. The image needs actant and
 the toolsets' package installed.
+
+Storage pushes never fail or stall a run. The host pushes after calls and every
+`SandboxSpec.sync_interval_s` (default 60) while completed calls are unpushed,
+one push at a time; a push running longer than `sync_timeout_s` (default 300)
+is killed and the next still runs. A failure is logged and reported: every call
+through a host that pushes carries `ToolResult.metadata[MetadataKey.STORAGE]`, the
+JSON of an `actant.sandbox.StorageStatus` (read it with
+`StorageStatus.model_validate`):
+
+| Field | Meaning |
+| --- | --- |
+| `last_attempt_at` | Unix time the latest push started, or `None` |
+| `last_success_at` | Unix time the latest successful push started, or `None` |
+| `last_error` | Short reason the latest push failed; `None` once one succeeds |
+| `consecutive_failures` | Failed pushes since the last success |
+| `pending` | Completed calls not yet covered by a successful push |
+
+Warn when `consecutive_failures` is non-zero. The final push on shutdown is
+bounded the same way, so shutdown finishes even when storage is unreachable;
+`Sandbox.sync` and `close` never wait without bound. A restore that fails or
+exceeds 30 minutes fails startup. Restored files take their objects' mtimes,
+so a push uploads only files changed since.
 
 ## Finishing a task
 

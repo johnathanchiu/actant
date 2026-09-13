@@ -12,6 +12,7 @@ from actant.sandbox.base import (
     SandboxSpec,
     Storage,
 )
+from actant.sandbox.protocol import StorageStatus
 from actant.sandbox.local import LocalSandbox, LocalSandboxProvider
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "SandboxProvider",
     "SandboxSpec",
     "Storage",
+    "StorageStatus",
 ]

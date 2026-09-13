@@ -4,6 +4,32 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.10.0
+
+**Breaking:** `python -m actant.sandbox.entry` takes one `EntryConfig` JSON document
+(see below); a sandbox image must carry the same actant version as the worker.
+
+- Storage sync never fails or stalls a run. The toolset host kills a push after
+  `SandboxSpec.sync_timeout_s` (default 300) and keeps pushing; it also pushes every
+  `sync_interval_s` (default 60) while completed calls are unpushed. The final push
+  on shutdown is bounded the same way.
+- Push status is visible: call responses carry `storage`, surfaced as
+  `ToolResult.metadata["storage"]` (`last_attempt_at`, `last_success_at`,
+  `last_error`, `consecutive_failures`, `pending`).
+- `disk_sync` restore has a timeout (fails startup) and gives restored files their
+  objects' mtimes, so pushes no longer re-upload the whole workspace after a restore.
+- `ModalSandbox.sync` and `close` are bounded even when Modal's API hangs, and
+  `close` never raises (failures are logged).
+- `SandboxSpec` rejects a non-positive `sync_interval_s` or `sync_timeout_s`.
+- Typed wire and launch messages in `actant.sandbox.protocol`: host bodies are
+  `CallRequest`/`CallResponse` (JSON unchanged; a malformed call body is now HTTP
+  400), `StorageStatus` is exported from `actant.sandbox`, routes and headers are
+  `Route`/`Header`, and `actant.tools.MetadataKey` names the runtime's metadata keys.
+- **Entrypoint command line:** `python -m actant.sandbox.entry` now takes one
+  `EntryConfig` JSON document instead of `--restore`/`--` host flags, and
+  `host.launch_args`, `host.CALL_PATH` and `host.SHUTDOWN_PATH` are gone. The
+  image's actant must match the worker's.
+
 ## 0.9.0
 
 **Breaking:** the `Sandbox` protocol gains `sync()` and `endpoint(refresh=)`; a

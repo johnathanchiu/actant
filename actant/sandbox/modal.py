@@ -10,8 +10,10 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     Files live on the container's own disk under :data:`DISK_PATH`, with normal
     POSIX semantics. ``open`` restores the prefix onto the disk with s5cmd and
     :meth:`ModalSandbox.sync` pushes it back, deleting remote files removed
-    locally; a toolset host also pushes after its calls, and ``close`` pushes
-    once more. The tradeoff: s5cmd
+    locally; a toolset host also pushes after its calls and every
+    ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
+    pushes once more. Restored files get their objects' mtimes, so a push
+    uploads only what changed. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
     needs s5cmd (:func:`with_s5cmd`).
@@ -44,6 +46,7 @@ import asyncio
 import contextlib
 import importlib
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -53,13 +56,24 @@ from urllib.parse import urlsplit
 import actant.sandbox.entry as entry
 import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec, Storage
+from actant.sandbox.protocol import (
+    EntryConfig,
+    Header,
+    HostConfig,
+    PushConfig,
+    RestoreConfig,
+    Route,
+    StampConfig,
+)
 
 MOUNT_PATH = "/mnt/sandbox"
 DISK_PATH = "/root/sandbox"
 THREAD_TAG = "actant_thread"
+_log = logging.getLogger(__name__)
+#: How long the restore (and the readiness wait around it) may take.
 SYNC_TIMEOUT_S = 1800
-#: How long ``close`` lets the final push run before terminating anyway.
-CLOSE_SYNC_TIMEOUT_S = 300
+#: Slack over a command's own timeout for Modal's API round trips.
+API_SLACK_S = 60
 S5CMD_VERSION = "2.3.0"
 S5CMD_URL = (
     f"https://github.com/peak/s5cmd/releases/download/v{S5CMD_VERSION}/"
@@ -131,12 +145,11 @@ class ModalSandboxProvider:
         command: list[str] = []
         probe = None
         if disk_sync or spec.toolsets:
-            command = ["python", "-m", entry.__name__]
+            config = self.entry_config(spec, thread_id)
+            command = ["python", "-m", entry.__name__, config.model_dump_json()]
             if disk_sync:
-                command += ["--restore", json.dumps(self.restore_argv(thread_id))]
                 probe = modal.Probe.with_exec("test", "-f", entry.READY_FILE)
             if spec.toolsets:
-                command += ["--", *self._host_args(spec, thread_id)]
                 probe = modal.Probe.with_tcp(spec.toolset_port)
         sandbox = await modal.Sandbox.create.aio(
             *command,
@@ -198,6 +211,7 @@ class ModalSandboxProvider:
             spec.env,
             root=DISK_PATH if disk_sync else MOUNT_PATH,
             sync_argv=self.sync_argv(thread_id) if disk_sync else None,
+            sync_timeout_s=spec.sync_timeout_s,
             scrub_env=spec.scrub_env,
             toolset_port=spec.toolset_port if spec.toolsets else None,
         )
@@ -222,13 +236,31 @@ class ModalSandboxProvider:
             )
         return {"outbound_domain_allowlist": [bucket_host]}
 
-    def _host_args(self, spec: SandboxSpec, thread_id: str) -> list[str]:
-        args = host.launch_args(
-            spec.toolsets, port=spec.toolset_port, bind="0.0.0.0", scrub=spec.scrub_env
-        )
-        if spec.storage == Storage.DISK_SYNC:
-            args += ["--push", json.dumps(self.sync_argv(thread_id))]
-        return args
+    def entry_config(self, spec: SandboxSpec, thread_id: str) -> EntryConfig:
+        """The entrypoint's config: restore a ``disk_sync`` disk, then serve the toolsets."""
+        disk_sync = spec.storage == Storage.DISK_SYNC
+        restore = push = None
+        if disk_sync:
+            restore = RestoreConfig(
+                argv=self.restore_argv(thread_id),
+                timeout_s=SYNC_TIMEOUT_S,
+                stamp=self.stamp_config(thread_id),
+            )
+            push = PushConfig(
+                argv=self.sync_argv(thread_id),
+                interval_s=spec.sync_interval_s,
+                timeout_s=spec.sync_timeout_s,
+            )
+        served = None
+        if spec.toolsets:
+            served = HostConfig(
+                toolsets=dict(spec.toolsets),
+                port=spec.toolset_port,
+                bind="0.0.0.0",
+                scrub=list(spec.scrub_env),
+                push=push,
+            )
+        return EntryConfig(restore=restore, host=served)
 
     def _remote(self, thread_id: str) -> str:
         return f"s3://{self.bucket}/{self.key_prefix}{thread_id}/"
@@ -244,6 +276,11 @@ class ModalSandboxProvider:
     def restore_argv(self, thread_id: str) -> list[str]:
         """Pull a thread's prefix onto the disk (never deletes)."""
         return self._s5cmd("sync", f"{self._remote(thread_id)}*", f"{DISK_PATH}/")
+
+    def stamp_config(self, thread_id: str) -> StampConfig:
+        """List the prefix after a restore, so restored files keep their objects' mtimes."""
+        argv = ["s5cmd", "--json", *self._s5cmd("ls", f"{self._remote(thread_id)}*")[1:]]
+        return StampConfig(argv=argv, prefix=self._remote(thread_id), root=DISK_PATH)
 
 
 def with_s5cmd(image: Any) -> Any:
@@ -263,8 +300,10 @@ class ModalSandbox:
         sync_argv: Sequence[str] | None = None,
         scrub_env: Sequence[str] = (),
         toolset_port: int | None = None,
+        sync_timeout_s: float = 300.0,
     ) -> None:
         self._sandbox = sandbox
+        self._sync_timeout = sync_timeout_s
         self._env = dict(env)
         self._scrub = tuple(scrub_env)
         self._root = root
@@ -282,7 +321,7 @@ class ModalSandbox:
             return None
         if self._endpoint is None or refresh:
             creds = await self._sandbox.create_connect_token.aio(port=self._toolset_port)
-            self._endpoint = Endpoint(creds.url, {"Authorization": f"Bearer {creds.token}"})
+            self._endpoint = Endpoint(creds.url, {Header.AUTHORIZATION: f"Bearer {creds.token}"})
         return self._endpoint
 
     @staticmethod
@@ -343,26 +382,44 @@ class ModalSandbox:
         if self._sync_argv is None:
             return ExecResult(0, "", "")
         # Unscrubbed: s5cmd needs the bucket keys that ``scrub_env`` usually lists.
-        return await self._run(self._sync_argv, timeout=SYNC_TIMEOUT_S)
+        return await self._bounded_sync()
+
+    async def _bounded_sync(self) -> ExecResult:
+        """The push, killed in the container after ``sync_timeout_s``; a Modal API call that
+        hangs past that plus :data:`API_SLACK_S` is reported as timed out, never awaited."""
+        assert self._sync_argv is not None
+        try:
+            return await asyncio.wait_for(
+                self._run(self._sync_argv, timeout=self._sync_timeout),
+                self._sync_timeout + API_SLACK_S,
+            )
+        except TimeoutError:
+            return ExecResult(124, "", "sync did not return in time\n", timed_out=True)
 
     async def close(self) -> None:
         """Stop the toolset host gracefully (its instances close and it pushes a ``disk_sync``
         disk), or push the disk here when there is no host; then terminate.
 
-        Best effort and bounded. Modal's ``terminate``, ``timeout`` and ``idle_timeout``
+        Best effort, bounded, and never raises. Modal's ``terminate``, ``timeout`` and ``idle_timeout``
         kill the container outright, so this is the only path on which ``close`` runs.
         """
         if not await self._stop_host() and self._sync_argv is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(
-                    self._run(self._sync_argv, timeout=CLOSE_SYNC_TIMEOUT_S),
-                    CLOSE_SYNC_TIMEOUT_S + 30,
-                )
+            try:
+                pushed = await self._bounded_sync()
+                if pushed.returncode:
+                    tail = pushed.stderr[-500:]
+                    _log.warning("%r: final push exited %d: %s", self, pushed.returncode, tail)
+            except Exception:  # noqa: BLE001 -- close never raises
+                _log.warning("%r: final push failed", self, exc_info=True)
         # ``terminate`` only requests the stop; wait so ``attach`` sees it finished.
-        await self._sandbox.terminate.aio()
         # ``wait`` raises for a sandbox that ended by timeout; that is still closed.
+        try:
+            await asyncio.wait_for(self._sandbox.terminate.aio(), API_SLACK_S)
+        except Exception:  # noqa: BLE001 -- close never raises
+            _log.warning("%r: terminate failed", self, exc_info=True)
+            return
         with contextlib.suppress(Exception):
-            await self._sandbox.wait.aio(raise_on_termination=False)
+            await asyncio.wait_for(self._sandbox.wait.aio(raise_on_termination=False), API_SLACK_S)
 
     async def _stop_host(self) -> bool:
         """``POST /v1/shutdown``; whether the host confirmed it closed and pushed."""
@@ -370,10 +427,12 @@ class ModalSandbox:
             return False
         with contextlib.suppress(Exception):
             for refresh in (False, True):
-                endpoint = await self.endpoint(refresh=refresh)
+                endpoint = await asyncio.wait_for(self.endpoint(refresh=refresh), API_SLACK_S)
                 assert endpoint is not None
+                # The host's final push may wait for a running one: two timeouts.
+                timeout = 2 * self._sync_timeout + API_SLACK_S
                 status, _ = await asyncio.to_thread(
-                    host.post, endpoint, host.SHUTDOWN_PATH, b"{}", CLOSE_SYNC_TIMEOUT_S
+                    host.post, endpoint, Route.SHUTDOWN, b"{}", timeout
                 )
                 if status != HTTPStatus.UNAUTHORIZED:
                     return status == HTTPStatus.OK

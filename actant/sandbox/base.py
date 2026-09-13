@@ -149,10 +149,18 @@ class SandboxSpec:
     toolsets: Mapping[str, str] = field(default_factory=dict)
     #: The port the host listens on inside a container. ``local`` picks a free one.
     toolset_port: int = 8080
+    #: ``disk_sync``: the toolset host pushes every this many seconds while calls have
+    #: completed since its last successful push (and after calls).
+    sync_interval_s: float = 60.0
+    #: ``disk_sync``: a push running longer is killed; the next one still runs.
+    #: :meth:`Sandbox.sync` and ``close`` are bounded by it too.
+    sync_timeout_s: float = 300.0
 
     def __post_init__(self) -> None:
         # Coerce (and validate) a plain string from an untyped config.
         object.__setattr__(self, "storage", Storage(self.storage))
+        if self.sync_interval_s <= 0 or self.sync_timeout_s <= 0:
+            raise ValueError("sync_interval_s and sync_timeout_s must be positive")
 
 
 class SandboxProvider(Protocol):
