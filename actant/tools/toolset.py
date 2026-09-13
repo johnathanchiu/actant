@@ -20,8 +20,8 @@ blocks the LLM adapters accept.
 
 The same :func:`tools` run the methods through any :class:`Runner`:
 :class:`LocalRunner` in-process, :class:`RemoteRunner` against a host endpoint,
-or :class:`SandboxRunner` against the calling thread's sandbox (the spec's
-``toolset``). Every runner encodes results the same way, so switching between
+or :class:`SandboxRunner` against the calling thread's sandbox (a name in the
+spec's ``toolsets``). Every runner encodes results the same way, so switching between
 them changes where the code runs and nothing the model sees.
 """
 
@@ -97,39 +97,54 @@ class LocalRunner:
 
 
 class RemoteRunner:
-    """Runs methods on a toolset host. ``key`` names the host-side instance, created
-    from ``init`` on its first call."""
+    """Runs methods of the host's ``toolset``. ``key`` names the host-side instance,
+    created from ``init`` on its first call."""
 
     needs_sandbox = False
 
     def __init__(
         self,
         endpoint: Endpoint,
+        toolset: str,
         key: str,
         init: Mapping[str, object] | None = None,
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT_S,
     ) -> None:
         self.endpoint = endpoint
+        self.toolset = toolset
         self.key = key
         self.init = dict(init or {})
         self.timeout = timeout
 
     async def call(self, method: str, args: Mapping[str, object], ctx: CallContext) -> ToolResult:
         del ctx
-        return await call_host(self.endpoint, self.key, self.init, method, args, self.timeout)
+        return await call_host(
+            self.endpoint,
+            self.toolset,
+            method,
+            args,
+            key=self.key,
+            init=self.init,
+            timeout=self.timeout,
+        )
 
 
 class SandboxRunner:
-    """Runs methods on the host serving the calling thread's sandbox (``SandboxSpec.toolset``),
-    one instance per thread, created from ``init``. A connect credential the host
-    rejects is refreshed once through :meth:`Sandbox.endpoint`."""
+    """Runs methods of ``toolset`` (a name in ``SandboxSpec.toolsets``) on the host in the
+    calling thread's sandbox, one instance per thread, created from ``init``. A connect
+    credential the host rejects is refreshed once through :meth:`Sandbox.endpoint`."""
 
     needs_sandbox = True
 
     def __init__(
-        self, init: Mapping[str, object] | None = None, *, timeout: float = DEFAULT_CALL_TIMEOUT_S
+        self,
+        toolset: str,
+        init: Mapping[str, object] | None = None,
+        *,
+        timeout: float = DEFAULT_CALL_TIMEOUT_S,
     ) -> None:
+        self.toolset = toolset
         self.init = dict(init or {})
         self.timeout = timeout
 
@@ -137,40 +152,43 @@ class SandboxRunner:
         sandbox = ctx.sandbox
         endpoint = await sandbox.endpoint() if sandbox is not None else None
         if sandbox is None or endpoint is None:
-            return ToolResult.fail("this thread's sandbox serves no toolset (SandboxSpec.toolset)")
-        status, result = await _call(
-            endpoint, ctx.thread_id, self.init, method, args, self.timeout
-        )
+            return ToolResult.fail(
+                "this thread's sandbox serves no toolsets (SandboxSpec.toolsets)"
+            )
+        body = _body(self.toolset, ctx.thread_id, self.init, method, args)
+        status, result = await _send(endpoint, body, self.timeout)
         if status == HTTPStatus.UNAUTHORIZED:  # rejected before running: safe to retry
             endpoint = await sandbox.endpoint(refresh=True)
             assert endpoint is not None
-            _, result = await _call(endpoint, ctx.thread_id, self.init, method, args, self.timeout)
+            _, result = await _send(endpoint, body, self.timeout)
         return result
 
 
 async def call_host(
     endpoint: Endpoint,
-    key: str,
-    init: Mapping[str, object],
+    toolset: str,
     method: str,
     args: Mapping[str, object],
+    *,
+    key: str,
+    init: Mapping[str, object] | None = None,
     timeout: float = DEFAULT_CALL_TIMEOUT_S,
 ) -> ToolResult:
     """``POST /v1/call`` to a toolset host. Transport failures become failed results."""
-    return (await _call(endpoint, key, init, method, args, timeout))[1]
+    body = _body(toolset, key, init or {}, method, args)
+    return (await _send(endpoint, body, timeout))[1]
 
 
-async def _call(
-    endpoint: Endpoint,
-    key: str,
-    init: Mapping[str, object],
-    method: str,
-    args: Mapping[str, object],
-    timeout: float,
-) -> tuple[int | None, ToolResult]:
-    body = json.dumps({"key": key, "init": dict(init), "method": method, "args": dict(args)})
+def _body(
+    toolset: str, key: str, init: Mapping[str, object], method: str, args: Mapping[str, object]
+) -> bytes:
+    request = {"toolset": toolset, "key": key, "init": dict(init), "method": method}
+    return json.dumps({**request, "args": dict(args)}).encode()
+
+
+async def _send(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int | None, ToolResult]:
     try:
-        status, data = await asyncio.to_thread(_post, endpoint, body.encode(), timeout)
+        status, data = await asyncio.to_thread(_post, endpoint, body, timeout)
     except OSError as error:
         return None, ToolResult.fail(f"toolset host unreachable at {endpoint.url}: {error}")
     try:

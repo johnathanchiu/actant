@@ -147,7 +147,7 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     spec = SandboxSpec(
         backend="modal",
         storage=Storage.DISK_SYNC,
-        toolset="pkg.tools:Notes",
+        toolsets={"notes": "pkg.tools:Notes"},
         toolset_port=9000,
         gpu="L4",
         network=True,
@@ -164,8 +164,8 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
         "python", "-m", "actant.sandbox.entry",
         "--restore", json.dumps(restore),
         "--",
-        "--toolset", "pkg.tools:Notes", "--port", "9000", "--bind", "0.0.0.0",
-        "--scrub", "SERVICE_KEY", "--scrub", "AWS_SECRET_ACCESS_KEY",
+        "--toolset=notes=pkg.tools:Notes", "--port", "9000", "--bind", "0.0.0.0",
+        "--scrub=SERVICE_KEY", "--scrub=AWS_SECRET_ACCESS_KEY",
         "--push", json.dumps(push),
     ]  # fmt: skip
     assert kw["readiness_probe"] == _Probe(tcp=9000)
@@ -241,7 +241,7 @@ async def test_open_fails_with_the_entrypoint_stderr_when_never_ready(
 ) -> None:
     fake = _FakeModal(ready_error=TimeoutError("probe"), exit_code=1)
     _use(monkeypatch, fake)
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, toolset="pkg:T")
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, toolsets={"t": "pkg:T"})
     with pytest.raises(RuntimeError, match="access denied"):
         await provider.open(spec, agent_id="a", thread_id="t1")
     assert fake.terminated

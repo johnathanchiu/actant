@@ -23,16 +23,16 @@ Modal secret holding ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` (plus
 cloudflared tunnel included); s5cmd uses path-style addressing for any custom
 endpoint, which MinIO needs.
 
-A spec's toolset is served by :mod:`actant.sandbox.host`, launched as the
+A spec's toolsets are served by :mod:`actant.sandbox.host`, launched as the
 sandbox entrypoint through :mod:`actant.sandbox.entry` (which restores
 ``disk_sync`` storage first). Readiness is a TCP probe on the host's port: the
-host binds only after the restore and the toolset import. The endpoint is a
+host binds only after the restore and the toolset imports. The endpoint is a
 Modal connect token for that port: Modal's proxy authenticates each request and
 no port is exposed publicly. The token is minted with the worker's Modal client
 on first use, cached on the handle, and re-minted only when the proxy rejects it,
 so nothing secret is persisted. The provider keeps the handles it made, so the
 per-call ``attach`` is one ``poll``. The image must have actant and
-the toolset's package installed.
+the toolsets' package installed.
 
 Requires the ``modal`` extra. Imported lazily so the package stays importable
 without it.
@@ -50,6 +50,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import actant.sandbox.entry as entry
+import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec, Storage
 
 MOUNT_PATH = "/mnt/sandbox"
@@ -128,12 +129,12 @@ class ModalSandboxProvider:
             }
         command: list[str] = []
         probe = None
-        if disk_sync or spec.toolset:
+        if disk_sync or spec.toolsets:
             command = ["python", "-m", entry.__name__]
             if disk_sync:
                 command += ["--restore", json.dumps(self.restore_argv(thread_id))]
                 probe = modal.Probe.with_exec("test", "-f", entry.READY_FILE)
-            if spec.toolset:
+            if spec.toolsets:
                 command += ["--", *self._host_args(spec, thread_id)]
                 probe = modal.Probe.with_tcp(spec.toolset_port)
         sandbox = await modal.Sandbox.create.aio(
@@ -197,7 +198,7 @@ class ModalSandboxProvider:
             root=DISK_PATH if disk_sync else MOUNT_PATH,
             sync_argv=self.sync_argv(thread_id) if disk_sync else None,
             scrub_env=spec.scrub_env,
-            toolset_port=spec.toolset_port if spec.toolset else None,
+            toolset_port=spec.toolset_port if spec.toolsets else None,
         )
         self._live[handle.id] = (sandbox, handle)
         return handle
@@ -213,18 +214,17 @@ class ModalSandboxProvider:
             return {}
         if spec.storage != Storage.DISK_SYNC:
             return {"outbound_cidr_allowlist": []}
-        host = urlsplit(self.endpoint_url or "").hostname
-        if host is None:
+        bucket_host = urlsplit(self.endpoint_url or "").hostname
+        if bucket_host is None:
             raise ValueError(
                 "disk_sync without network needs endpoint_url: s5cmd may reach only that host"
             )
-        return {"outbound_domain_allowlist": [host]}
+        return {"outbound_domain_allowlist": [bucket_host]}
 
     def _host_args(self, spec: SandboxSpec, thread_id: str) -> list[str]:
-        assert spec.toolset
-        args = ["--toolset", spec.toolset, "--port", str(spec.toolset_port), "--bind", "0.0.0.0"]
-        for name in spec.scrub_env:
-            args += ["--scrub", name]
+        args = host.launch_args(
+            spec.toolsets, port=spec.toolset_port, bind="0.0.0.0", scrub=spec.scrub_env
+        )
         if spec.storage == Storage.DISK_SYNC:
             args += ["--push", json.dumps(self.sync_argv(thread_id))]
         return args

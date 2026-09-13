@@ -1,4 +1,4 @@
-"""The toolset host: serves one toolset class over HTTP from inside a sandbox.
+"""The toolset host: serves named toolset classes over HTTP from inside a sandbox.
 
 A toolset is a plain class whose public ``async def`` methods are tools (see
 :mod:`actant.tools.toolset`). Running its methods next to the sandbox's files
@@ -7,21 +7,26 @@ image bytes cross the boundary.
 
 ::
 
-    python -m actant.sandbox.entry -- --toolset pkg.mod:Class --port 8080
+    python -m actant.sandbox.entry -- --toolset tools=pkg.mod:Tools \
+        --toolset stages=pkg.mod:Stages --port 8080
 
 (:mod:`actant.sandbox.entry` is the command line; this module is imported, never
 run as ``__main__``, so :func:`script_env` sees the configuration ``main`` set.)
 
-The toolset is fixed at launch. Requests name a method and never a module.
+Toolsets are fixed at launch. Requests name a toolset and a method, never a module.
+Several toolsets let a product keep the model's tools on one class and the calls
+its own code makes (setup, stages, checks) on another, without filtering.
 
 Protocol (JSON bodies)::
 
-    POST /v1/call {key, init, method, args}          -> {text, images, error}
+    POST /v1/call {toolset, key, init, method, args} -> {text, images, error}
          images: [{name, media_type, data_b64}]
 
-One instance per ``key``, created on its first call with ``init``
+One instance per ``(toolset, key)``, created on its first call with ``init``
 (``await Class.open(**init)`` when the class defines ``open``, else
 ``Class(**init)``); later calls with that key reuse it and ignore ``init``.
+Toolsets do not share instances: two classes that work on the same state build it
+from the same ``init`` (the sandbox's files, or an object their ``open`` looks up).
 Arguments are validated against the method's signature before the call, so a
 parameter annotated with a pydantic model or a ``Literal`` receives that type.
 Calls run concurrently. When ``ACTANT_HOST_TOKEN`` is set at launch, every call
@@ -215,41 +220,60 @@ async def open_instance(cls: type, init: Mapping[str, object]) -> object:
     return await opener(**init) if opener is not None else cls(**init)
 
 
+def launch_args(
+    toolsets: Mapping[str, str], *, port: int, bind: str, scrub: Sequence[str] = ()
+) -> list[str]:
+    """The host's command line for ``toolsets`` (name to ``"pkg.mod:Class"``)."""
+    args = [f"--toolset={name}={path}" for name, path in toolsets.items()]
+    args += ["--port", str(port), "--bind", bind]
+    return args + [f"--scrub={name}" for name in scrub]
+
+
 class Host:
     def __init__(
-        self, cls: type, *, token: str | None = None, push: Sequence[str] | None = None
+        self,
+        toolsets: Mapping[str, type],
+        *,
+        token: str | None = None,
+        push: Sequence[str] | None = None,
     ) -> None:
-        self.cls = cls
-        self.methods = frozenset(public_methods(cls))
+        self.toolsets = dict(toolsets)
+        self.methods = {name: frozenset(public_methods(cls)) for name, cls in toolsets.items()}
         self.token = token
         self.push = list(push) if push else None
         # Futures, not instances: two parallel first calls share one ``open``.
-        self.instances: dict[str, asyncio.Future[object]] = {}
+        self.instances: dict[tuple[str, str], asyncio.Future[object]] = {}
         self._push_due = asyncio.Event()
 
-    async def instance(self, key: str, init: Mapping[str, object]) -> object:
-        future = self.instances.get(key)
+    async def instance(self, toolset: str, key: str, init: Mapping[str, object]) -> object:
+        slot = (toolset, key)
+        future = self.instances.get(slot)
         if future is None:
-            future = self.instances[key] = asyncio.ensure_future(open_instance(self.cls, init))
+            opening = open_instance(self.toolsets[toolset], init)
+            future = self.instances[slot] = asyncio.ensure_future(opening)
         try:
             return await future
         except BaseException:
             # The next call retries ``open``, unless a retry already replaced this one.
-            if self.instances.get(key) is future:
-                del self.instances[key]
+            if self.instances.get(slot) is future:
+                del self.instances[slot]
             raise
 
     async def call(self, body: Mapping[str, object]) -> tuple[HTTPStatus, dict[str, object]]:
-        method, key = body.get("method"), body.get("key")
+        toolset, method, key = body.get("toolset"), body.get("method"), body.get("key")
         init, args = body.get("init") or {}, body.get("args") or {}
         if not isinstance(key, str) or not isinstance(init, dict) or not isinstance(args, dict):
             return HTTPStatus.BAD_REQUEST, response(
                 error="`key` must be a string; `init` and `args` objects"
             )
-        if method not in self.methods:
+        if not isinstance(toolset, str) or toolset not in self.toolsets:
+            return HTTPStatus.NOT_FOUND, response(
+                error=f"unknown toolset {toolset!r}; served: {sorted(self.toolsets)}"
+            )
+        if method not in self.methods[toolset]:
             return HTTPStatus.NOT_FOUND, response(error=f"unknown tool method {method!r}")
         try:
-            instance = await self.instance(key, init)
+            instance = await self.instance(toolset, key, init)
             return HTTPStatus.OK, await call_method(instance, str(method), args)
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
             return HTTPStatus.OK, failure(error)
@@ -362,15 +386,23 @@ async def serve(host: Host, bind: str, port: int) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     global _scrub
     parser = argparse.ArgumentParser(prog="python -m actant.sandbox.entry --")
-    parser.add_argument("--toolset", required=True, help="pkg.mod:Class")
+    parser.add_argument(
+        "--toolset", action="append", required=True, help="NAME=pkg.mod:Class, repeatable"
+    )
     parser.add_argument("--port", type=int, default=8080, help="0 picks a free port")
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--scrub", action="append", default=[], help="name script_env() removes")
     parser.add_argument("--push", help="JSON argv run (debounced) after calls to push storage")
     args = parser.parse_args(argv)
     _scrub = frozenset(args.scrub)
+    toolsets: dict[str, type] = {}
+    for spec in args.toolset:
+        name, sep, path = spec.partition("=")
+        if not sep or not name or not path:
+            parser.error(f"--toolset {spec!r}: expected NAME=pkg.mod:Class")
+        toolsets[name] = load(path)
     host = Host(
-        load(args.toolset),
+        toolsets,
         token=os.environ.pop(TOKEN_ENV, None),
         push=json.loads(args.push) if args.push else None,
     )

@@ -299,25 +299,40 @@ local_tools = tools(Notebook, LocalRunner(Notebook("scratch")))
 # In the thread's sandbox: the spec names the class, the host serves it there.
 agent = AgentDefinition(
     ...,
-    tools=ToolRegistry(tools(Notebook, SandboxRunner(init={"title": "scratch"}))),
-    sandbox=SandboxSpec(backend="modal", toolset="myproduct.notebook:Notebook"),
+    tools=ToolRegistry(tools(Notebook, SandboxRunner("notebook", init={"title": "scratch"}))),
+    sandbox=SandboxSpec(
+        backend="modal",
+        toolsets={
+            "notebook": "myproduct.notebook:Notebook",
+            # Calls the product makes itself, kept off the model's tool list.
+            "pipeline": "myproduct.notebook:Pipeline",
+        },
+    ),
 )
 ```
 
 A method returns a `str`, an object with `.text` and `.images` (image file
 paths or bytes, sent as image content blocks), or any JSON value. An exception
-becomes a failed result with the traceback tail. `RemoteRunner(endpoint, key,
-init)` calls a host you reach yourself; every runner encodes results the same
-way.
+becomes a failed result with the traceback tail. Arguments are validated
+against the signature, so a parameter typed as a pydantic model arrives as
+that model. `RemoteRunner(endpoint, toolset, key, init)` calls a host you
+reach yourself, and `call_host(endpoint, toolset, method, args, key=...)`
+makes one call from product code (with `await sandbox.endpoint()`); every
+runner encodes results the same way.
 
-The host (`python -m actant.sandbox.entry -- --toolset pkg.mod:Class`) keeps
-one instance per thread and runs calls concurrently. Inside it, tools that
+A sandbox serves several named toolsets from one host (`python -m
+actant.sandbox.entry -- --toolset=name=pkg.mod:Class ...`). Give the model its
+tools on one class and put the product's own calls on another, instead of
+filtering methods. The host keeps one instance per toolset and thread and runs
+calls concurrently. Toolsets do not share instances: two classes over the same
+state build it from the same `init` (the sandbox's files, or an object their
+`open` looks up). Inside it, tools that
 start scripts should pass `env=actant.sandbox.host.script_env()` so the
 scripts do not inherit `scrub_env`. On Modal the host is the sandbox
 entrypoint, readiness is a TCP probe on `toolset_port`, `disk_sync` storage is
 restored before it listens and pushed after calls, and requests go through a
-Modal connect token, so no port is public. The image needs actant and the
-toolset's package installed.
+Modal connect token (cached, re-minted on a 401), so no port is public. The
+image needs actant and the toolsets' package installed.
 
 ## Finishing a task
 

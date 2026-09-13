@@ -2,7 +2,7 @@
 
 No isolation. It is the development backend and the one tests use; in
 production the directory is whatever the operator mounted there. A spec's
-toolset is served by a host subprocess on 127.0.0.1 with a random token.
+toolsets are served by a host subprocess on 127.0.0.1 with a random token.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec
 
-#: How long a host may take to import its toolset and bind.
+#: How long a host may take to import its toolsets and bind.
 HOST_START_TIMEOUT_S = 60
 #: :mod:`actant.sandbox.entry`, named not imported: running a module this package imports
 #: with ``-m`` would load it twice.
@@ -148,13 +148,11 @@ class LocalSandbox:
 
 
 async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.subprocess.Process]:
-    """Launch ``spec.toolset``'s host in ``root`` on a free port; return once it listens."""
-    assert spec.toolset
+    """Launch the host for ``spec.toolsets`` in ``root`` on a free port; return once it listens."""
+    assert spec.toolsets
     token = secrets.token_urlsafe(32)
-    argv = [sys.executable, "-m", ENTRY_MODULE, "--", "--toolset", spec.toolset]
-    argv += ["--bind", "127.0.0.1", "--port", "0"]
-    for name in spec.scrub_env:
-        argv += ["--scrub", name]
+    argv = [sys.executable, "-m", ENTRY_MODULE, "--"]
+    argv += host.launch_args(spec.toolsets, port=0, bind="127.0.0.1", scrub=spec.scrub_env)
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=root,
@@ -172,7 +170,7 @@ async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.s
             process.kill()
         await process.wait()
         raise RuntimeError(
-            f"toolset host for {spec.toolset} did not start (exit {process.returncode})"
+            f"toolset host for {dict(spec.toolsets)} did not start (exit {process.returncode})"
         )
     # Keep reading: a tool that prints would otherwise fill the pipe and stall the host.
     _drains.add(task := asyncio.create_task(_forward(process.stdout)))
@@ -218,7 +216,7 @@ class LocalSandboxProvider:
         live = self._live.get(root)
         if live and live.host_process and live.host_process.returncode is None:
             return live
-        if not spec.toolset:
+        if not spec.toolsets:
             return LocalSandbox(root, spec.env, spec.scrub_env)
         endpoint, process = await start_host(spec, root)
         sandbox = LocalSandbox(

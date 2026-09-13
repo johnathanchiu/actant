@@ -27,6 +27,7 @@ from actant.tools.toolset import (
     RemoteRunner,
     Runner,
     SandboxRunner,
+    call_host,
     tools,
     toolset_schema,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "ToolWaitRequest",
     "make_tool_schema",
     "supervision_tools",
+    "call_host",
     "tool",
     "tools",
     "toolset_schema",

@@ -76,3 +76,14 @@ class Counter:
 
     async def env(self, name: str) -> dict[str, str | None]:
         return {"host": os.environ.get(name), "script": script_env().get(name)}
+
+
+class Stages:
+    """A second toolset for the product's own calls, served next to ``Counter``."""
+
+    def __init__(self) -> None:
+        self.stage = 0
+
+    async def advance(self) -> str:
+        self.stage += 1
+        return f"stage {self.stage}"

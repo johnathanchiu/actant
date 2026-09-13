@@ -19,13 +19,13 @@ from actant.sandbox import host
 from actant.tools import LocalRunner, RemoteRunner, SandboxRunner, tools, toolset_schema
 from actant.tools.base import CallContext, ToolResult
 from actant.tools.toolset import call_host
-from toolset_fixtures import Counter
+from toolset_fixtures import Counter, Stages
 
 if TYPE_CHECKING:
     from some_module_that_only_type_checkers_see import Thing  # noqa: F401
 
 TESTS = str(Path(__file__).parent)
-TOOLSET = "toolset_fixtures:Counter"
+TOOLSETS = {"counter": "toolset_fixtures:Counter", "stages": "toolset_fixtures:Stages"}
 
 
 def _ctx(sandbox: LocalSandbox | None = None, thread: str = "t") -> CallContext:
@@ -95,7 +95,7 @@ async def test_invalid_arguments_fail_at_build() -> None:
 async def sandbox(tmp_path: Path) -> AsyncIterator[LocalSandbox]:
     provider = LocalSandboxProvider(tmp_path)
     spec = SandboxSpec(
-        toolset=TOOLSET,
+        toolsets=TOOLSETS,
         env={"PYTHONPATH": TESTS, "SERVICE_KEY": "k"},
         scrub_env=("SERVICE_KEY",),
     )
@@ -120,7 +120,7 @@ async def test_local_and_remote_runners_give_identical_results(
     assert endpoint is not None
     monkeypatch.chdir(sandbox.root)
     local = LocalRunner(Counter())
-    remote = RemoteRunner(endpoint, key="k1")
+    remote = RemoteRunner(endpoint, "counter", key="k1")
     for method, args in [
         ("bump", {"by": 2}),
         ("length", {"text": "hello"}),
@@ -146,8 +146,8 @@ async def test_instances_are_per_key_opened_once_and_calls_run_in_parallel(
 ) -> None:
     endpoint = await sandbox.endpoint()
     assert endpoint is not None
-    a = RemoteRunner(endpoint, key="a", init={"start": 10})
-    b = RemoteRunner(endpoint, key="b")
+    a = RemoteRunner(endpoint, "counter", key="a", init={"start": 10})
+    b = RemoteRunner(endpoint, "counter", key="b")
     # Two first calls on one key race; both must land on one instance.
     first = await asyncio.gather(_call(a, "bump"), _call(a, "bump"))
     assert sorted(json.loads(str(r.output))["count"] for r in first) == [11, 12]
@@ -160,7 +160,7 @@ async def test_instances_are_per_key_opened_once_and_calls_run_in_parallel(
 
 
 async def test_sandbox_runner_uses_the_thread_sandbox(sandbox: LocalSandbox) -> None:
-    runner = SandboxRunner(init={"start": 5})
+    runner = SandboxRunner("counter", init={"start": 5})
     (bump,) = [t for t in tools(Counter, runner) if t.name == "bump"]
     assert bump.needs_sandbox
     result = await _call(runner, "bump", _ctx(sandbox, thread="x"))
@@ -174,13 +174,13 @@ async def test_arguments_arrive_as_the_annotated_types_and_bytes_must_be_images(
 ) -> None:
     endpoint = await sandbox.endpoint()
     assert endpoint is not None
-    for runner in (LocalRunner(Counter()), RemoteRunner(endpoint, key="types")):
+    for runner in (LocalRunner(Counter()), RemoteRunner(endpoint, "counter", key="types")):
         box = {"width": 2, "height": 3}
         assert (await _call(runner, "area", box=box, unit="cm")).output == "Box 6 cm"
         dropped = await _call(runner, "raw", data="not an image")
         assert "dropped image-0" in str(dropped.output) and not dropped.content_blocks
     # The host validates too, for callers that skip ``build``.
-    bad = await call_host(endpoint, "types", {}, "area", {"box": {"width": 1}})
+    bad = await call_host(endpoint, "counter", "area", {"box": {"width": 1}}, key="types")
     assert bad.error and "ValidationError" in bad.error
 
 
@@ -198,9 +198,9 @@ async def test_sandbox_runner_refreshes_a_rejected_credential_once(sandbox: Loca
             return good if Rotating.refreshes else Endpoint(good.url, {"Authorization": "x"})
 
     stale = cast(LocalSandbox, Rotating())
-    result = await _call(SandboxRunner(), "bump", _ctx(stale))
+    result = await _call(SandboxRunner("counter"), "bump", _ctx(stale))
     assert json.loads(str(result.output)) == {"count": 1} and Rotating.refreshes == 1
-    await _call(SandboxRunner(), "bump", _ctx(stale))
+    await _call(SandboxRunner("counter"), "bump", _ctx(stale))
     assert Rotating.refreshes == 1
 
 
@@ -208,18 +208,35 @@ async def test_bad_token_unknown_method_and_host_survives_errors(sandbox: LocalS
     endpoint = await sandbox.endpoint()
     assert endpoint is not None
     wrong = Endpoint(endpoint.url, {"Authorization": "Bearer nope"})
-    denied = await call_host(wrong, "k", {}, "bump", {})
+    denied = await call_host(wrong, "counter", "bump", {}, key="k")
     assert denied.error and "bearer" in denied.error
-    unknown = await call_host(endpoint, "k", {}, "__init__", {})
+    unknown = await call_host(endpoint, "counter", "__init__", {}, key="k")
     assert unknown.error and "unknown tool method" in unknown.error
-    assert (await call_host(endpoint, "k", {}, "fail", {})).error
-    assert (await call_host(endpoint, "k", {}, "length", {"text": "ok"})).output == "2"
+    assert (await call_host(endpoint, "counter", "fail", {}, key="k")).error
+    assert (await call_host(endpoint, "counter", "length", {"text": "ok"}, key="k")).output == "2"
+
+
+async def test_toolsets_on_one_host_are_separate_by_name(sandbox: LocalSandbox) -> None:
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    bumped = await call_host(endpoint, "counter", "bump", {}, key="k")
+    assert json.loads(str(bumped.output)) == {"count": 1}
+    staged = await call_host(endpoint, "stages", "advance", {}, key="k")
+    assert staged.output == "stage 1"
+    assert [t.name for t in tools(Stages, RemoteRunner(endpoint, "stages", key="k"))] == [
+        "advance"
+    ]
+    # A toolset serves only its own methods; an unknown name is refused.
+    crossed = await call_host(endpoint, "stages", "bump", {}, key="k")
+    assert crossed.error and "unknown tool method" in crossed.error
+    missing = await call_host(endpoint, "nope", "bump", {}, key="k")
+    assert missing.error and "unknown toolset" in missing.error
 
 
 async def test_large_arguments_and_images_round_trip(sandbox: LocalSandbox) -> None:
     endpoint = await sandbox.endpoint()
     assert endpoint is not None
-    runner = RemoteRunner(endpoint, key="big")
+    runner = RemoteRunner(endpoint, "counter", key="big")
     text = "x" * (2 * 1024 * 1024)
     assert (await _call(runner, "length", text=text)).output == str(len(text))
     result = await _call(runner, "picture", size=5 * 1024 * 1024)
@@ -231,7 +248,7 @@ async def test_large_arguments_and_images_round_trip(sandbox: LocalSandbox) -> N
 async def test_script_env_scrubs_what_the_host_keeps(sandbox: LocalSandbox) -> None:
     endpoint = await sandbox.endpoint()
     assert endpoint is not None
-    runner = RemoteRunner(endpoint, key="env")
+    runner = RemoteRunner(endpoint, "counter", key="env")
     result = json.loads(str((await _call(runner, "env", name="SERVICE_KEY")).output))
     assert result == {"host": "k", "script": None}
     token = json.loads(str((await _call(runner, "env", name=host.TOKEN_ENV)).output))
@@ -242,12 +259,12 @@ async def test_script_env_scrubs_what_the_host_keeps(sandbox: LocalSandbox) -> N
 
 async def test_attach_reuses_the_running_host_and_close_stops_it(tmp_path: Path) -> None:
     provider = LocalSandboxProvider(tmp_path)
-    spec = SandboxSpec(toolset=TOOLSET, env={"PYTHONPATH": TESTS})
+    spec = SandboxSpec(toolsets=TOOLSETS, env={"PYTHONPATH": TESTS})
     opened = await provider.open(spec, agent_id="a", thread_id="t")
     try:
         attached = await provider.attach(spec, opened.id)
         assert attached is opened and await opened.endpoint() is not None
-        await _call(RemoteRunner(await opened.endpoint(), key="k"), "bump")
+        await _call(RemoteRunner(await opened.endpoint(), "counter", key="k"), "bump")
     finally:
         await opened.close()
     restarted = await provider.attach(spec, opened.id)
@@ -272,8 +289,7 @@ async def pushing_host(
         "--restore",
         json.dumps(restore),
         "--",
-        "--toolset",
-        TOOLSET,
+        "--toolset=counter=toolset_fixtures:Counter",
         "--bind",
         "127.0.0.1",
         "--port",
@@ -300,14 +316,14 @@ async def test_entry_restores_before_serving_and_pushes_after_calls(
 ) -> None:
     endpoint, log, process = pushing_host
     assert (tmp_path / "restored.txt").read_text() == "from storage"
-    await call_host(endpoint, "k", {}, "note", {"path": "a.txt", "text": "1"})
+    await call_host(endpoint, "counter", "note", {"path": "a.txt", "text": "1"}, key="k")
     for _ in range(50):
         if log.exists():
             break
         await asyncio.sleep(0.1)
     assert log.read_text().startswith("push")
     # A burst coalesces into far fewer pushes than calls: one running, one pending.
-    await asyncio.gather(*[call_host(endpoint, "k", {}, "bump", {}) for _ in range(20)])
+    await asyncio.gather(*[call_host(endpoint, "counter", "bump", {}, key="k") for _ in range(20)])
     await asyncio.sleep(1.5)
     assert 2 <= len(log.read_text().splitlines()) < 10
     process.terminate()

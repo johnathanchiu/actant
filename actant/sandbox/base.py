@@ -79,7 +79,7 @@ class Sandbox(Protocol):
         ...
 
     async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
-        """Where the spec's toolset is served, ``None`` when it has none.
+        """Where the spec's toolsets are served, ``None`` when it has none.
 
         Backends that authenticate with short-lived credentials cache them per
         sandbox; ``refresh`` asks for new ones after the host rejected the old.
@@ -142,9 +142,10 @@ class SandboxSpec:
     scrub_env: tuple[str, ...] = ()
     #: How a cloud backend keeps files; see :class:`Storage`.
     storage: Storage = Storage.MOUNT
-    #: ``"pkg.mod:Class"`` served by a toolset host inside the sandbox (see
-    #: :mod:`actant.tools.toolset`). Fixed here, at launch; requests only name methods.
-    toolset: str | None = None
+    #: Name to ``"pkg.mod:Class"``, served by one toolset host inside the sandbox (see
+    #: :mod:`actant.tools.toolset`). Fixed here, at launch; requests name a toolset
+    #: and a method, never a module.
+    toolsets: Mapping[str, str] = field(default_factory=dict)
     #: The port the host listens on inside a container. ``local`` picks a free one.
     toolset_port: int = 8080
 
