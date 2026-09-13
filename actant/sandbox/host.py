@@ -21,6 +21,9 @@ Protocol (JSON bodies)::
 
     POST /v1/call {toolset, key, init, method, args} -> {text, images, error}
          images: [{name, media_type, data_b64}]
+    POST /v1/shutdown                                -> close instances, push, exit
+
+Connections are kept alive (HTTP/1.1); :func:`post` is the pooled client.
 
 One instance per ``(toolset, key)``, created on its first call with ``init``
 (``await Class.open(**init)`` when the class defines ``open``, else
@@ -49,17 +52,30 @@ import mimetypes
 import os
 import signal
 import sys
+import threading
+import time
 import traceback
 from collections.abc import Mapping, Sequence
 from http import HTTPStatus
+from http.client import HTTPConnection, HTTPSConnection
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, create_model
+
+from actant.sandbox.base import Endpoint
 
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
 #: The line the host prints to stdout once it accepts connections: ``<prefix> <port>``.
 READY_PREFIX = "actant-host-listening"
 CALL_PATH = "/v1/call"
+#: Close every instance, push storage once more, answer, and exit.
+SHUTDOWN_PATH = "/v1/shutdown"
+#: A pooled client connection idle longer than this is not reused: a proxy may have
+#: dropped it, and a request lost on a half-closed connection cannot be told apart
+#: from one that ran.
+IDLE_REUSE_S = 20.0
+MAX_IDLE_PER_HOST = 32
 #: The instance lifecycle; never exposed as tools.
 LIFECYCLE = frozenset({"open", "close"})
 MAX_BODY = 256 * 1024 * 1024
@@ -83,8 +99,9 @@ def script_env() -> dict[str, str]:
 
 
 def public_methods(cls: type) -> list[str]:
-    """The toolset's tools: public coroutine functions on the class and its bases,
-    in definition order, excluding :data:`LIFECYCLE`."""
+    """The toolset's tools: public functions (``async def`` or plain ``def``) on the class
+    and its bases, in definition order, excluding :data:`LIFECYCLE`. Static and class
+    methods and properties are not tools."""
     names: list[str] = []
     for klass in reversed(cls.__mro__):
         for name in vars(klass):
@@ -95,7 +112,7 @@ def public_methods(cls: type) -> list[str]:
         for name in names
         if not name.startswith("_")
         and name not in LIFECYCLE
-        and inspect.iscoroutinefunction(inspect.getattr_static(cls, name))
+        and inspect.isfunction(inspect.getattr_static(cls, name))
     ]
 
 
@@ -206,18 +223,89 @@ def failure(error: BaseException) -> dict[str, object]:
 async def call_method(
     instance: object, method: str, args: Mapping[str, object]
 ) -> dict[str, object]:
-    """Validate the arguments, run one tool method, and encode its result or its exception."""
+    """Validate the arguments, run one tool method, and encode its result or its exception.
+
+    A plain ``def`` runs in a worker thread, so it never stalls other calls. An
+    ``async def`` runs on the event loop: CPU-heavy or blocking work inside one
+    stalls every concurrent call until it awaits, so such a method should be a
+    plain ``def`` or hand the work to ``asyncio.to_thread`` itself.
+    """
     try:
         params = parameters_model(type(instance), method).model_validate(args)
         kwargs = {name: getattr(params, name) for name in type(params).model_fields}
-        return encode_output(await getattr(instance, method)(**kwargs))
+        function = getattr(instance, method)
+        if inspect.iscoroutinefunction(function):
+            output = await function(**kwargs)
+        else:
+            output = await asyncio.to_thread(function, **kwargs)
+        return encode_output(output)
     except Exception as error:  # noqa: BLE001 -- a tool failure is a result, not a crash
         return failure(error)
 
 
+async def _maybe_await(value: object) -> object:
+    return await value if inspect.isawaitable(value) else value
+
+
 async def open_instance(cls: type, init: Mapping[str, object]) -> object:
     opener = getattr(cls, "open", None)
-    return await opener(**init) if opener is not None else cls(**init)
+    return await _maybe_await(opener(**init)) if opener is not None else cls(**init)
+
+
+_idle: dict[tuple[str, str], list[tuple[HTTPConnection, float]]] = {}
+_idle_lock = threading.Lock()
+
+
+def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[int, bytes]:
+    """``POST`` to a host over a pooled keep-alive connection. Blocking: run it in a thread.
+
+    A reused connection the server already closed is retried on another; a new
+    connection that fails raises ``OSError``.
+    """
+    url = urlsplit(endpoint.url)
+    slot = (url.scheme, url.netloc)
+    headers = {"Content-Type": "application/json", **endpoint.headers}
+    target = url.path.rstrip("/") + path
+    while True:
+        connection = None
+        with _idle_lock:
+            pool = _idle.get(slot, [])
+            while pool and connection is None:
+                candidate, since = pool.pop()
+                if time.monotonic() - since < IDLE_REUSE_S and candidate.sock is not None:
+                    connection = candidate
+                else:
+                    candidate.close()
+        reused = connection is not None
+        if connection is None:
+            factory = HTTPSConnection if url.scheme == "https" else HTTPConnection
+            connection = factory(url.netloc, timeout=timeout)
+        else:
+            assert connection.sock is not None
+            connection.sock.settimeout(timeout)
+        try:
+            connection.request("POST", target, body, headers)
+            reply = connection.getresponse()
+            data = reply.read()
+        except (ConnectionResetError, BrokenPipeError):  # includes RemoteDisconnected
+            connection.close()
+            if reused:
+                continue
+            raise
+        except BaseException:
+            connection.close()
+            raise
+        if reply.will_close:
+            connection.close()
+        else:
+            with _idle_lock:
+                pool = _idle.setdefault(slot, [])
+                if len(pool) < MAX_IDLE_PER_HOST:
+                    pool.append((connection, time.monotonic()))
+                    connection = None
+            if connection is not None:
+                connection.close()
+        return reply.status, data
 
 
 def launch_args(
@@ -244,6 +332,10 @@ class Host:
         # Futures, not instances: two parallel first calls share one ``open``.
         self.instances: dict[tuple[str, str], asyncio.Future[object]] = {}
         self._push_due = asyncio.Event()
+        self._push_lock = asyncio.Lock()
+        self._shutdown: asyncio.Future[None] | None = None
+        self.stop = asyncio.Event()
+        self.writers: set[asyncio.StreamWriter] = set()
 
     async def instance(self, toolset: str, key: str, init: Mapping[str, object]) -> object:
         slot = (toolset, key)
@@ -287,23 +379,25 @@ class Host:
         while True:
             await self._push_due.wait()
             self._push_due.clear()
+            await self.push_now()
+
+    async def push_now(self) -> None:
+        if not self.push:
+            return
+        async with self._push_lock:
             process = await asyncio.create_subprocess_exec(
                 *self.push, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
             )
             _, stderr = await process.communicate()
-            if process.returncode:
-                tail = stderr.decode(errors="replace")[-2000:]
-                print(
-                    f"storage push exited {process.returncode}: {tail}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        if process.returncode:
+            tail = stderr.decode(errors="replace")[-2000:]
+            print(f"storage push exited {process.returncode}: {tail}", file=sys.stderr, flush=True)
 
     def reject(
         self, verb: str, path: str, headers: Mapping[str, str]
     ) -> tuple[HTTPStatus, dict[str, object]] | None:
         """Why a request is refused before its body is read, or ``None``."""
-        if path != CALL_PATH:
+        if path not in {CALL_PATH, SHUTDOWN_PATH}:
             return HTTPStatus.NOT_FOUND, response(error=f"no route {verb} {path}")
         if verb != "POST":
             return HTTPStatus.METHOD_NOT_ALLOWED, response(error="use POST")
@@ -325,38 +419,54 @@ class Host:
         return await self.call(request)
 
     async def connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """One HTTP/1.1 request per connection, answered with ``Connection: close``."""
+        """HTTP/1.1 with keep-alive: requests on one connection are answered in turn."""
+        self.writers.add(writer)
         try:
-            try:
-                head = (await reader.readuntil(b"\r\n\r\n")).decode("latin-1").split("\r\n")
-                verb, target, _ = head[0].split(" ", 2)
-                headers = {}
-                for line in head[1:]:
-                    name, sep, value = line.partition(":")
-                    if sep:
-                        headers[name.strip().lower()] = value.strip()
-                refused = self.reject(verb, target.split("?")[0], headers)
-                if refused is not None:
-                    status, payload = refused
-                else:
-                    body = await reader.readexactly(int(headers.get("content-length") or 0))
-                    status, payload = await self.route(body)
-            except (ValueError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as error:
-                status, payload = (
-                    HTTPStatus.BAD_REQUEST,
-                    response(error=f"malformed request: {error}"),
-                )
-            data = json.dumps(payload).encode()
-            writer.write(
-                f"HTTP/1.1 {status.value} {status.phrase}\r\nContent-Type: application/json\r\n"
-                f"Content-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode()
-                + data
-            )
-            await writer.drain()
+            close = False
+            while not close:
+                try:
+                    head = await reader.readuntil(b"\r\n\r\n")
+                except asyncio.IncompleteReadError as error:
+                    if error.partial:  # anything but a clean close between requests
+                        await respond(writer, HTTPStatus.BAD_REQUEST, response(error="truncated"))
+                    return
+                except asyncio.LimitOverrunError:
+                    await respond(writer, HTTPStatus.BAD_REQUEST, response(error="head too large"))
+                    return
+                status, payload, close = await self.handle(head, reader)
+                await respond(writer, status, payload, close=close)
+                if self._shutdown is not None and self._shutdown.done() and close:
+                    self.stop.set()  # after the reply, so the caller sees shutdown finish
         except ConnectionError:
             pass
         finally:
+            self.writers.discard(writer)
             writer.close()
+
+    async def handle(
+        self, head: bytes, reader: asyncio.StreamReader
+    ) -> tuple[HTTPStatus, dict[str, object], bool]:
+        """One request: its status, payload, and whether the connection must close."""
+        try:
+            lines = head.decode("latin-1").split("\r\n")
+            verb, target, version = lines[0].split(" ", 2)
+            headers: dict[str, str] = {}
+            for line in lines[1:]:
+                name, sep, value = line.partition(":")
+                if sep:
+                    headers[name.strip().lower()] = value.strip()
+            close = version != "HTTP/1.1" or headers.get("connection", "").lower() == "close"
+            path = target.split("?")[0]
+            refused = self.reject(verb, path, headers)
+            if refused is not None:
+                return *refused, True  # the body is unread: the connection is spent
+            body = await reader.readexactly(int(headers.get("content-length") or 0))
+        except (ValueError, asyncio.IncompleteReadError) as error:
+            return HTTPStatus.BAD_REQUEST, response(error=f"malformed request: {error}"), True
+        if path == SHUTDOWN_PATH:
+            await self.shutdown()
+            return HTTPStatus.OK, response("stopped"), True
+        return *(await self.route(body)), close
 
     async def close_instances(self) -> None:
         for future in self.instances.values():
@@ -364,23 +474,57 @@ class Host:
                 closer = getattr(future.result(), "close", None)
                 if closer is not None:
                     with contextlib.suppress(Exception):
-                        await closer()
+                        await _maybe_await(closer())
+
+    def shutdown(self) -> asyncio.Future[None]:
+        """Close instances and push storage once more. Runs once; :func:`serve` then exits."""
+        if self._shutdown is None:
+            self._shutdown = asyncio.ensure_future(self._close_and_push())
+        return self._shutdown
+
+    async def _close_and_push(self) -> None:
+        await self.close_instances()
+        await self.push_now()
+
+
+async def respond(
+    writer: asyncio.StreamWriter,
+    status: HTTPStatus,
+    payload: Mapping[str, object],
+    *,
+    close: bool = True,
+) -> None:
+    data = json.dumps(payload).encode()
+    head = [
+        f"HTTP/1.1 {status.value} {status.phrase}",
+        "Content-Type: application/json",
+        f"Content-Length: {len(data)}",
+        *(["Connection: close"] if close else []),
+    ]
+    writer.write(("\r\n".join(head) + "\r\n\r\n").encode() + data)
+    await writer.drain()
 
 
 async def serve(host: Host, bind: str, port: int) -> None:
+    """Serve until SIGTERM, SIGINT, SIGHUP or ``POST /v1/shutdown``; on any exit, close
+    the instances and push storage once more. Modal's ``terminate`` and timeouts send
+    SIGKILL, which nothing can handle: close the sandbox through its handle instead."""
     server = await asyncio.start_server(host.connection, bind, port)
     bound = server.sockets[0].getsockname()[1]
     print(f"{READY_PREFIX} {bound}", flush=True)
     pusher = asyncio.create_task(host.pusher()) if host.push else None
-    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(signum, stop.set)
-    async with server:
-        await stop.wait()
-    if pusher is not None:
-        pusher.cancel()
-    await host.close_instances()
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        loop.add_signal_handler(signum, host.stop.set)
+    try:
+        await host.stop.wait()
+    finally:
+        server.close()
+        await host.shutdown()
+        if pusher is not None:
+            pusher.cancel()
+        for writer in list(host.writers):
+            writer.close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

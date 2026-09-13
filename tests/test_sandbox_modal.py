@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from actant.sandbox import Endpoint, SandboxSpec, Storage
+from actant.sandbox import host
 from actant.sandbox.entry import READY_FILE
 from actant.sandbox.modal import (
     DISK_PATH,
@@ -208,10 +209,22 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     await attached.sync()
     assert fake.execs[0][0][-1] == "s3://b/sandboxes/t1/"
 
-    # close pushes, then terminates.
+    # close asks the host to shut down (it closes instances and pushes); if the host
+    # cannot confirm, close pushes itself. Either way it terminates.
+    posts: list[tuple[str, str]] = []
+
+    def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[int, bytes]:
+        posts.append((endpoint.headers["Authorization"], path))
+        return (401, b"") if len(posts) == 1 else (200, b"")
+
+    monkeypatch.setattr(host, "post", post)
     fake.execs.clear()
     await sandbox.close()
-    assert list(fake.execs[0][0][2:]) == push and fake.terminated
+    assert [p for _, p in posts] == [host.SHUTDOWN_PATH] * 2 and posts[1][0] == "Bearer tok3"
+    assert fake.execs == [] and fake.terminated
+    monkeypatch.setattr(host, "post", lambda *_: (_ for _ in ()).throw(OSError("gone")))
+    await sandbox.close()
+    assert list(fake.execs[0][0][2:]) == push
     fake.sandbox.poll = _Aio(_async(0))
     with pytest.raises(KeyError):
         await provider.attach(spec, "sb-1")

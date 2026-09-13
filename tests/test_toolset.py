@@ -64,7 +64,7 @@ class Sample(Base):
 
 def test_schema_comes_from_the_signature_without_self() -> None:
     schemas = {s["function"]["name"]: s["function"] for s in toolset_schema(Sample)}  # pyright: ignore[reportIndexIssue]
-    assert set(schemas) == {"inherited", "search"}
+    assert list(schemas) == ["inherited", "search", "sync_helper"]
     search = schemas["search"]
     assert search["description"] == "Find things.\n\nMore detail."
     params = search["parameters"]
@@ -157,6 +157,42 @@ async def test_instances_are_per_key_opened_once_and_calls_run_in_parallel(
     started = time.monotonic()
     await asyncio.gather(*[_call(a, "wait", seconds=0.5) for _ in range(5)])
     assert time.monotonic() - started < 2
+
+
+async def test_sync_methods_run_in_threads_over_kept_alive_connections(
+    sandbox: LocalSandbox,
+) -> None:
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    runner = RemoteRunner(endpoint, "counter", key="threads")
+    started = time.monotonic()
+    blocked = asyncio.gather(*[_call(runner, "block", seconds=0.5) for _ in range(5)])
+    await asyncio.sleep(0.1)
+    assert (await _call(runner, "length", text="abc")).output == "3"
+    assert time.monotonic() - started < 0.4  # the loop was free while threads blocked
+    assert [r.output for r in await blocked] == ["blocked"] * 5
+    assert time.monotonic() - started < 2
+
+    # Sequential calls reuse one pooled connection.
+    slot = ("http", endpoint.url.removeprefix("http://"))
+    host._idle.pop(slot, None)  # pyright: ignore[reportPrivateUsage]
+    await _call(runner, "length", text="a")
+    ((first, _),) = host._idle[slot]  # pyright: ignore[reportPrivateUsage]
+    await _call(runner, "length", text="b")
+    assert [c for c, _ in host._idle[slot]] == [first]  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_close_stops_the_host_gracefully(tmp_path: Path) -> None:
+    provider = LocalSandboxProvider(tmp_path)
+    opened = await provider.open(
+        SandboxSpec(toolsets=TOOLSETS, env={"PYTHONPATH": TESTS}), agent_id="a", thread_id="t"
+    )
+    assert isinstance(opened, LocalSandbox)
+    endpoint = await opened.endpoint()
+    assert endpoint is not None
+    await call_host(endpoint, "counter", "bump", {"by": 3}, key="k")
+    await opened.close()  # SIGTERM
+    assert (opened.root / "closed-at-3").exists()
 
 
 async def test_sandbox_runner_uses_the_thread_sandbox(sandbox: LocalSandbox) -> None:
@@ -330,6 +366,21 @@ async def test_entry_restores_before_serving_and_pushes_after_calls(
     await process.wait()
     assert process.stderr is not None
     assert "storage push exited 3" in (await process.stderr.read()).decode()
+
+
+async def test_shutdown_closes_instances_pushes_and_exits(
+    pushing_host: tuple[Endpoint, Path, asyncio.subprocess.Process], tmp_path: Path
+) -> None:
+    endpoint, log, process = pushing_host
+    await call_host(endpoint, "counter", "bump", {"by": 2}, key="k")
+    for _ in range(50):  # the push that follows the call
+        if log.exists():
+            break
+        await asyncio.sleep(0.1)
+    status, _ = await asyncio.to_thread(host.post, endpoint, host.SHUTDOWN_PATH, b"{}", 30)
+    assert status == 200 and (tmp_path / "closed-at-2").exists()
+    assert await asyncio.wait_for(process.wait(), 10) == 0
+    assert log.read_text().count("push") == 2  # after the call, and once more at shutdown
 
 
 def test_entry_exits_when_restore_fails(tmp_path: Path) -> None:

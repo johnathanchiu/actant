@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -36,6 +37,14 @@ class Counter:
         await asyncio.sleep(0.05)  # widen the window two first calls could race in
         cls.opened += 1
         return cls(start)
+
+    async def close(self) -> None:
+        Path(f"closed-at-{self.count}").touch()
+
+    def block(self, seconds: float) -> str:
+        """A plain ``def``: the host runs it in a thread."""
+        time.sleep(seconds)
+        return "blocked"
 
     async def bump(self, by: int = 1) -> dict[str, int]:
         """Add to the counter."""

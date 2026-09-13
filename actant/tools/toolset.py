@@ -1,4 +1,4 @@
-"""Toolsets: a plain class whose public async methods are tools.
+"""Toolsets: a plain class whose public methods are tools.
 
 A product writes an ordinary class, with no actant import::
 
@@ -9,8 +9,10 @@ A product writes an ordinary class, with no actant import::
         async def add(self, title: str, body: str = "") -> str:
             \"\"\"Save a note.\"\"\"   # the docstring is the tool description
 
-Tools are the public coroutine functions on the class and its bases, minus
-``open`` and ``close``. Each schema comes from the method's signature without
+Tools are the public functions (``async def`` or plain ``def``) on the class and
+its bases, minus ``open`` and ``close``. A plain ``def`` runs in a worker thread;
+an ``async def`` runs on the host's event loop, so blocking or CPU-heavy work in
+one stalls every concurrent call until it awaits. Each schema comes from the method's signature without
 ``self`` (:func:`actant.sandbox.host.parameters_model`); arguments are
 validated against it on both sides, so methods receive the annotated types.
 
@@ -32,9 +34,7 @@ import inspect
 import json
 from collections.abc import Mapping
 from http import HTTPStatus
-from http.client import HTTPConnection, HTTPSConnection
 from typing import Protocol
-from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -188,7 +188,7 @@ def _body(
 
 async def _send(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int | None, ToolResult]:
     try:
-        status, data = await asyncio.to_thread(_post, endpoint, body, timeout)
+        status, data = await asyncio.to_thread(host.post, endpoint, host.CALL_PATH, body, timeout)
     except OSError as error:
         return None, ToolResult.fail(f"toolset host unreachable at {endpoint.url}: {error}")
     try:
@@ -199,20 +199,6 @@ async def _send(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int | 
         tail = data[-1000:].decode(errors="replace")
         return status, ToolResult.fail(f"toolset host returned HTTP {status}: {tail}")
     return status, to_tool_result(response)
-
-
-def _post(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int, bytes]:
-    url = urlsplit(endpoint.url)
-    connection = (HTTPSConnection if url.scheme == "https" else HTTPConnection)(
-        url.netloc, timeout=timeout
-    )
-    try:
-        headers = {"Content-Type": "application/json", **endpoint.headers}
-        connection.request("POST", url.path.rstrip("/") + host.CALL_PATH, body, headers)
-        response = connection.getresponse()
-        return response.status, response.read()
-    finally:
-        connection.close()
 
 
 class ToolsetInvocation(BaseToolInvocation[dict[str, object], ToolResult]):

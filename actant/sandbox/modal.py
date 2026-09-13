@@ -46,6 +46,7 @@ import importlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -345,8 +346,13 @@ class ModalSandbox:
         return await self._run(self._sync_argv, timeout=SYNC_TIMEOUT_S)
 
     async def close(self) -> None:
-        """Push a ``disk_sync`` disk (best effort, bounded), then terminate."""
-        if self._sync_argv is not None:
+        """Stop the toolset host gracefully (its instances close and it pushes a ``disk_sync``
+        disk), or push the disk here when there is no host; then terminate.
+
+        Best effort and bounded. Modal's ``terminate``, ``timeout`` and ``idle_timeout``
+        kill the container outright, so this is the only path on which ``close`` runs.
+        """
+        if not await self._stop_host() and self._sync_argv is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
                     self._run(self._sync_argv, timeout=CLOSE_SYNC_TIMEOUT_S),
@@ -357,6 +363,21 @@ class ModalSandbox:
         # ``wait`` raises for a sandbox that ended by timeout; that is still closed.
         with contextlib.suppress(Exception):
             await self._sandbox.wait.aio(raise_on_termination=False)
+
+    async def _stop_host(self) -> bool:
+        """``POST /v1/shutdown``; whether the host confirmed it closed and pushed."""
+        if self._toolset_port is None:
+            return False
+        with contextlib.suppress(Exception):
+            for refresh in (False, True):
+                endpoint = await self.endpoint(refresh=refresh)
+                assert endpoint is not None
+                status, _ = await asyncio.to_thread(
+                    host.post, endpoint, host.SHUTDOWN_PATH, b"{}", CLOSE_SYNC_TIMEOUT_S
+                )
+                if status != HTTPStatus.UNAUTHORIZED:
+                    return status == HTTPStatus.OK
+        return False
 
     def __repr__(self) -> str:
         return f"ModalSandbox({self.id!r})"

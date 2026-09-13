@@ -258,9 +258,12 @@ from the agent's own commands. It is best effort, not a security boundary.
 ## Toolsets
 
 When tools share state or work on many files, write them as a plain class.
-Its public `async def` methods are the tools; the schema comes from each
-signature without `self`, the description from the docstring. `open` (an
-optional async classmethod) and `close` are lifecycle, not tools.
+Its public methods are the tools; the schema comes from each signature
+without `self`, the description from the docstring. `open` (an optional
+classmethod) and `close` are lifecycle, not tools. A plain `def` runs in a
+worker thread. An `async def` runs on the host's event loop: blocking or
+CPU-heavy work inside one stalls every other call until it awaits, so write
+such a method as a plain `def` (or call `asyncio.to_thread` yourself).
 
 ```python
 from dataclasses import dataclass, field
@@ -331,8 +334,13 @@ start scripts should pass `env=actant.sandbox.host.script_env()` so the
 scripts do not inherit `scrub_env`. On Modal the host is the sandbox
 entrypoint, readiness is a TCP probe on `toolset_port`, `disk_sync` storage is
 restored before it listens and pushed after calls, and requests go through a
-Modal connect token (cached, re-minted on a 401), so no port is public. The
-image needs actant and the toolsets' package installed.
+Modal connect token (cached, re-minted on a 401), so no port is public.
+Connections are kept alive and pooled, so a call costs one round trip.
+`Sandbox.close` asks the host to shut down: it calls each instance's `close`,
+pushes `disk_sync` storage once more, and exits (SIGTERM, SIGINT and SIGHUP do
+the same). Modal's `terminate`, `timeout` and `idle_timeout` kill the container
+outright, so `close` does not run on those paths. The image needs actant and
+the toolsets' package installed.
 
 ## Finishing a task
 
