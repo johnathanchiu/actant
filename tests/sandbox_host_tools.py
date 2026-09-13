@@ -43,3 +43,15 @@ def render(ctx: Ctx, name: str) -> Rendered:
 
 async def boom(ctx: Ctx) -> str:
     raise ValueError("no good")
+
+
+async def size(ctx: Ctx, text: str) -> int:
+    return len(text)
+
+
+async def env(ctx: Ctx, name: str) -> dict[str, str | None]:
+    import os
+
+    from actant.sandbox.host import scrubbed_env
+
+    return {"host": os.environ.get(name), "scrubbed": scrubbed_env().get(name)}

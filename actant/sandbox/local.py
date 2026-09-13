@@ -18,10 +18,16 @@ from actant.sandbox.base import Entry, ExecResult, Sandbox, SandboxSpec
 
 
 class LocalSandbox:
-    def __init__(self, root: Path, env: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self, root: Path, env: Mapping[str, str] | None = None, scrub_env: Sequence[str] = ()
+    ) -> None:
         self.root = root.resolve()
         self.id = str(self.root)
         self._env = dict(env or {})
+        self._scrub = tuple(scrub_env)
+        if self._scrub:
+            # What the Modal backend sets in the container, so the tool host scrubs alike.
+            self._env["ACTANT_SCRUB_ENV"] = ",".join(self._scrub)
 
     def _path(self, path: str) -> Path:
         target = (self.root / path).resolve()
@@ -64,19 +70,21 @@ class LocalSandbox:
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
+        keep_env: bool = False,
     ) -> ExecResult:
+        # ``python`` in argv is this interpreter: the one the tools' own package is
+        # installed in, which is what a container backend bakes into its image.
+        inherited = {
+            **os.environ,
+            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
+            **self._env,
+        }
+        if not keep_env:
+            inherited = {k: v for k, v in inherited.items() if k not in self._scrub}
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=self._path(cwd) if cwd else self.root,
-            # ``python`` in argv is this interpreter: the one the tools'
-            # own package is installed in, which is what a container backend
-            # bakes into its image.
-            env={
-                **os.environ,
-                "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
-                **self._env,
-                **(env or {}),
-            },
+            env={**inherited, **(env or {})},
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -120,10 +128,10 @@ class LocalSandboxProvider:
         base = Path(spec.mount) if spec.mount else (self.root or Path(tempfile.mkdtemp("-actant")))
         root = base / thread_id
         root.mkdir(parents=True, exist_ok=True)
-        return LocalSandbox(root, spec.env)
+        return LocalSandbox(root, spec.env, spec.scrub_env)
 
     async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
         root = Path(sandbox_id)
         if not root.is_dir():
             raise KeyError(sandbox_id)
-        return LocalSandbox(root, spec.env)
+        return LocalSandbox(root, spec.env, spec.scrub_env)

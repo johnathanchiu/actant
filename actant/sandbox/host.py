@@ -23,9 +23,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import fcntl
 import importlib
 import inspect
 import json
+import mimetypes
 import os
 import socket as socketlib
 import sys
@@ -43,6 +45,9 @@ def scrubbed_env() -> dict[str, str]:
     The server itself keeps every variable: the factory and the tools call
     services with those keys. Pass this as ``env=`` to any subprocess that runs
     model-written code, so the script never sees them.
+
+    Best effort, not a security boundary: code running as the same user can
+    still read ``/proc/<pid>/environ`` of the server or talk to its socket.
     """
     scrub = {name.strip() for name in os.environ.get("ACTANT_SCRUB_ENV", "").split(",")}
     return {key: value for key, value in os.environ.items() if key not in scrub}
@@ -62,15 +67,24 @@ def adapt(output: object) -> dict[str, object]:
 
     An object with ``.text`` and ``.images`` (paths) is how a tool hands back
     renders; the bytes are read here because the files only exist in the sandbox.
+    Only image files under the working directory are read: a path is model-steerable,
+    and anything else (``/proc/self/environ``, a key file) would leave the sandbox.
     """
     if isinstance(output, str):
         return {"text": output, "images": [], "error": None}
     if hasattr(output, "text") and hasattr(output, "images"):
-        images = [
-            {"path": str(path), "data": base64.b64encode(Path(path).read_bytes()).decode()}
-            for path in output.images  # pyright: ignore[reportAttributeAccessIssue]
-        ]
-        return {"text": str(output.text), "images": images, "error": None}  # pyright: ignore[reportAttributeAccessIssue]
+        text = str(output.text)  # pyright: ignore[reportAttributeAccessIssue]
+        images = []
+        cwd = Path.cwd().resolve()
+        for path in output.images:  # pyright: ignore[reportAttributeAccessIssue]
+            target = Path(path).resolve()
+            is_image = (mimetypes.guess_type(target.name)[0] or "").startswith("image/")
+            if not is_image or cwd not in target.parents:
+                text += f"\n(dropped {path}: not an image file under the working directory)"
+                continue
+            data = base64.b64encode(target.read_bytes()).decode()
+            images.append({"path": str(path), "data": data})
+        return {"text": text, "images": images, "error": None}
     try:
         text = json.dumps(output, default=str)
     except (TypeError, ValueError):
@@ -106,10 +120,13 @@ class Server:
                 return await made if inspect.isawaitable(made) else made
 
             self.contexts[key] = asyncio.ensure_future(create())
+        future = self.contexts[key]
         try:
-            return await self.contexts[key]
+            return await future
         except BaseException:
-            self.contexts.pop(key, None)  # let the next call retry the factory
+            # Let the next call retry the factory, unless a retry already replaced it.
+            if self.contexts.get(key) is future:
+                del self.contexts[key]
             raise
 
     async def handle(self, request: dict[str, object]) -> dict[str, object]:
@@ -145,11 +162,27 @@ class Server:
         while True:
             await self._after_due.wait()
             self._after_due.clear()
-            process = await asyncio.create_subprocess_shell(self.after or "")
-            await process.wait()
+            process = await asyncio.create_subprocess_shell(
+                self.after or "", stderr=asyncio.subprocess.PIPE
+            )
+            _, stderr = await process.communicate()
+            if process.returncode:
+                # Nobody waits on the hook (a failed push is otherwise invisible); stderr is the log.
+                tail = stderr.decode(errors="replace")[-2000:]
+                print(
+                    f"after hook exited {process.returncode}: {tail}", file=sys.stderr, flush=True
+                )
 
 
 async def serve(socket_path: str, factory: str, after: str | None) -> None:
+    # Held for the server's life. Two launches racing each other (two RemoteHosts on
+    # one sandbox) would both see no answer on the socket before either binds, so a
+    # connect check is not enough; the loser must not unlink the winner's socket.
+    lock = open(socket_path + ".lock", "w")  # noqa: SIM115 -- released only on exit
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(f"an actant host is already serving {socket_path}") from None
     server = Server(factory, after)
     Path(socket_path).unlink(missing_ok=True)  # a stale file from a dead server
     # Responses carry base64 images; the default 64 KiB line limit is too small.
@@ -157,11 +190,18 @@ async def serve(socket_path: str, factory: str, after: str | None) -> None:
     after_task = asyncio.create_task(server.run_after()) if after else None
     async with unix:
         await unix.serve_forever()
-    del after_task
+    del after_task, lock
 
 
-def call(socket_path: str, request_b64: str, wait: float) -> int:
-    """Send one request and print the response line. Waits for a booting server."""
+def call(socket_path: str, request_file: str, wait: float) -> int:
+    """Send one request and print the response line. Waits for a booting server.
+
+    The request comes from a file, not argv: one argument is capped at 128 KiB on
+    Linux, which a tool's ``write`` content easily exceeds. The file is deleted here.
+    """
+    request_path = Path(request_file)
+    request = request_path.read_bytes()
+    request_path.unlink(missing_ok=True)
     deadline = time.monotonic() + wait
     while True:
         sock = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
@@ -175,7 +215,7 @@ def call(socket_path: str, request_b64: str, wait: float) -> int:
                 return 1
             time.sleep(0.05)
     with sock, sock.makefile("rwb") as stream:
-        stream.write(base64.b64decode(request_b64) + b"\n")
+        stream.write(request.strip() + b"\n")
         stream.flush()
         line = stream.readline()
     if not line:
@@ -194,13 +234,13 @@ def main(argv: list[str] | None = None) -> int:
     serve_cmd.add_argument("--after", help="shell command run (debounced) after requests")
     call_cmd = commands.add_parser("call")
     call_cmd.add_argument("--socket", required=True)
-    call_cmd.add_argument("--request", required=True, help="base64 JSON request")
+    call_cmd.add_argument("--request-file", required=True, help="JSON request; deleted once read")
     call_cmd.add_argument("--wait", type=float, default=30.0)
     args = parser.parse_args(argv)
     if args.command == "serve":
         asyncio.run(serve(args.socket, args.factory, args.after))
         return 0
-    return call(args.socket, args.request, args.wait)
+    return call(args.socket, args.request_file, args.wait)
 
 
 if __name__ == "__main__":

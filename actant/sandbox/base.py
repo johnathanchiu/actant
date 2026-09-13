@@ -46,6 +46,12 @@ class Sandbox(Protocol):
     Paths are relative to the sandbox root; implementations reject paths that
     escape it. ``write`` replaces the whole file: the backends that mount
     object storage cannot append or seek, so no tool should rely on either.
+
+    ``exec`` removes the spec's ``scrub_env`` names from the command's environment
+    unless ``keep_env`` is set, which only trusted infrastructure (the tool host,
+    storage sync) should pass. Scrubbing is best effort, not a security boundary:
+    code running as the same user can read another process's ``/proc/<pid>/environ``
+    or talk to the tool host's socket.
     """
 
     id: str
@@ -63,11 +69,13 @@ class Sandbox(Protocol):
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
+        keep_env: bool = False,
     ) -> ExecResult: ...
 
     async def sync(self) -> ExecResult:
         """Push the sandbox's files to durable storage. A no-op where storage already is
-        the filesystem (``mount``, ``local``)."""
+        the filesystem (``mount``, ``local``). ``close`` also pushes, best effort, so
+        calling this is only needed for a checkpoint mid-run."""
         ...
 
     async def close(self) -> None: ...

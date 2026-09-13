@@ -136,15 +136,24 @@ async def test_disk_sync_restores_on_open_and_pushes_on_sync(
 
     endpoint = ("s5cmd", "--endpoint-url", "https://r2.example")
     ((argv, _),) = fake.execs
-    assert argv[2:] == (*endpoint, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/")
+    exclude = ("--exclude", ".actant/*")
+    assert argv[2:] == (*endpoint, "sync", *exclude, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/")
 
     assert sync_command(provider, "t1") == (
-        f"s5cmd --endpoint-url https://r2.example sync --delete {DISK_PATH}/ s3://b/sandboxes/t1/"
+        "s5cmd --endpoint-url https://r2.example sync --delete --exclude '.actant/*' "
+        f"{DISK_PATH}/ s3://b/sandboxes/t1/"
     )
     fake.execs.clear()
     await sandbox.sync()
     ((argv, kwargs),) = fake.execs
-    assert argv[2:] == (*endpoint, "sync", "--delete", f"{DISK_PATH}/", "s3://b/sandboxes/t1/")
+    assert argv[2:] == (
+        *endpoint,
+        "sync",
+        "--delete",
+        *exclude,
+        f"{DISK_PATH}/",
+        "s3://b/sandboxes/t1/",
+    )
     assert kwargs["workdir"] == DISK_PATH
 
     # Reattaching a live sandbox skips the restore but still knows its prefix.
@@ -154,6 +163,29 @@ async def test_disk_sync_restores_on_open_and_pushes_on_sync(
     assert isinstance(attached, ModalSandbox)
     await attached.sync()
     assert fake.execs[0][0][-1] == "s3://b/sandboxes/t1/"
+
+    # Commands lose the scrubbed keys unless kept (or passed explicitly).
+    fake.execs.clear()
+    await sandbox.exec(["python", "run.py"], timeout=5)
+    await sandbox.exec(["python", "run.py"], timeout=5, env={"OPENAI_API_KEY": "mine"})
+    await sandbox.exec(["python", "run.py"], timeout=5, keep_env=True)
+    assert [argv for argv, _ in fake.execs] == [
+        ("env", "-uOPENAI_API_KEY", "-uAWS_SECRET_ACCESS_KEY", "timeout", "5", "python", "run.py"),
+        ("env", "-uAWS_SECRET_ACCESS_KEY", "timeout", "5", "python", "run.py"),
+        ("timeout", "5", "python", "run.py"),
+    ]
+
+    # close pushes the disk before terminating, and terminates even though this push exits 1.
+    order: list[str] = []
+    fake.execs.clear()
+    fake.sandbox.terminate = _Aio(lambda: _record(order, "terminate"))
+    await sandbox.close()
+    assert fake.execs[0][0][2:6] == (*endpoint, "sync") and "--delete" in fake.execs[0][0]
+    assert order == ["terminate"]
+
+
+async def _record(order: list[str], name: str) -> None:
+    order.append(name)
 
 
 async def test_disk_sync_open_fails_when_the_restore_fails(

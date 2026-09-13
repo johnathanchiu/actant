@@ -28,6 +28,7 @@ without it.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import json
@@ -42,6 +43,10 @@ MOUNT_PATH = "/mnt/sandbox"
 DISK_PATH = "/root/sandbox"
 THREAD_TAG = "actant_thread"
 SYNC_TIMEOUT_S = 1800
+#: How long ``close`` lets the final push run before terminating anyway.
+CLOSE_SYNC_TIMEOUT_S = 300
+#: Tool-host request files (:data:`actant.sandbox.remote.REQUESTS_DIR`): never synced.
+SYNC_EXCLUDE = ".actant/*"
 S5CMD_VERSION = "2.3.0"
 S5CMD_URL = (
     f"https://github.com/peak/s5cmd/releases/download/v{S5CMD_VERSION}/"
@@ -127,12 +132,16 @@ class ModalSandboxProvider:
             client=self.client,
         )
         if spec.storage == "mount":
-            return ModalSandbox(sandbox, spec.env)
+            return ModalSandbox(sandbox, spec.env, scrub_env=spec.scrub_env)
         handle = ModalSandbox(
-            sandbox, spec.env, root=DISK_PATH, sync_argv=shlex.split(sync_command(self, thread_id))
+            sandbox,
+            spec.env,
+            root=DISK_PATH,
+            sync_argv=shlex.split(sync_command(self, thread_id)),
+            scrub_env=spec.scrub_env,
         )
         restore = await handle.exec(
-            shlex.split(restore_command(self, thread_id)), timeout=SYNC_TIMEOUT_S
+            shlex.split(restore_command(self, thread_id)), timeout=SYNC_TIMEOUT_S, keep_env=True
         )
         # A new thread has an empty prefix, which s5cmd reports as an error.
         if restore.returncode != 0 and "no object found" not in restore.stderr:
@@ -150,11 +159,15 @@ class ModalSandboxProvider:
         if await sandbox.poll.aio() is not None:
             raise KeyError(sandbox_id)
         if spec.storage != "disk_sync":
-            return ModalSandbox(sandbox, spec.env)
+            return ModalSandbox(sandbox, spec.env, scrub_env=spec.scrub_env)
         # A live sandbox still has its disk: nothing to restore.
         thread_id = (await sandbox.get_tags.aio())[THREAD_TAG]
         return ModalSandbox(
-            sandbox, spec.env, root=DISK_PATH, sync_argv=shlex.split(sync_command(self, thread_id))
+            sandbox,
+            spec.env,
+            root=DISK_PATH,
+            sync_argv=shlex.split(sync_command(self, thread_id)),
+            scrub_env=spec.scrub_env,
         )
 
     def _remote(self, thread_id: str) -> str:
@@ -172,13 +185,24 @@ def sync_command(provider: ModalSandboxProvider, thread_id: str) -> str:
     this to the host server's ``--after`` hook to push after every tool call.
     """
     return shlex.join(
-        provider._s5cmd("sync", "--delete", f"{DISK_PATH}/", provider._remote(thread_id))
+        provider._s5cmd(
+            "sync",
+            "--delete",
+            "--exclude",
+            SYNC_EXCLUDE,
+            f"{DISK_PATH}/",
+            provider._remote(thread_id),
+        )
     )
 
 
 def restore_command(provider: ModalSandboxProvider, thread_id: str) -> str:
     """The shell command that pulls a thread's bucket prefix onto the disk (never deletes)."""
-    return shlex.join(provider._s5cmd("sync", f"{provider._remote(thread_id)}*", f"{DISK_PATH}/"))
+    return shlex.join(
+        provider._s5cmd(
+            "sync", "--exclude", SYNC_EXCLUDE, f"{provider._remote(thread_id)}*", f"{DISK_PATH}/"
+        )
+    )
 
 
 def with_s5cmd(image: Any) -> Any:
@@ -196,9 +220,11 @@ class ModalSandbox:
         *,
         root: str = MOUNT_PATH,
         sync_argv: Sequence[str] | None = None,
+        scrub_env: Sequence[str] = (),
     ) -> None:
         self._sandbox = sandbox
         self._env = dict(env)
+        self._scrub = tuple(scrub_env)
         self._root = root
         self._sync_argv = list(sync_argv) if sync_argv else None
         self.id = str(sandbox.object_id)
@@ -207,7 +233,8 @@ class ModalSandbox:
         """Push the disk to the bucket prefix (``disk_sync``). A no-op for a mount."""
         if self._sync_argv is None:
             return ExecResult(0, "", "")
-        return await self.exec(self._sync_argv, timeout=SYNC_TIMEOUT_S)
+        # s5cmd needs the bucket keys that scrub_env usually lists.
+        return await self.exec(self._sync_argv, timeout=SYNC_TIMEOUT_S, keep_env=True)
 
     @staticmethod
     def _check(path: str) -> str:
@@ -237,11 +264,18 @@ class ModalSandbox:
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
+        keep_env: bool = False,
     ) -> ExecResult:
         workdir = f"{self._root}/{self._check(cwd)}" if cwd else self._root
+        # Secrets are in the container's environment, and Modal's ``env`` can only
+        # add variables, so ``env -u`` removes the scrubbed ones in the container.
+        unset = (
+            [] if keep_env else [f"-u{name}" for name in self._scrub if name not in (env or {})]
+        )
         # ``timeout`` runs inside the container, so the process group dies
         # there; 124 is its exit code, the same one the local backend uses.
         process = await self._sandbox.exec.aio(
+            *(["env", *unset] if unset else []),
             "timeout",
             str(int(timeout)),
             *argv,
@@ -253,6 +287,16 @@ class ModalSandbox:
         return ExecResult(code, stdout, stderr, timed_out=code == 124)
 
     async def close(self) -> None:
+        """Push a ``disk_sync`` disk (best effort, bounded), then terminate.
+
+        Without the push, whatever the last ``after`` hook missed would die with the disk.
+        """
+        if self._sync_argv is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    self.exec(self._sync_argv, timeout=CLOSE_SYNC_TIMEOUT_S, keep_env=True),
+                    CLOSE_SYNC_TIMEOUT_S + 30,
+                )
         # ``terminate`` only requests the stop; wait so ``attach`` sees it finished.
         await self._sandbox.terminate.aio()
         # ``wait`` raises for a sandbox that ended by timeout; that is still closed.

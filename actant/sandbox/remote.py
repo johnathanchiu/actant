@@ -11,10 +11,13 @@ run in the sandbox, or ``local=ctx`` to run the same function in-process.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import json
 import mimetypes
 import shlex
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -42,16 +45,32 @@ class RemoteResult:
         return cls(str(response.get("text") or ""), images, None if error is None else str(error))
 
 
+#: Where request files are written, relative to the sandbox root. Excluded from
+#: ``disk_sync`` pushes and restores (see :mod:`actant.sandbox.modal`).
+REQUESTS_DIR = ".actant/requests"
+
+
 class RemoteHost:
-    """One host process per sandbox, reached through ``sandbox.exec``."""
+    """One host process per sandbox, reached through ``sandbox.exec``.
+
+    The default socket is keyed by ``sandbox.id``: local sandboxes share one
+    machine's ``/tmp``, and a shared name would let one sandbox's host answer
+    another's calls. Hashed because a unix socket path must fit in ~104 bytes.
+    """
 
     def __init__(
-        self, sandbox: Sandbox, *, socket: str = "/tmp/actant-host.sock", python: str = "python"
+        self, sandbox: Sandbox, *, socket: str | None = None, python: str = "python"
     ) -> None:
         self.sandbox = sandbox
+        if socket is None:
+            digest = hashlib.sha256(sandbox.id.encode()).hexdigest()[:16]
+            socket = f"/tmp/actant-host-{digest}.sock"
         self.socket = socket
         self.python = python
         self.log_path = socket.removesuffix(".sock") + ".log"
+        self._start_lock = asyncio.Lock()
+        # What ``start`` was given, so ``call`` can bring a dead host back.
+        self._started: tuple[str, dict[str, object]] | None = None
 
     async def start(
         self,
@@ -64,27 +83,32 @@ class RemoteHost:
     ) -> None:
         """Launch the server unless one already answers. Returns once it answers.
 
-        ``scrub`` reaches the tools as ``ACTANT_SCRUB_ENV``; see
-        :func:`actant.sandbox.host.scrubbed_env`.
+        ``scrub`` is added to the sandbox's own ``ACTANT_SCRUB_ENV`` (``spec.scrub_env``)
+        for the tools; see :func:`actant.sandbox.host.scrubbed_env`. The host itself
+        is launched with ``keep_env`` so it keeps the keys its tools call services with.
         """
-        if (await self._request({"tool": host_module.PING}, wait=0, timeout=30)).error is None:
-            return
-        argv = [self.python, "-m", "actant.sandbox.host", "serve"]
-        argv += ["--socket", self.socket, "--factory", factory]
-        if after:
-            argv += ["--after", after]
-        command = f"nohup {shlex.join(argv)} >{shlex.quote(self.log_path)} 2>&1 &"
-        launched = await self.sandbox.exec(
-            ["sh", "-c", command],
-            cwd=cwd,
-            timeout=30,
-            env={**(env or {}), "ACTANT_SCRUB_ENV": ",".join(scrub)},
-        )
-        if launched.returncode != 0:
-            raise RuntimeError(f"could not launch the actant host: {launched.stderr[-2000:]}")
-        pong = await self._request({"tool": host_module.PING}, wait=30, timeout=60)
-        if pong.error is not None:
-            raise RuntimeError(f"actant host did not come up: {pong.error}\n{await self.log()}")
+        self._started = (factory, {"cwd": cwd, "after": after, "scrub": scrub, "env": env})
+        async with self._start_lock:
+            if (await self._request({"tool": host_module.PING}, wait=0, timeout=30)).error is None:
+                return
+            argv = [self.python, "-m", "actant.sandbox.host", "serve"]
+            argv += ["--socket", self.socket, "--factory", factory]
+            if after:
+                argv += ["--after", after]
+            command = f"nohup {shlex.join(argv)} >{shlex.quote(self.log_path)} 2>&1 &"
+            if scrub:
+                extra = shlex.quote(",".join(scrub))
+                command = f'ACTANT_SCRUB_ENV="${{ACTANT_SCRUB_ENV:+$ACTANT_SCRUB_ENV,}}"{extra} {command}'
+            launched = await self.sandbox.exec(
+                ["sh", "-c", command], cwd=cwd, timeout=30, env=env, keep_env=True
+            )
+            if launched.returncode != 0:
+                raise RuntimeError(f"could not launch the actant host: {launched.stderr[-2000:]}")
+            pong = await self._request({"tool": host_module.PING}, wait=30, timeout=60)
+            if pong.error is not None:
+                raise RuntimeError(
+                    f"actant host did not come up: {pong.error}\n{await self.log()}"
+                )
 
     async def call(
         self,
@@ -95,18 +119,36 @@ class RemoteHost:
         init: Mapping[str, object] | None = None,
         timeout: float = 600,
     ) -> RemoteResult:
+        """Run one tool. A host that died (OOM, a crash) is restarted once and the call retried.
+
+        The short wait is safe because ``start`` returns only once the host answers;
+        a longer one would only delay noticing a dead host.
+        """
         request = {"context": context, "init": init, "tool": tool, "args": dict(args)}
-        return await self._request(request, wait=30, timeout=timeout)
+        result = await self._request(request, wait=5, timeout=timeout)
+        if self._started is not None and "no actant host" in (result.error or ""):
+            factory, options = self._started
+            try:
+                await self.start(factory, **options)  # pyright: ignore[reportArgumentType]
+            except RuntimeError as error:
+                return RemoteResult("", error=f"{result.error}\nrestart failed: {error}")
+            result = await self._request(request, wait=5, timeout=timeout)
+        return result
 
     async def log(self) -> str:
         result = await self.sandbox.exec(["cat", self.log_path], timeout=30)
         return result.stdout + result.stderr
 
     async def _request(self, request: object, *, wait: float, timeout: float) -> RemoteResult:
-        encoded = base64.b64encode(json.dumps(request).encode()).decode()
+        # A file, not argv: Linux caps one argument at 128 KiB. ``call`` deletes it.
+        request_file = f"{REQUESTS_DIR}/{uuid.uuid4().hex}.json"
         argv = [self.python, "-m", "actant.sandbox.host", "call", "--socket", self.socket]
-        argv += ["--request", encoded, "--wait", str(wait)]
-        result = await self.sandbox.exec(argv, timeout=timeout)
+        argv += ["--request-file", request_file, "--wait", str(wait)]
+        try:
+            await self.sandbox.write(request_file, json.dumps(request).encode())
+            result = await self.sandbox.exec(argv, timeout=timeout)
+        except Exception as error:  # noqa: BLE001 -- a tool result, never a crashed turn
+            return RemoteResult("", error=f"host call failed: {type(error).__name__}: {error}")
         lines = result.stdout.strip().splitlines()
         if result.returncode == 0 and lines:
             try:

@@ -111,3 +111,133 @@ async def test_call_overhead(host: RemoteHost) -> None:
     for _ in range(10):
         await host.call("o", _path(tools.bump), {})
     print(f"\nper-call overhead: {(time.monotonic() - started) * 100:.1f} ms")
+
+
+async def _stop(remote: RemoteHost) -> None:
+    await remote.sandbox.exec(["pkill", "-f", f"host serve --socket {remote.socket}"], timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_large_arguments_travel_by_file_and_exec_errors_become_results(
+    host: RemoteHost, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = await host.call("big", _path(tools.size), {"text": "x" * 2_000_000})
+    assert (result.error, result.text) == (None, "2000000")
+    assert list((tmp_path / ".actant" / "requests").iterdir()) == []
+
+    async def broken(*_: object, **__: object) -> object:
+        raise OSError("Argument list too long")
+
+    monkeypatch.setattr(host.sandbox, "exec", broken)
+    failed = await host.call("big", _path(tools.bump), {})
+    assert failed.error is not None and "Argument list too long" in failed.error
+
+
+@pytest.mark.asyncio
+async def test_scrub_env_hides_keys_from_commands_but_not_the_host(tmp_path: Path) -> None:
+    sandbox = LocalSandbox(
+        tmp_path, env={"PYTHONPATH": TESTS, "KEY_A": "a", "KEY_B": "b"}, scrub_env=("KEY_A",)
+    )
+    assert (await sandbox.exec(["sh", "-c", "echo ${KEY_A:-gone}"], timeout=10)).stdout == "gone\n"
+    kept = await sandbox.exec(["sh", "-c", "echo $KEY_A"], timeout=10, keep_env=True)
+    assert kept.stdout == "a\n"
+
+    remote = RemoteHost(sandbox)
+    try:
+        await remote.start(FACTORY, scrub=("KEY_B",))
+        a = await remote.call("e", _path(tools.env), {"name": "KEY_A"})
+        b = await remote.call("e", _path(tools.env), {"name": "KEY_B"})
+        scrub = await remote.call("e", _path(tools.env), {"name": "ACTANT_SCRUB_ENV"})
+        assert a.text == '{"host": "a", "scrubbed": null}'
+        assert b.text == '{"host": "b", "scrubbed": null}'
+        assert '"host": "KEY_A,KEY_B"' in scrub.text
+        await _stop(remote)
+        await asyncio.sleep(0.2)
+        await remote.start(FACTORY)  # no scrub: the spec's list survives
+        scrub = await remote.call("e", _path(tools.env), {"name": "ACTANT_SCRUB_ENV"})
+        assert '"host": "KEY_A"' in scrub.text
+    finally:
+        await _stop(remote)
+
+
+@pytest.mark.asyncio
+async def test_hosts_of_two_sandboxes_are_isolated_and_concurrent_starts_share_one(
+    tmp_path: Path,
+) -> None:
+    a = LocalSandbox(tmp_path / "a", env={"PYTHONPATH": TESTS})
+    b = LocalSandbox(tmp_path / "b", env={"PYTHONPATH": TESTS})
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    hosts = [RemoteHost(a), RemoteHost(a), RemoteHost(b)]
+    assert hosts[0].socket == hosts[1].socket != hosts[2].socket
+    assert len(hosts[0].socket) < 100
+    try:
+        await asyncio.gather(*(h.start(FACTORY) for h in hosts), hosts[0].start(FACTORY))
+        for h in (hosts[0], hosts[2]):
+            ps = await h.sandbox.exec(
+                ["pgrep", "-f", f"host serve --socket {h.socket}"], timeout=10
+            )
+            assert len(ps.stdout.split()) == 1
+        assert (await hosts[0].call("c", _path(tools.bump), {})).text == '{"count": 1}'
+        assert (await hosts[1].call("c", _path(tools.bump), {})).text == '{"count": 2}'
+        assert (await hosts[2].call("c", _path(tools.bump), {})).text == '{"count": 1}'
+    finally:
+        for h in (hosts[0], hosts[2]):
+            await _stop(h)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_after_hook_is_logged_and_a_dead_host_restarts(tmp_path: Path) -> None:
+    remote = RemoteHost(LocalSandbox(tmp_path, env={"PYTHONPATH": TESTS}))
+    try:
+        await remote.start(FACTORY, after="echo push denied >&2; exit 3")
+        await remote.call("d", _path(tools.bump), {})
+        for _ in range(50):
+            if "after hook exited 3" in await remote.log():
+                break
+            await asyncio.sleep(0.05)
+        assert "push denied" in await remote.log()
+
+        await _stop(remote)
+        await asyncio.sleep(0.2)
+        result = await remote.call("d", _path(tools.bump), {})
+        assert (result.error, result.text) == (None, '{"count": 1}')
+    finally:
+        await _stop(remote)
+
+
+def test_adapt_reads_only_images_under_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from actant.sandbox.host import adapt
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ok.png").write_bytes(b"png")
+    (tmp_path / "notes.txt").write_text("secret")
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(b"png")
+    response = adapt(tools.Rendered("r", ["ok.png", "notes.txt", str(outside), "../outside.png"]))
+    assert [image["path"] for image in response["images"]] == ["ok.png"]  # pyright: ignore[reportGeneralTypeIssues]
+    assert str(response["text"]).count("dropped") == 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_factory_does_not_evict_a_newer_context() -> None:
+    from actant.sandbox.host import Server
+
+    server = Server(FACTORY, None)
+    gate = asyncio.Event()
+
+    async def failing(key: str, init: object) -> object:
+        await gate.wait()
+        raise RuntimeError("factory failed")
+
+    server.factory = failing
+    first = asyncio.create_task(server.context("k", None))
+    await asyncio.sleep(0)
+    newer: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+    server.contexts["k"] = newer
+    gate.set()
+    with pytest.raises(RuntimeError):
+        await first
+    assert server.contexts["k"] is newer
