@@ -10,7 +10,7 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 import pytest
@@ -18,6 +18,7 @@ import pytest
 from actant.sandbox import Endpoint, LocalSandbox, LocalSandboxProvider, SandboxSpec
 from actant.sandbox import host
 from actant.tools import LocalRunner, RemoteRunner, SandboxRunner, tools, toolset_schema
+from actant.core import JSONObject
 from actant.tools.base import CallContext, ToolResult
 from actant.tools.toolset import call_host
 from toolset_fixtures import Counter, Stages
@@ -64,7 +65,10 @@ class Sample(Base):
 
 
 def test_schema_comes_from_the_signature_without_self() -> None:
-    schemas = {s["function"]["name"]: s["function"] for s in toolset_schema(Sample)}  # pyright: ignore[reportIndexIssue]
+    schemas: dict[str, Any] = {
+        s["function"]["name"]: s["function"]  # pyright: ignore[reportIndexIssue]
+        for s in toolset_schema(Sample)
+    }
     assert list(schemas) == ["inherited", "search", "sync_helper"]
     search = schemas["search"]
     assert search["description"] == "Find things.\n\nMore detail."
@@ -111,7 +115,7 @@ async def _call(
 ) -> ToolResult:
     (tool,) = [t for t in tools(Counter, runner) if t.name == method]  # pyright: ignore[reportArgumentType]
     ctx = ctx or _ctx()
-    return await (await tool.build(args, ctx)).execute()
+    return await (await tool.build(cast(JSONObject, args), ctx)).execute()
 
 
 async def test_local_and_remote_runners_give_identical_results(
@@ -342,8 +346,9 @@ async def test_attach_reuses_the_running_host_and_close_stops_it(tmp_path: Path)
     opened = await provider.open(spec, agent_id="a", thread_id="t")
     try:
         attached = await provider.attach(spec, opened.id)
-        assert attached is opened and await opened.endpoint() is not None
-        await _call(RemoteRunner(await opened.endpoint(), "counter", key="k"), "bump")
+        endpoint = await opened.endpoint()
+        assert attached is opened and endpoint is not None
+        await _call(RemoteRunner(endpoint, "counter", key="k"), "bump")
     finally:
         await opened.close()
     restarted = await provider.attach(spec, opened.id)
