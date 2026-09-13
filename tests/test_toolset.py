@@ -417,7 +417,7 @@ async def test_entry_restores_before_serving_and_pushes_after_calls(
     process.terminate()
     await process.wait()
     assert process.stderr is not None
-    assert "storage push exited 3" in (await process.stderr.read()).decode()
+    assert "storage push failed: exited 3" in (await process.stderr.read()).decode()
 
 
 async def test_shutdown_closes_instances_pushes_and_exits(
@@ -445,3 +445,138 @@ def test_entry_exits_when_restore_fails(tmp_path: Path) -> None:
         timeout=30,
     )
     assert done.returncode == 1 and "access denied" in done.stderr
+
+
+#: A push that logs, then hangs while ``hang`` exists and exits with the code in ``code``.
+PUSH_SCRIPT = """
+import os, sys, time
+open('pushes', 'a').write('push\\n')
+while os.path.exists('hang'):
+    time.sleep(0.05)
+sys.exit(int(open('code').read()) if os.path.exists('code') else 0)
+"""
+
+
+async def _start_host(tmp_path: Path, *extra: str) -> tuple[Endpoint, asyncio.subprocess.Process]:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "actant.sandbox.entry",
+        "--",
+        "--toolset=counter=toolset_fixtures:Counter",
+        *host.launch_args({}, port=0, bind="127.0.0.1", push_interval_s=0.3, push_timeout_s=1),
+        "--push",
+        json.dumps([sys.executable, "-c", PUSH_SCRIPT]),
+        *extra,
+        cwd=tmp_path,
+        env={"PYTHONPATH": TESTS, "PATH": "/usr/bin:/bin"},
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    line = (await asyncio.wait_for(process.stdout.readline(), 30)).decode()
+    prefix, _, port = line.strip().partition(" ")
+    assert prefix == host.READY_PREFIX, line
+    return Endpoint(f"http://127.0.0.1:{port}"), process
+
+
+async def _until(check: Any, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not check():
+        assert time.monotonic() < deadline, "condition never held"
+        await asyncio.sleep(0.05)
+
+
+async def test_push_failures_and_hangs_never_touch_calls_and_show_in_status(
+    tmp_path: Path,
+) -> None:
+    endpoint, process = await _start_host(tmp_path)
+    pushes = tmp_path / "pushes"
+
+    def count() -> int:
+        return len(pushes.read_text().splitlines()) if pushes.exists() else 0
+
+    async def storage() -> dict[str, Any]:
+        result = await call_host(endpoint, "counter", "length", {"text": "abc"}, key="k")
+        assert result.output == "3" and result.error is None  # the call never suffers
+        return cast("dict[str, Any]", result.metadata["storage"])
+
+    try:
+        # A hanging push is killed at the timeout; the pusher carries on and retries.
+        (tmp_path / "hang").touch()
+        first = await storage()
+        assert first["pending"] and first["consecutive_failures"] == 0
+        await _until(lambda: count() >= 2, 10)  # the first timed out, the next started
+        status = await storage()
+        assert status["last_error"] == "timed out after 1s" and status["consecutive_failures"] >= 1
+
+        # A failing push: calls still succeed and the status names the exit.
+        (tmp_path / "code").write_text("3")
+        (tmp_path / "hang").unlink()
+        await asyncio.sleep(1)
+        status = await storage()
+        assert status["last_error"].startswith("exited 3") and status["last_success_at"] is None
+
+        # Periodic: with no calls at all, the unpushed work is retried until it lands.
+        before = count()
+        await _until(lambda: count() >= before + 2, 10)
+        (tmp_path / "code").unlink()
+        before = count()
+        await _until(lambda: count() > before, 10)
+        await asyncio.sleep(0.5)
+        status = await storage()
+        assert status["last_error"] is None and status["consecutive_failures"] == 0
+        assert status["last_success_at"] is not None
+        # Once pushed, a quiet host stops pushing.
+        await asyncio.sleep(1)
+        quiet = count()
+        await asyncio.sleep(1)
+        assert count() == quiet
+    finally:
+        process.terminate()
+        await process.wait()
+
+
+async def test_shutdown_finishes_within_the_timeout_when_the_push_hangs(tmp_path: Path) -> None:
+    endpoint, process = await _start_host(tmp_path)
+    (tmp_path / "hang").touch()
+    await call_host(endpoint, "counter", "bump", {}, key="k")
+    started = time.monotonic()
+    status, _ = await asyncio.to_thread(host.post, endpoint, host.SHUTDOWN_PATH, b"{}", 30)
+    assert status == 200 and await asyncio.wait_for(process.wait(), 10) == 0
+    assert time.monotonic() - started < 5  # a running push plus the final one, 1 s each
+
+
+def test_entry_fails_when_restore_times_out(tmp_path: Path) -> None:
+    restore = [sys.executable, "-c", "import time; time.sleep(60)"]
+    started = time.monotonic()
+    done = subprocess.run(
+        [sys.executable, "-m", "actant.sandbox.entry", "--restore", json.dumps(restore),
+         "--restore-timeout", "0.5"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )  # fmt: skip
+    assert done.returncode == 1 and "restore timed out after 0.5s" in done.stderr
+    assert time.monotonic() - started < 20
+
+
+def test_stamp_gives_restored_files_their_object_mtimes(tmp_path: Path) -> None:
+    from actant.sandbox.entry import stamp_mtimes
+
+    (tmp_path / "dir").mkdir()
+    (tmp_path / "dir" / "a.json").write_text("{}")
+    (tmp_path / "changed.txt").write_text("longer than remote")
+    (tmp_path / "empty").write_text("")
+    prefix = "s3://b/sandboxes/t1/"
+    listing = [
+        json.dumps({"key": f"{prefix}dir/a.json", "last_modified": "2026-01-02T03:04:05.123456789Z", "size": 2}),
+        json.dumps({"key": f"{prefix}changed.txt", "last_modified": "2026-01-02T03:04:05Z", "size": 3}),
+        json.dumps({"key": f"{prefix}empty", "last_modified": "2026-01-02T03:04:05+00:00"}),
+        json.dumps({"key": f"{prefix}missing", "last_modified": "2026-01-02T03:04:05Z", "size": 1}),
+        "not json",
+    ]  # fmt: skip
+    assert stamp_mtimes(listing, prefix, tmp_path) == 2
+    stamp = 1767323045
+    assert int((tmp_path / "dir" / "a.json").stat().st_mtime) == stamp
+    assert int((tmp_path / "empty").stat().st_mtime) == stamp
+    # A size mismatch keeps its fresh mtime, so the next push uploads it.
+    assert int((tmp_path / "changed.txt").stat().st_mtime) > stamp

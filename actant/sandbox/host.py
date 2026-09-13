@@ -19,7 +19,7 @@ its own code makes (setup, stages, checks) on another, without filtering.
 
 Protocol (JSON bodies)::
 
-    POST /v1/call {toolset, key, init, method, args} -> {text, images, error}
+    POST /v1/call {toolset, key, init, method, args} -> {text, images, error, storage?}
          images: [{name, media_type, data_b64}]
     POST /v1/shutdown                                -> close instances, push, exit
 
@@ -35,6 +35,19 @@ parameter annotated with a pydantic model or a ``Literal`` receives that type.
 Calls run concurrently. When ``ACTANT_HOST_TOKEN`` is set at launch, every call
 needs ``Authorization: Bearer <token>`` (checked before the body is read); the
 variable is removed from the process environment once read.
+
+Storage pushes (``--push``) never fail or stall a call. A push runs after calls and
+every ``--push-interval`` seconds while calls have completed since the last
+successful one; never two at once. Each is killed (its process group) after
+``--push-timeout`` seconds. A host that pushes adds ``storage`` to every call
+response (:meth:`Host.storage_status`), which runners put on
+``ToolResult.metadata["storage"]``::
+
+    {"last_attempt_at": float | None,  # unix time the latest push started
+     "last_success_at": float | None,  # unix time the latest successful push started
+     "last_error": str | None,         # short reason the latest push failed; None once one succeeds
+     "consecutive_failures": int,      # failed pushes since the last success
+     "pending": bool}                  # calls completed that no successful push has covered
 """
 
 from __future__ import annotations
@@ -67,6 +80,8 @@ from pydantic import BaseModel, ConfigDict, create_model
 from actant.sandbox.base import Endpoint
 
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
+PUSH_INTERVAL_S = 60.0
+PUSH_TIMEOUT_S = 300.0
 #: The line the host prints to stdout once it accepts connections: ``<prefix> <port>``.
 READY_PREFIX = "actant-host-listening"
 CALL_PATH = "/v1/call"
@@ -331,11 +346,18 @@ def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[in
 
 
 def launch_args(
-    toolsets: Mapping[str, str], *, port: int, bind: str, scrub: Sequence[str] = ()
+    toolsets: Mapping[str, str],
+    *,
+    port: int,
+    bind: str,
+    scrub: Sequence[str] = (),
+    push_interval_s: float = PUSH_INTERVAL_S,
+    push_timeout_s: float = PUSH_TIMEOUT_S,
 ) -> list[str]:
     """The host's command line for ``toolsets`` (name to ``"pkg.mod:Class"``)."""
     args = [f"--toolset={name}={path}" for name, path in toolsets.items()]
     args += ["--port", str(port), "--bind", bind]
+    args += ["--push-interval", str(push_interval_s), "--push-timeout", str(push_timeout_s)]
     return args + [f"--scrub={name}" for name in scrub]
 
 
@@ -346,6 +368,8 @@ class Host:
         *,
         token: str | None = None,
         push: Sequence[str] | None = None,
+        push_interval_s: float = PUSH_INTERVAL_S,
+        push_timeout_s: float = PUSH_TIMEOUT_S,
     ) -> None:
         self.toolsets = dict(toolsets)
         self.methods = {name: frozenset(public_methods(cls)) for name, cls in toolsets.items()}
@@ -355,6 +379,13 @@ class Host:
         self.instances: dict[tuple[str, str], asyncio.Future[object]] = {}
         self._push_due = asyncio.Event()
         self._push_lock = asyncio.Lock()
+        self.push_interval_s = push_interval_s
+        self.push_timeout_s = push_timeout_s
+        self._pending = False
+        self._last_attempt: float | None = None
+        self._last_success: float | None = None
+        self._last_error: str | None = None
+        self._failures = 0
         self._shutdown: asyncio.Future[None] | None = None
         self.stop = asyncio.Event()
         self.writers: set[asyncio.StreamWriter] = set()
@@ -389,32 +420,76 @@ class Host:
             return HTTPStatus.NOT_FOUND, response(error=f"unknown tool method {method!r}")
         try:
             instance = await self.instance(toolset, key, init)
-            return HTTPStatus.OK, await call_method(instance, method, args)
+            payload = await call_method(instance, method, args)
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
-            return HTTPStatus.OK, failure(error)
-        finally:
-            if self.push:
-                self._push_due.set()
+            payload = failure(error)
+        if self.push:
+            self._pending = True
+            self._push_due.set()
+            payload["storage"] = self.storage_status()
+        return HTTPStatus.OK, payload
+
+    def storage_status(self) -> dict[str, object]:
+        """The push status added to call responses; fields in the module docstring."""
+        return {
+            "last_attempt_at": self._last_attempt,
+            "last_success_at": self._last_success,
+            "last_error": self._last_error,
+            "consecutive_failures": self._failures,
+            "pending": self._pending,
+        }
 
     async def pusher(self) -> None:
-        """Push storage after calls: one push running, at most one pending."""
+        """Push after calls (one running, at most one pending) and every
+        ``push_interval_s`` while a completed call is not yet pushed."""
         assert self.push
         while True:
-            await self._push_due.wait()
-            self._push_due.clear()
-            await self.push_now()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._push_due.wait(), self.push_interval_s)
+            if self._push_due.is_set() or self._pending:
+                self._push_due.clear()
+                await self.push_now()
 
     async def push_now(self) -> None:
+        """Run the push command once, bounded by ``push_timeout_s``. Never raises."""
         if not self.push:
             return
         async with self._push_lock:
+            self._pending = False
+            self._last_attempt = started = time.time()
+            error = await self._run_push(self.push)
+            if error is None:
+                self._last_success, self._last_error, self._failures = started, None, 0
+            else:
+                # A call during the push set ``_pending`` again; a failure keeps it set.
+                self._pending = True
+                self._last_error, self._failures = error, self._failures + 1
+                print(f"storage push failed: {error}", file=sys.stderr, flush=True)
+
+    async def _run_push(self, argv: Sequence[str]) -> str | None:
+        """The push's short failure reason, or ``None`` when it exited 0."""
+        try:
             process = await asyncio.create_subprocess_exec(
-                *self.push, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+                *argv,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # a timeout kills s5cmd and anything it started
             )
-            _, stderr = await process.communicate()
+        except OSError as error:
+            return f"could not start: {error}"[:500]
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), self.push_timeout_s)
+        except (TimeoutError, asyncio.CancelledError) as stopped:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()
+            if isinstance(stopped, asyncio.CancelledError):
+                raise
+            return f"timed out after {self.push_timeout_s:g}s"
         if process.returncode:
-            tail = stderr.decode(errors="replace")[-2000:]
-            print(f"storage push exited {process.returncode}: {tail}", file=sys.stderr, flush=True)
+            tail = stderr.decode(errors="replace").strip()[-500:]
+            return f"exited {process.returncode}: {tail}"
+        return None
 
     def reject(
         self, verb: str, path: str, headers: Mapping[str, str]
@@ -500,7 +575,9 @@ class Host:
                         await _maybe_await(closer())
 
     def shutdown(self) -> asyncio.Future[None]:
-        """Close instances and push storage once more. Runs once; :func:`serve` then exits."""
+        """Close instances and push storage once more. Runs once; :func:`serve` then exits.
+
+        The push waits for one already running, so it ends within twice ``push_timeout_s``."""
         if self._shutdown is None:
             self._shutdown = asyncio.ensure_future(self._close_and_push())
         return self._shutdown
@@ -560,6 +637,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--scrub", action="append", default=[], help="name script_env() removes")
     parser.add_argument("--push", help="JSON argv run (debounced) after calls to push storage")
+    parser.add_argument("--push-interval", type=float, default=PUSH_INTERVAL_S)
+    parser.add_argument("--push-timeout", type=float, default=PUSH_TIMEOUT_S)
     args = parser.parse_args(argv)
     _scrub = frozenset(args.scrub)
     toolsets: dict[str, type] = {}
@@ -572,6 +651,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         toolsets,
         token=os.environ.pop(TOKEN_ENV, None),
         push=json.loads(args.push) if args.push else None,
+        push_interval_s=args.push_interval,
+        push_timeout_s=args.push_timeout,
     )
     asyncio.run(serve(host, args.bind, args.port))
     return 0

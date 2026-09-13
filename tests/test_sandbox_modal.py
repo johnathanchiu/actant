@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ import pytest
 from actant.sandbox import Endpoint, SandboxSpec, Storage
 from actant.sandbox import host
 from actant.sandbox.entry import READY_FILE
+import actant.sandbox.modal as modal_backend
 from actant.sandbox.modal import (
     DISK_PATH,
     MOUNT_PATH,
@@ -155,6 +157,8 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
         secrets=("service",),
         scrub_env=("SERVICE_KEY", "AWS_SECRET_ACCESS_KEY"),
         env={"MODE": "test"},
+        sync_interval_s=30,
+        sync_timeout_s=120,
     )
     sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
     assert isinstance(sandbox, ModalSandbox)
@@ -164,8 +168,14 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     assert list(args) == [
         "python", "-m", "actant.sandbox.entry",
         "--restore", json.dumps(restore),
+        "--restore-timeout", "1800",
+        "--stamp", json.dumps(
+            {"argv": ["s5cmd", "--json", *S5[1:], "ls", "s3://b/sandboxes/t1/*"],
+             "prefix": "s3://b/sandboxes/t1/", "root": DISK_PATH}
+        ),
         "--",
         "--toolset=notes=pkg.tools:Notes", "--port", "9000", "--bind", "0.0.0.0",
+        "--push-interval", "30", "--push-timeout", "120",
         "--scrub=SERVICE_KEY", "--scrub=AWS_SECRET_ACCESS_KEY",
         "--push", json.dumps(push),
     ]  # fmt: skip
@@ -193,7 +203,11 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     fake.execs.clear()
     await sandbox.sync()
     ((argv, kwargs),) = fake.execs
-    assert list(argv[2:]) == push and kwargs["workdir"] == DISK_PATH
+    assert (
+        argv[:2] == ("timeout", "120")
+        and list(argv[2:]) == push
+        and kwargs["workdir"] == DISK_PATH
+    )
 
     # attach returns the live handle (one poll, no new token); refresh re-mints.
     assert await provider.attach(spec, "sb-1") is sandbox and fake.tokens == [9000]
@@ -300,3 +314,26 @@ def test_storage_accepts_the_enum_or_its_string_and_rejects_others() -> None:
     assert SandboxSpec().storage is Storage.MOUNT
     with pytest.raises(ValueError):
         SandboxSpec(storage="nfs")  # pyright: ignore[reportArgumentType]
+
+
+async def test_sync_and_close_are_bounded_when_modal_hangs(
+    monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
+) -> None:
+    fake = _FakeModal()
+    _use(monkeypatch, fake)
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, sync_timeout_s=0.1)
+    sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
+    monkeypatch.setattr(modal_backend, "API_SLACK_S", 0.1)
+
+    async def hang(*_: Any, **__: Any) -> Any:
+        await asyncio.sleep(3600)
+
+    fake.sandbox.exec = _Aio(hang)
+    result = await asyncio.wait_for(sandbox.sync(), 5)
+    assert result.timed_out and result.returncode == 124
+
+    async def broken(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("modal is down")
+
+    fake.sandbox.terminate = _Aio(broken)
+    await asyncio.wait_for(sandbox.close(), 5)  # neither hangs nor raises

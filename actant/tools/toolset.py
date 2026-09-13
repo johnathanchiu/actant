@@ -58,7 +58,19 @@ class Runner(Protocol):
 
 
 def to_tool_result(response: Mapping[str, object]) -> ToolResult:
-    """A host response (``{text, images, error}``) as a :class:`ToolResult`."""
+    """A host response (``{text, images, error, storage?}``) as a :class:`ToolResult`.
+
+    A host that pushes storage reports its push status as ``storage``; it lands on
+    ``metadata["storage"]`` (fields in :mod:`actant.sandbox.host`) so a product can
+    warn when pushes fail, without the call itself failing.
+    """
+    result = _result(response)
+    if isinstance(response.get("storage"), dict):
+        result.metadata["storage"] = response["storage"]
+    return result
+
+
+def _result(response: Mapping[str, object]) -> ToolResult:
     text = str(response.get("text") or "")
     error = response.get("error")
     if error is not None:

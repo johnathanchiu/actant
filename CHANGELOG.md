@@ -4,6 +4,20 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.9.1
+
+- Storage sync never fails or stalls a run. The toolset host kills a push after
+  `SandboxSpec.sync_timeout_s` (default 300) and keeps pushing; it also pushes every
+  `sync_interval_s` (default 60) while completed calls are unpushed. The final push
+  on shutdown is bounded the same way.
+- Push status is visible: call responses carry `storage`, surfaced as
+  `ToolResult.metadata["storage"]` (`last_attempt_at`, `last_success_at`,
+  `last_error`, `consecutive_failures`, `pending`).
+- `disk_sync` restore has a timeout (fails startup) and gives restored files their
+  objects' mtimes, so pushes no longer re-upload the whole workspace after a restore.
+- `ModalSandbox.sync` and `close` are bounded even when Modal's API hangs, and
+  `close` never raises.
+
 ## 0.9.0
 
 **Breaking:** the `Sandbox` protocol gains `sync()` and `endpoint(refresh=)`; a
