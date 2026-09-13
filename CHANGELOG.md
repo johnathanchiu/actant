@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `SandboxSpec.seed` (`disk_sync`): a new thread's disk restores from another bucket
+  prefix (a template) instead of its own; pushes still go to the thread's prefix.
+- A `disk_sync` sandbox starts sooner: the services' modules import and the mtime
+  listing runs while the restore pulls. Importing a service module must not read the
+  restored files. `host.main` takes already loaded services.
+
 ## 0.11.0
 
 **Breaking:** toolsets are now services. The sandbox host serves plain classes whose

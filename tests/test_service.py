@@ -25,6 +25,7 @@ from actant.sandbox.protocol import (
     HostConfig,
     PushConfig,
     RestoreConfig,
+    StampConfig,
     Route,
 )
 from actant.tools import tool_schemas, tools
@@ -610,3 +611,48 @@ def test_stamp_gives_restored_files_their_object_mtimes(tmp_path: Path) -> None:
     assert int((tmp_path / "empty").stat().st_mtime) == stamp
     # A size mismatch keeps its fresh mtime, so the next push uploads it.
     assert int((tmp_path / "changed.txt").stat().st_mtime) > stamp
+
+
+def test_entry_imports_services_and_lists_the_stamp_while_the_restore_runs(
+    tmp_path: Path,
+) -> None:
+    """The restore finishes only once the service module was imported and the stamp's
+    listing ran: in sequence, it would time out. The listing is still applied after it."""
+    (tmp_path / "slow_service.py").write_text(
+        "open('imported', 'w').close()\nclass Svc:\n    def ping(self) -> str:\n        return 'pong'\n"
+    )
+    wait = (
+        "import os, sys, time\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not (os.path.exists('imported') and os.path.exists('listed')):\n"
+        "    if time.monotonic() > deadline: sys.exit('never imported or listed')\n"
+        "    time.sleep(0.05)\n"
+        "open('restored.txt', 'w').write('abc')\n"
+    )
+    listed = json.dumps(
+        {"key": "s3://b/t/restored.txt", "last_modified": "2026-01-02T03:04:05Z", "size": 3}
+    )
+    lister = f"open('listed', 'w').close(); print({listed!r})"
+    config = EntryConfig(
+        restore=RestoreConfig(
+            argv=[sys.executable, "-c", wait],
+            timeout_s=20,
+            stamp=StampConfig(
+                argv=[sys.executable, "-c", lister], prefix="s3://b/t/", root=str(tmp_path)
+            ),
+        ),
+        host=HostConfig(services={"svc": "slow_service:Svc"}, port=0, bind="127.0.0.1"),
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "actant.sandbox.entry", config.model_dump_json()],
+        cwd=tmp_path, env={"PYTHONPATH": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert process.stdout is not None
+        line = process.stdout.readline()
+        assert line.startswith(host.READY_PREFIX), process.stderr and process.stderr.read()
+        assert int((tmp_path / "restored.txt").stat().st_mtime) == 1767323045
+    finally:
+        process.terminate()
+        process.wait()

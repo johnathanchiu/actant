@@ -8,8 +8,8 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     append, rename or seek). The bucket keys go to the mount, never the process.
 ``"disk_sync"``
     Files live on the container's own disk under :data:`DISK_PATH`, with normal
-    POSIX semantics. ``open`` restores the prefix onto the disk with s5cmd and
-    :meth:`ModalSandbox.sync` pushes it back, deleting remote files removed
+    POSIX semantics. ``open`` restores the prefix (a new thread's ``SandboxSpec.seed``
+    instead, when set) onto the disk with s5cmd and :meth:`ModalSandbox.sync` pushes it back, deleting remote files removed
     locally; a service host also pushes after its calls and every
     ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
     pushes once more. Restored files get their objects' mtimes, so a push
@@ -242,9 +242,9 @@ class ModalSandboxProvider:
         restore = push = None
         if disk_sync:
             restore = RestoreConfig(
-                argv=self.restore_argv(thread_id),
+                argv=self.restore_argv(thread_id, spec.seed),
                 timeout_s=SYNC_TIMEOUT_S,
-                stamp=self.stamp_config(thread_id),
+                stamp=self.stamp_config(thread_id, spec.seed),
             )
             push = PushConfig(
                 argv=self.sync_argv(thread_id),
@@ -273,14 +273,19 @@ class ModalSandboxProvider:
         """Push a ``disk_sync`` disk to its prefix, mirroring: remote files removed locally go."""
         return self._s5cmd("sync", "--delete", f"{DISK_PATH}/", self._remote(thread_id))
 
-    def restore_argv(self, thread_id: str) -> list[str]:
-        """Pull a thread's prefix onto the disk (never deletes)."""
-        return self._s5cmd("sync", f"{self._remote(thread_id)}*", f"{DISK_PATH}/")
+    def _source(self, thread_id: str, seed: str | None) -> str:
+        return f"s3://{self.bucket}/{seed}" if seed else self._remote(thread_id)
 
-    def stamp_config(self, thread_id: str) -> StampConfig:
-        """List the prefix after a restore, so restored files keep their objects' mtimes."""
-        argv = ["s5cmd", "--json", *self._s5cmd("ls", f"{self._remote(thread_id)}*")[1:]]
-        return StampConfig(argv=argv, prefix=self._remote(thread_id), root=DISK_PATH)
+    def restore_argv(self, thread_id: str, seed: str | None = None) -> list[str]:
+        """Pull a thread's prefix (or its ``seed``) onto the disk (never deletes)."""
+        return self._s5cmd("sync", f"{self._source(thread_id, seed)}*", f"{DISK_PATH}/")
+
+    def stamp_config(self, thread_id: str, seed: str | None = None) -> StampConfig:
+        """List what the restore pulls, so restored files keep their objects' mtimes. A seed's
+        objects are older than the thread's copies of them, so a push skips those too."""
+        source = self._source(thread_id, seed)
+        argv = ["s5cmd", "--json", *self._s5cmd("ls", f"{source}*")[1:]]
+        return StampConfig(argv=argv, prefix=source, root=DISK_PATH)
 
 
 def with_s5cmd(image: Any) -> Any:
