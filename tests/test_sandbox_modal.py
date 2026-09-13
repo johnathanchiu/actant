@@ -126,7 +126,7 @@ def _use(monkeypatch: pytest.MonkeyPatch, fake: _FakeModal) -> None:
 S5 = ("s5cmd", "--endpoint-url", "https://r2.example")
 
 
-async def test_mount_without_toolset_has_no_entrypoint(
+async def test_mount_without_service_has_no_entrypoint(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
     fake = _FakeModal()
@@ -150,7 +150,7 @@ async def test_mount_without_toolset_has_no_entrypoint(
     assert (await sandbox.sync()).returncode == 0 and fake.execs == []
 
 
-async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_token(
+async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_token(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
     fake = _FakeModal()
@@ -158,8 +158,8 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     spec = SandboxSpec(
         backend="modal",
         storage=Storage.DISK_SYNC,
-        toolsets={"notes": "pkg.tools:Notes"},
-        toolset_port=9000,
+        services={"notes": "pkg.tools:Notes"},
+        service_port=9000,
         gpu="L4",
         network=True,
         secrets=("service",),
@@ -185,7 +185,7 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
             ),
         ),
         host=HostConfig(
-            toolsets={"notes": "pkg.tools:Notes"},
+            services={"notes": "pkg.tools:Notes"},
             port=9000,
             bind="0.0.0.0",
             scrub=["SERVICE_KEY", "AWS_SECRET_ACCESS_KEY"],
@@ -257,7 +257,7 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
         await provider.attach(spec, "sb-1")
 
 
-async def test_disk_sync_without_toolset_waits_for_the_restore_marker(
+async def test_disk_sync_without_service_waits_for_the_restore_marker(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
     fake = _FakeModal()
@@ -282,7 +282,7 @@ async def test_open_fails_with_the_entrypoint_stderr_when_never_ready(
 ) -> None:
     fake = _FakeModal(ready_error=TimeoutError("probe"), exit_code=1)
     _use(monkeypatch, fake)
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, toolsets={"t": "pkg:T"})
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, services={"t": "pkg:T"})
     with pytest.raises(RuntimeError, match="access denied"):
         await provider.open(spec, agent_id="a", thread_id="t1")
     assert fake.terminated

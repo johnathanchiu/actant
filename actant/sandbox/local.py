@@ -2,7 +2,7 @@
 
 No isolation. It is the development backend and the one tests use; in
 production the directory is whatever the operator mounted there. A spec's
-toolsets are served by a host subprocess on 127.0.0.1 with a random token.
+services are served by a host subprocess on 127.0.0.1 with a random token.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec
 from actant.sandbox.protocol import EntryConfig, Header, HostConfig
 
-#: How long a host may take to import its toolsets and bind.
+#: How long a host may take to import its services and bind.
 HOST_START_TIMEOUT_S = 60
 #: :mod:`actant.sandbox.entry`, named not imported: running a module this package imports
 #: with ``-m`` would load it twice.
@@ -29,7 +29,7 @@ ENTRY_MODULE = "actant.sandbox.entry"
 
 
 def _environment(env: Mapping[str, str]) -> dict[str, str]:
-    # ``python`` in argv is this interpreter: the one the tools' own package is
+    # ``python`` in argv is this interpreter: the one the services' own package is
     # installed in, which is what a container backend bakes into its image.
     return {
         **os.environ,
@@ -136,7 +136,7 @@ class LocalSandbox:
         return self._endpoint
 
     async def close(self) -> None:
-        """Stop the toolset host, if any. The directory is the durable root."""
+        """Stop the service host, if any. The directory is the durable root."""
         process = self.host_process
         if process is None or process.returncode is not None:
             return
@@ -149,12 +149,12 @@ class LocalSandbox:
 
 
 async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.subprocess.Process]:
-    """Launch the host for ``spec.toolsets`` in ``root`` on a free port; return once it listens."""
-    assert spec.toolsets
+    """Launch the host for ``spec.services`` in ``root`` on a free port; return once it listens."""
+    assert spec.services
     token = secrets.token_urlsafe(32)
     config = EntryConfig(
         host=HostConfig(
-            toolsets=dict(spec.toolsets), port=0, bind="127.0.0.1", scrub=list(spec.scrub_env)
+            services=dict(spec.services), port=0, bind="127.0.0.1", scrub=list(spec.scrub_env)
         )
     )
     argv = [sys.executable, "-m", ENTRY_MODULE, config.model_dump_json()]
@@ -175,9 +175,9 @@ async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.s
             process.kill()
         await process.wait()
         raise RuntimeError(
-            f"toolset host for {dict(spec.toolsets)} did not start (exit {process.returncode})"
+            f"service host for {dict(spec.services)} did not start (exit {process.returncode})"
         )
-    # Keep reading: a tool that prints would otherwise fill the pipe and stall the host.
+    # Keep reading: a service method that prints would otherwise fill the pipe and stall the host.
     _drains.add(task := asyncio.create_task(_forward(process.stdout)))
     task.add_done_callback(_drains.discard)
     endpoint = Endpoint(f"http://127.0.0.1:{port}", {Header.AUTHORIZATION: f"Bearer {token}"})
@@ -195,7 +195,7 @@ async def _forward(stream: asyncio.StreamReader) -> None:
 class LocalSandboxProvider:
     """Sandboxes under ``spec.mount`` (or ``root``, or a temp dir), one directory per thread.
 
-    Toolset hosts live as long as this provider's process; ``attach`` reuses a
+    Service hosts live as long as this provider's process; ``attach`` reuses a
     running one and restarts a dead one.
     """
 
@@ -221,7 +221,7 @@ class LocalSandboxProvider:
         live = self._live.get(root)
         if live and live.host_process and live.host_process.returncode is None:
             return live
-        if not spec.toolsets:
+        if not spec.services:
             return LocalSandbox(root, spec.env, spec.scrub_env)
         endpoint, process = await start_host(spec, root)
         sandbox = LocalSandbox(

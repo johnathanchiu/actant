@@ -23,15 +23,7 @@ from actant.tools.finish import FinishTool
 from actant.tools.function import FunctionTool, FunctionToolInvocation, ToolArguments, tool
 from actant.tools.registry import ToolRegistry
 from actant.tools.supervise import SubagentSupervisor, supervision_tools
-from actant.tools.toolset import (
-    LocalRunner,
-    RemoteRunner,
-    Runner,
-    SandboxRunner,
-    call_host,
-    tools,
-    toolset_schema,
-)
+from actant.tools.service import tool_schemas, tools
 from actant.tools.task import (
     InMemorySubagentRegistry,
     SubagentInvoker,
@@ -41,10 +33,6 @@ from actant.tools.task import (
 
 __all__ = [
     "InMemorySubagentRegistry",
-    "LocalRunner",
-    "RemoteRunner",
-    "Runner",
-    "SandboxRunner",
     "BaseDeclarativeTool",
     "BaseToolInvocation",
     "CallContext",
@@ -71,8 +59,7 @@ __all__ = [
     "ToolWaitRequest",
     "make_tool_schema",
     "supervision_tools",
-    "call_host",
     "tool",
     "tools",
-    "toolset_schema",
+    "tool_schemas",
 ]

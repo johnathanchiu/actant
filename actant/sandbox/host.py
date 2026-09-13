@@ -1,20 +1,20 @@
-"""The toolset host: serves named toolset classes over HTTP from inside a sandbox.
+"""The service host: serves named service classes over HTTP from inside a sandbox.
 
-A toolset is a plain class whose public ``async def`` methods are tools (see
-:mod:`actant.tools.toolset`). Running its methods next to the sandbox's files
+A service is a plain class whose public methods are callable remotely (see
+:mod:`actant.sandbox.service`). Running its methods next to the sandbox's files
 keeps file-heavy work and in-memory state out of the worker; only text and
 image bytes cross the boundary.
 
 ::
 
     python -m actant.sandbox.entry \
-        '{"host": {"toolsets": {"tools": "pkg.mod:Tools", "stages": "pkg.mod:Stages"}}}'
+        '{"host": {"services": {"tools": "pkg.mod:Tools", "stages": "pkg.mod:Stages"}}}'
 
 (:mod:`actant.sandbox.entry` is the command line; this module is imported, never
 run as ``__main__``, so :func:`script_env` sees the configuration ``main`` set.)
 
-Toolsets are fixed at launch. Requests name a toolset and a method, never a module.
-Several toolsets let a product keep the model's tools on one class and the calls
+Services are fixed at launch. Requests name a service and a method, never a module.
+Several services let a product keep the model's tools on one class and the calls
 its own code makes (setup, stages, checks) on another, without filtering.
 
 Protocol (JSON bodies, typed in :mod:`actant.sandbox.protocol`)::
@@ -24,10 +24,10 @@ Protocol (JSON bodies, typed in :mod:`actant.sandbox.protocol`)::
 
 Connections are kept alive (HTTP/1.1); :func:`post` is the pooled client.
 
-One instance per ``(toolset, key)``, created on its first call with ``init``
+One instance per ``(service, key)``, created on its first call with ``init``
 (``await Class.open(**init)`` when the class defines ``open``, else
 ``Class(**init)``); later calls with that key reuse it and ignore ``init``.
-Toolsets do not share instances: two classes that work on the same state build it
+Services do not share instances: two classes that work on the same state build it
 from the same ``init`` (the sandbox's files, or an object their ``open`` looks up).
 Arguments are validated against the method's signature before the call, so a
 parameter annotated with a pydantic model or a ``Literal`` receives that type.
@@ -39,7 +39,7 @@ Storage pushes (``HostConfig.push``) never fail or stall a call. A push runs aft
 calls and every ``interval_s`` while calls have completed since the last successful
 one; never two at once. Each is killed (its process group) after ``timeout_s``. A
 host that pushes adds a :class:`~actant.sandbox.protocol.StorageStatus` to every
-call response, which runners put on ``ToolResult.metadata[MetadataKey.STORAGE]``.
+call response (``CallResponse.storage``).
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ READY_PREFIX = "actant-host-listening"
 #: from one that ran.
 IDLE_REUSE_S = 20.0
 MAX_IDLE_PER_HOST = 32
-#: The instance lifecycle; never exposed as tools.
+#: The instance lifecycle; never callable.
 LIFECYCLE = frozenset({"open", "close"})
 MAX_BODY = 256 * 1024 * 1024
 _IMAGE_MAGIC = {
@@ -103,17 +103,17 @@ _scrub: frozenset[str] = frozenset()
 def script_env() -> dict[str, str]:
     """This process's environment minus the host's ``HostConfig.scrub`` names.
 
-    The host keeps every variable because tools call services with them. Pass this
+    The host keeps every variable because methods call external APIs with them. Pass this
     as ``env=`` to any subprocess a tool starts for code it did not write. Best
     effort, not a security boundary.
     """
     return {name: value for name, value in os.environ.items() if name not in _scrub}
 
 
-def public_methods(cls: type) -> list[str]:
-    """The toolset's tools: public functions (``async def`` or plain ``def``) on the class
+def service_methods(cls: type) -> list[str]:
+    """The service's callable methods: public functions (``async def`` or plain ``def``) on the class
     and its bases, in definition order, excluding :data:`LIFECYCLE`. Static and class
-    methods and properties are not tools."""
+    methods and properties are not callable."""
     names: list[str] = []
     for klass in reversed(cls.__mro__):
         for name in vars(klass):
@@ -179,7 +179,7 @@ def load(path: str) -> type:
 
 
 def encode_output(output: object) -> CallResponse:
-    """A tool's return value as a response.
+    """A service method's return value as a response.
 
     ``str`` is the text. An object with ``.text`` and ``.images`` carries images as
     file paths or bytes; a path must name an image file (by extension) and bytes
@@ -223,7 +223,7 @@ def failure(error: BaseException) -> CallResponse:
 
 
 async def call_method(instance: object, method: str, args: Mapping[str, object]) -> CallResponse:
-    """Validate the arguments, run one tool method, and encode its result or its exception.
+    """Validate the arguments, run one service method, and encode its result or its exception.
 
     A plain ``def`` runs in a worker thread, so it never stalls other calls. An
     ``async def`` runs on the event loop: CPU-heavy or blocking work inside one
@@ -239,7 +239,7 @@ async def call_method(instance: object, method: str, args: Mapping[str, object])
         else:
             output = await asyncio.to_thread(function, **kwargs)
         return encode_output(output)
-    except Exception as error:  # noqa: BLE001 -- a tool failure is a result, not a crash
+    except Exception as error:  # noqa: BLE001 -- a method failure is a result, not a crash
         return failure(error)
 
 
@@ -332,13 +332,13 @@ def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[in
 class Host:
     def __init__(
         self,
-        toolsets: Mapping[str, type],
+        services: Mapping[str, type],
         *,
         token: str | None = None,
         push: PushConfig | None = None,
     ) -> None:
-        self.toolsets = dict(toolsets)
-        self.methods = {name: frozenset(public_methods(cls)) for name, cls in toolsets.items()}
+        self.services = dict(services)
+        self.methods = {name: frozenset(service_methods(cls)) for name, cls in services.items()}
         self.token = token
         self.push = push
         # Futures, not instances: two parallel first calls share one ``open``.
@@ -354,11 +354,11 @@ class Host:
         self.stop = asyncio.Event()
         self.writers: set[asyncio.StreamWriter] = set()
 
-    async def instance(self, toolset: str, key: str, init: Mapping[str, object]) -> object:
-        slot = (toolset, key)
+    async def instance(self, service: str, key: str, init: Mapping[str, object]) -> object:
+        slot = (service, key)
         future = self.instances.get(slot)
         if future is None:
-            opening = open_instance(self.toolsets[toolset], init)
+            opening = open_instance(self.services[service], init)
             future = self.instances[slot] = asyncio.ensure_future(opening)
         try:
             return await future
@@ -370,16 +370,16 @@ class Host:
             raise
 
     async def call(self, request: CallRequest) -> tuple[HTTPStatus, CallResponse]:
-        if request.toolset not in self.toolsets:
+        if request.service not in self.services:
             return HTTPStatus.NOT_FOUND, CallResponse(
-                error=f"unknown toolset {request.toolset!r}; served: {sorted(self.toolsets)}"
+                error=f"unknown service {request.service!r}; served: {sorted(self.services)}"
             )
-        if request.method not in self.methods[request.toolset]:
+        if request.method not in self.methods[request.service]:
             return HTTPStatus.NOT_FOUND, CallResponse(
-                error=f"unknown tool method {request.method!r}"
+                error=f"unknown service method {request.method!r}"
             )
         try:
-            instance = await self.instance(request.toolset, request.key, request.init)
+            instance = await self.instance(request.service, request.key, request.init)
             payload = await call_method(instance, request.method, request.args)
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
             payload = failure(error)
@@ -596,7 +596,7 @@ def main(config: HostConfig) -> int:
     """Serve ``config`` until stopped (:mod:`actant.sandbox.entry` is the command line)."""
     global _scrub
     _scrub = frozenset(config.scrub)
-    toolsets = {name: load(path) for name, path in config.toolsets.items()}
-    host = Host(toolsets, token=os.environ.pop(TOKEN_ENV, None), push=config.push)
+    services = {name: load(path) for name, path in config.services.items()}
+    host = Host(services, token=os.environ.pop(TOKEN_ENV, None), push=config.push)
     asyncio.run(serve(host, config.bind, config.port))
     return 0

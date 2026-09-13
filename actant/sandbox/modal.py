@@ -10,7 +10,7 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     Files live on the container's own disk under :data:`DISK_PATH`, with normal
     POSIX semantics. ``open`` restores the prefix onto the disk with s5cmd and
     :meth:`ModalSandbox.sync` pushes it back, deleting remote files removed
-    locally; a toolset host also pushes after its calls and every
+    locally; a service host also pushes after its calls and every
     ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
     pushes once more. Restored files get their objects' mtimes, so a push
     uploads only what changed. The tradeoff: s5cmd
@@ -25,16 +25,16 @@ Modal secret holding ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` (plus
 cloudflared tunnel included); s5cmd uses path-style addressing for any custom
 endpoint, which MinIO needs.
 
-A spec's toolsets are served by :mod:`actant.sandbox.host`, launched as the
+A spec's services are served by :mod:`actant.sandbox.host`, launched as the
 sandbox entrypoint through :mod:`actant.sandbox.entry` (which restores
 ``disk_sync`` storage first). Readiness is a TCP probe on the host's port: the
-host binds only after the restore and the toolset imports. The endpoint is a
+host binds only after the restore and the service imports. The endpoint is a
 Modal connect token for that port: Modal's proxy authenticates each request and
 no port is exposed publicly. The token is minted with the worker's Modal client
 on first use, cached on the handle, and re-minted only when the proxy rejects it,
 so nothing secret is persisted. The provider keeps the handles it made, so the
 per-call ``attach`` is one ``poll``. The image must have actant and
-the toolsets' package installed.
+the services' package installed.
 
 Requires the ``modal`` extra. Imported lazily so the package stays importable
 without it.
@@ -144,13 +144,13 @@ class ModalSandboxProvider:
             }
         command: list[str] = []
         probe = None
-        if disk_sync or spec.toolsets:
+        if disk_sync or spec.services:
             config = self.entry_config(spec, thread_id)
             command = ["python", "-m", entry.__name__, config.model_dump_json()]
             if disk_sync:
                 probe = modal.Probe.with_exec("test", "-f", entry.READY_FILE)
-            if spec.toolsets:
-                probe = modal.Probe.with_tcp(spec.toolset_port)
+            if spec.services:
+                probe = modal.Probe.with_tcp(spec.service_port)
         sandbox = await modal.Sandbox.create.aio(
             *command,
             app=app,
@@ -213,7 +213,7 @@ class ModalSandboxProvider:
             sync_argv=self.sync_argv(thread_id) if disk_sync else None,
             sync_timeout_s=spec.sync_timeout_s,
             scrub_env=spec.scrub_env,
-            toolset_port=spec.toolset_port if spec.toolsets else None,
+            service_port=spec.service_port if spec.services else None,
         )
         self._live[handle.id] = (sandbox, handle)
         return handle
@@ -237,7 +237,7 @@ class ModalSandboxProvider:
         return {"outbound_domain_allowlist": [bucket_host]}
 
     def entry_config(self, spec: SandboxSpec, thread_id: str) -> EntryConfig:
-        """The entrypoint's config: restore a ``disk_sync`` disk, then serve the toolsets."""
+        """The entrypoint's config: restore a ``disk_sync`` disk, then serve the services."""
         disk_sync = spec.storage == Storage.DISK_SYNC
         restore = push = None
         if disk_sync:
@@ -252,10 +252,10 @@ class ModalSandboxProvider:
                 timeout_s=spec.sync_timeout_s,
             )
         served = None
-        if spec.toolsets:
+        if spec.services:
             served = HostConfig(
-                toolsets=dict(spec.toolsets),
-                port=spec.toolset_port,
+                services=dict(spec.services),
+                port=spec.service_port,
                 bind="0.0.0.0",
                 scrub=list(spec.scrub_env),
                 push=push,
@@ -299,7 +299,7 @@ class ModalSandbox:
         root: str = MOUNT_PATH,
         sync_argv: Sequence[str] | None = None,
         scrub_env: Sequence[str] = (),
-        toolset_port: int | None = None,
+        service_port: int | None = None,
         sync_timeout_s: float = 300.0,
     ) -> None:
         self._sandbox = sandbox
@@ -309,18 +309,18 @@ class ModalSandbox:
         self._root = root
         self._sync_argv = list(sync_argv) if sync_argv else None
         self.id = str(sandbox.object_id)
-        self._toolset_port = toolset_port
+        self._service_port = service_port
         self._endpoint: Endpoint | None = None
 
     async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
-        """A connect token for the toolset port, minted once and again on ``refresh``.
+        """A connect token for the service port, minted once and again on ``refresh``.
 
         Modal documents no expiry; a token is re-minted only after the proxy answers 401.
         """
-        if self._toolset_port is None:
+        if self._service_port is None:
             return None
         if self._endpoint is None or refresh:
-            creds = await self._sandbox.create_connect_token.aio(port=self._toolset_port)
+            creds = await self._sandbox.create_connect_token.aio(port=self._service_port)
             self._endpoint = Endpoint(creds.url, {Header.AUTHORIZATION: f"Bearer {creds.token}"})
         return self._endpoint
 
@@ -397,7 +397,7 @@ class ModalSandbox:
             return ExecResult(124, "", "sync did not return in time\n", timed_out=True)
 
     async def close(self) -> None:
-        """Stop the toolset host gracefully (its instances close and it pushes a ``disk_sync``
+        """Stop the service host gracefully (its instances close and it pushes a ``disk_sync``
         disk), or push the disk here when there is no host; then terminate.
 
         Best effort, bounded, and never raises. Modal's ``terminate``, ``timeout`` and ``idle_timeout``
@@ -423,7 +423,7 @@ class ModalSandbox:
 
     async def _stop_host(self) -> bool:
         """``POST /v1/shutdown``; whether the host confirmed it closed and pushed."""
-        if self._toolset_port is None:
+        if self._service_port is None:
             return False
         with contextlib.suppress(Exception):
             for refresh in (False, True):

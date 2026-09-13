@@ -1,4 +1,4 @@
-"""A container sandbox's entrypoint: restore storage, then serve the toolset (or idle).
+"""A container sandbox's entrypoint: restore storage, then serve the services (or idle).
 
 ::
 

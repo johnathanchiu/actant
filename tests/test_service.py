@@ -1,4 +1,4 @@
-"""Toolsets: schema from a plain class, and identical results in-process and over a host."""
+"""Services: schema from a plain class, and identical results in-process and over a host."""
 
 from __future__ import annotations
 
@@ -16,8 +16,10 @@ from urllib.parse import urlsplit
 import pytest
 
 from actant.sandbox import Endpoint, LocalSandbox, LocalSandboxProvider, SandboxSpec
+from actant.sandbox import LocalRunner, RemoteRunner, SandboxRunner, call_host
 from actant.sandbox import StorageStatus, host
 from actant.sandbox.protocol import (
+    CallResponse,
     EntryConfig,
     Header,
     HostConfig,
@@ -25,17 +27,17 @@ from actant.sandbox.protocol import (
     RestoreConfig,
     Route,
 )
-from actant.tools import LocalRunner, RemoteRunner, SandboxRunner, tools, toolset_schema
+from actant.tools import tool_schemas, tools
+from actant.tools.service import to_tool_result
 from actant.core import JSONObject
 from actant.tools.base import CallContext, MetadataKey, ToolResult
-from actant.tools.toolset import call_host
-from toolset_fixtures import Counter, Stages
+from service_fixtures import Counter, Stages
 
 if TYPE_CHECKING:
     from some_module_that_only_type_checkers_see import Thing  # noqa: F401
 
 TESTS = str(Path(__file__).parent)
-TOOLSETS = {"counter": "toolset_fixtures:Counter", "stages": "toolset_fixtures:Stages"}
+SERVICES = {"counter": "service_fixtures:Counter", "stages": "service_fixtures:Stages"}
 
 
 def _ctx(sandbox: LocalSandbox | None = None, thread: str = "t") -> CallContext:
@@ -75,7 +77,7 @@ class Sample(Base):
 def test_schema_comes_from_the_signature_without_self() -> None:
     schemas: dict[str, Any] = {
         s["function"]["name"]: s["function"]  # pyright: ignore[reportIndexIssue]
-        for s in toolset_schema(Sample)
+        for s in tool_schemas(Sample)
     }
     assert list(schemas) == ["inherited", "search", "sync_helper"]
     search = schemas["search"]
@@ -95,7 +97,7 @@ def test_unannotated_parameters_are_rejected() -> None:
             return x
 
     with pytest.raises(TypeError, match="needs a type"):
-        toolset_schema(Bad)
+        tool_schemas(Bad)
 
 
 async def test_invalid_arguments_fail_at_build() -> None:
@@ -108,7 +110,7 @@ async def test_invalid_arguments_fail_at_build() -> None:
 async def sandbox(tmp_path: Path) -> AsyncIterator[LocalSandbox]:
     provider = LocalSandboxProvider(tmp_path)
     spec = SandboxSpec(
-        toolsets=TOOLSETS,
+        services=SERVICES,
         env={"PYTHONPATH": TESTS, "SERVICE_KEY": "k"},
         scrub_env=("SERVICE_KEY",),
     )
@@ -232,7 +234,7 @@ async def test_a_connection_lost_after_the_request_is_sent_is_an_error_not_a_ret
         lost = await _call(relayed, "bump")
         assert lost.error and "may have run" in lost.error
         direct = await call_host(endpoint, "counter", "bump", {}, key="once")
-        assert json.loads(str(direct.output)) == {"count": 2}  # the lost call ran exactly once
+        assert json.loads(direct.text) == {"count": 2}  # the lost call ran exactly once
     finally:
         server.close()
 
@@ -240,7 +242,7 @@ async def test_a_connection_lost_after_the_request_is_sent_is_an_error_not_a_ret
 async def test_close_stops_the_host_gracefully(tmp_path: Path) -> None:
     provider = LocalSandboxProvider(tmp_path)
     opened = await provider.open(
-        SandboxSpec(toolsets=TOOLSETS, env={"PYTHONPATH": TESTS}), agent_id="a", thread_id="t"
+        SandboxSpec(services=SERVICES, env={"PYTHONPATH": TESTS}), agent_id="a", thread_id="t"
     )
     assert isinstance(opened, LocalSandbox)
     endpoint = await opened.endpoint()
@@ -257,7 +259,16 @@ async def test_sandbox_runner_uses_the_thread_sandbox(sandbox: LocalSandbox) -> 
     result = await _call(runner, "bump", _ctx(sandbox, thread="x"))
     assert json.loads(str(result.output)) == {"count": 6}
     failed = await _call(runner, "bump", _ctx(None))
-    assert failed.error and "serves no toolset" in failed.error
+    assert failed.error and "serves no services" in failed.error
+    # Orchestration code calls the same runner directly, no model or context involved.
+    direct = await runner.call("bump", {"by": 2}, key="x", sandbox=sandbox)
+    assert json.loads(direct.text) == {"count": 8}
+
+
+def test_storage_status_lands_on_tool_metadata() -> None:
+    status = StorageStatus(pending=True)
+    result = to_tool_result(CallResponse(text="ok", storage=status))
+    assert StorageStatus.model_validate(result.metadata[MetadataKey.STORAGE]) == status
 
 
 async def test_arguments_arrive_as_the_annotated_types_and_bytes_must_be_images(
@@ -302,31 +313,31 @@ async def test_bad_token_unknown_method_and_host_survives_errors(sandbox: LocalS
     denied = await call_host(wrong, "counter", "bump", {}, key="k")
     assert denied.error and "bearer" in denied.error
     unknown = await call_host(endpoint, "counter", "__init__", {}, key="k")
-    assert unknown.error and "unknown tool method" in unknown.error
+    assert unknown.error and "unknown service method" in unknown.error
     assert (await call_host(endpoint, "counter", "fail", {}, key="k")).error
-    body = json.dumps({"toolset": "counter", "key": "k", "method": ["bump"]}).encode()
+    body = json.dumps({"service": "counter", "key": "k", "method": ["bump"]}).encode()
     status, _ = await asyncio.to_thread(host.post, endpoint, Route.CALL, body, 30)
     assert status == 400
     ok = await call_host(endpoint, "counter", "length", {"text": "ok"}, key="k")
-    assert ok.output == "2" and MetadataKey.STORAGE not in ok.metadata  # no push, no status
+    assert ok.text == "2" and ok.storage is None  # no push, no status
     assert "Bearer" not in repr(endpoint)
 
 
-async def test_toolsets_on_one_host_are_separate_by_name(sandbox: LocalSandbox) -> None:
+async def test_services_on_one_host_are_separate_by_name(sandbox: LocalSandbox) -> None:
     endpoint = await sandbox.endpoint()
     assert endpoint is not None
     bumped = await call_host(endpoint, "counter", "bump", {}, key="k")
-    assert json.loads(str(bumped.output)) == {"count": 1}
+    assert json.loads(bumped.text) == {"count": 1}
     staged = await call_host(endpoint, "stages", "advance", {}, key="k")
-    assert staged.output == "stage 1"
+    assert staged.text == "stage 1"
     assert [t.name for t in tools(Stages, RemoteRunner(endpoint, "stages", key="k"))] == [
         "advance"
     ]
-    # A toolset serves only its own methods; an unknown name is refused.
+    # A service serves only its own methods; an unknown name is refused.
     crossed = await call_host(endpoint, "stages", "bump", {}, key="k")
-    assert crossed.error and "unknown tool method" in crossed.error
+    assert crossed.error and "unknown service method" in crossed.error
     missing = await call_host(endpoint, "nope", "bump", {}, key="k")
-    assert missing.error and "unknown toolset" in missing.error
+    assert missing.error and "unknown service" in missing.error
 
 
 async def test_large_arguments_and_images_round_trip(sandbox: LocalSandbox) -> None:
@@ -355,7 +366,7 @@ async def test_script_env_scrubs_what_the_host_keeps(sandbox: LocalSandbox) -> N
 
 async def test_attach_reuses_the_running_host_and_close_stops_it(tmp_path: Path) -> None:
     provider = LocalSandboxProvider(tmp_path)
-    spec = SandboxSpec(toolsets=TOOLSETS, env={"PYTHONPATH": TESTS})
+    spec = SandboxSpec(services=SERVICES, env={"PYTHONPATH": TESTS})
     opened = await provider.open(spec, agent_id="a", thread_id="t")
     try:
         attached = await provider.attach(spec, opened.id)
@@ -386,7 +397,7 @@ async def pushing_host(
         EntryConfig(
             restore=RestoreConfig(argv=restore),
             host=HostConfig(
-                toolsets={"counter": "toolset_fixtures:Counter"},
+                services={"counter": "service_fixtures:Counter"},
                 port=0,
                 bind="127.0.0.1",
                 push=PushConfig(argv=push),
@@ -477,7 +488,7 @@ async def _start_host(tmp_path: Path) -> tuple[Endpoint, asyncio.subprocess.Proc
         "actant.sandbox.entry",
         EntryConfig(
             host=HostConfig(
-                toolsets={"counter": "toolset_fixtures:Counter"},
+                services={"counter": "service_fixtures:Counter"},
                 port=0,
                 bind="127.0.0.1",
                 push=PushConfig(
@@ -515,8 +526,9 @@ async def test_push_failures_and_hangs_never_touch_calls_and_show_in_status(
 
     async def storage() -> StorageStatus:
         result = await call_host(endpoint, "counter", "length", {"text": "abc"}, key="k")
-        assert result.output == "3" and result.error is None  # the call never suffers
-        return StorageStatus.model_validate(result.metadata[MetadataKey.STORAGE])
+        assert result.text == "3" and result.error is None  # the call never suffers
+        assert result.storage is not None
+        return result.storage
 
     try:
         # A hanging push is killed at the timeout; the pusher carries on and retries.

@@ -51,7 +51,7 @@ class Sandbox(Protocol):
     ``exec`` removes the spec's ``scrub_env`` names from the command's environment
     (an explicit ``env`` entry still wins). Scrubbing is best effort, not a security
     boundary: code running as the same user can read another process's
-    ``/proc/<pid>/environ`` or call the toolset host.
+    ``/proc/<pid>/environ`` or call the service host.
 
     """
 
@@ -79,7 +79,7 @@ class Sandbox(Protocol):
         ...
 
     async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
-        """Where the spec's toolsets are served, ``None`` when it has none.
+        """Where the spec's services are served, ``None`` when it has none.
 
         Backends that authenticate with short-lived credentials cache them per
         sandbox; ``refresh`` asks for new ones after the host rejected the old.
@@ -91,7 +91,7 @@ class Sandbox(Protocol):
 
 @dataclass(frozen=True)
 class Endpoint:
-    """How to reach a sandbox's toolset host: a base URL plus the headers that authenticate."""
+    """How to reach a sandbox's service host: a base URL plus the headers that authenticate."""
 
     url: str
     #: Kept out of ``repr``: they carry the bearer token.
@@ -134,7 +134,7 @@ class SandboxSpec:
     env: Mapping[str, str] = field(default_factory=dict)
     #: A GPU type the backend understands (``"L4"``, ``"H100"``); ``None`` for CPU only.
     gpu: str | None = None
-    #: Outbound network. Off by default: turn it on only for tools that call services.
+    #: Outbound network. Off by default: turn it on only for tools that call external APIs.
     network: bool = False
     #: Backend secret names (Modal secrets) injected into the sandbox's environment.
     secrets: tuple[str, ...] = ()
@@ -143,13 +143,13 @@ class SandboxSpec:
     scrub_env: tuple[str, ...] = ()
     #: How a cloud backend keeps files; see :class:`Storage`.
     storage: Storage = Storage.MOUNT
-    #: Name to ``"pkg.mod:Class"``, served by one toolset host inside the sandbox (see
-    #: :mod:`actant.tools.toolset`). Fixed here, at launch; requests name a toolset
+    #: Name to ``"pkg.mod:Class"``, served by one service host inside the sandbox (see
+    #: :mod:`actant.sandbox.service`). Fixed here, at launch; requests name a service
     #: and a method, never a module.
-    toolsets: Mapping[str, str] = field(default_factory=dict)
+    services: Mapping[str, str] = field(default_factory=dict)
     #: The port the host listens on inside a container. ``local`` picks a free one.
-    toolset_port: int = 8080
-    #: ``disk_sync``: the toolset host pushes every this many seconds while calls have
+    service_port: int = 8080
+    #: ``disk_sync``: the service host pushes every this many seconds while calls have
     #: completed since its last successful push (and after calls).
     sync_interval_s: float = 60.0
     #: ``disk_sync``: a push running longer is killed; the next one still runs.
