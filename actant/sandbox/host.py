@@ -50,6 +50,7 @@ import inspect
 import json
 import mimetypes
 import os
+import select
 import signal
 import sys
 import threading
@@ -259,8 +260,11 @@ _idle_lock = threading.Lock()
 def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[int, bytes]:
     """``POST`` to a host over a pooled keep-alive connection. Blocking: run it in a thread.
 
-    A reused connection the server already closed is retried on another; a new
-    connection that fails raises ``OSError``.
+    Never sends a call twice. An idle connection that is readable (the server closed
+    it, or sent something unasked) is discarded before use. If writing the request
+    fails on a reused connection, the server never received a complete request, so
+    it is sent again on another connection. Any failure once the request is written
+    raises ``OSError``: the call may have run, and repeating it could run it twice.
     """
     url = urlsplit(endpoint.url)
     slot = (url.scheme, url.netloc)
@@ -272,7 +276,9 @@ def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[in
             pool = _idle.get(slot, [])
             while pool and connection is None:
                 candidate, since = pool.pop()
-                if time.monotonic() - since < IDLE_REUSE_S and candidate.sock is not None:
+                sock = candidate.sock
+                fresh = time.monotonic() - since < IDLE_REUSE_S
+                if fresh and sock is not None and not select.select([sock], [], [], 0)[0]:
                     connection = candidate
                 else:
                     candidate.close()
@@ -285,13 +291,17 @@ def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[in
             connection.sock.settimeout(timeout)
         try:
             connection.request("POST", target, body, headers)
-            reply = connection.getresponse()
-            data = reply.read()
-        except (ConnectionResetError, BrokenPipeError):  # includes RemoteDisconnected
+        except OSError:
             connection.close()
-            if reused:
+            if reused:  # the body is incomplete on the server's side: nothing ran
                 continue
             raise
+        except BaseException:
+            connection.close()
+            raise
+        try:
+            reply = connection.getresponse()
+            data = reply.read()
         except BaseException:
             connection.close()
             raise

@@ -11,6 +11,7 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -180,6 +181,48 @@ async def test_sync_methods_run_in_threads_over_kept_alive_connections(
     ((first, _),) = host._idle[slot]  # pyright: ignore[reportPrivateUsage]
     await _call(runner, "length", text="b")
     assert [c for c, _ in host._idle[slot]] == [first]  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_connection_lost_after_the_request_is_sent_is_an_error_not_a_retry(
+    sandbox: LocalSandbox,
+) -> None:
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    target = urlsplit(endpoint.url)
+    drop = asyncio.Event()
+
+    async def relay(client_reader: asyncio.StreamReader, client: asyncio.StreamWriter) -> None:
+        """Forward to the host; while ``drop`` is set, swallow the reply and hang up."""
+        host_reader, upstream = await asyncio.open_connection(target.hostname, target.port)
+
+        async def pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            while data := await reader.read(65536):
+                if writer is client and drop.is_set():
+                    drop.clear()
+                    break
+                writer.write(data)
+                await writer.drain()
+            writer.close()
+            (upstream if writer is client else client).close()
+
+        await asyncio.gather(
+            pump(client_reader, upstream), pump(host_reader, client), return_exceptions=True
+        )
+
+    server = await asyncio.start_server(relay, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        relayed = RemoteRunner(
+            Endpoint(f"http://127.0.0.1:{port}", endpoint.headers), "counter", key="once"
+        )
+        assert (await _call(relayed, "length", text="warm")).output == "4"  # pools a connection
+        drop.set()
+        lost = await _call(relayed, "bump")
+        assert lost.error and "may have run" in lost.error
+        direct = await call_host(endpoint, "counter", "bump", {}, key="once")
+        assert json.loads(str(direct.output)) == {"count": 2}  # the lost call ran exactly once
+    finally:
+        server.close()
 
 
 async def test_close_stops_the_host_gracefully(tmp_path: Path) -> None:

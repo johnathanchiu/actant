@@ -190,7 +190,9 @@ async def _send(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int | 
     try:
         status, data = await asyncio.to_thread(host.post, endpoint, host.CALL_PATH, body, timeout)
     except OSError as error:
-        return None, ToolResult.fail(f"toolset host unreachable at {endpoint.url}: {error}")
+        return None, ToolResult.fail(
+            f"toolset host call to {endpoint.url} failed and may have run: {error}"
+        )
     try:
         response = json.loads(data)
     except ValueError:
