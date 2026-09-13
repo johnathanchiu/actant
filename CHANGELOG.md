@@ -4,6 +4,26 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.9.0
+
+**Breaking:** the `Sandbox` protocol gains `sync()` and `endpoint(refresh=)`; a
+custom backend must implement both. The `modal` extra requires `modal>=1.5.5`.
+
+- Toolsets (`actant.tools`): a plain class whose public methods are tools, with
+  schemas from the signatures. `tools(cls, runner)` runs them through
+  `LocalRunner` (in-process), `RemoteRunner`/`call_host` (a host endpoint) or
+  `SandboxRunner` (the thread's sandbox). Results encode identically everywhere.
+- The toolset host (`actant.sandbox.host`, launched by `python -m actant.sandbox.entry`)
+  serves the named `SandboxSpec.toolsets` inside a sandbox over authenticated,
+  kept-alive HTTP; `Sandbox.close` shuts it down gracefully (instances closed,
+  storage pushed).
+- `SandboxSpec` gains `gpu`, `network`, `secrets`, `scrub_env`, `storage`
+  (`Storage.MOUNT` or `Storage.DISK_SYNC`), `toolsets` and `toolset_port`;
+  `Backend`, `Storage` and `Endpoint` are exported from `actant.sandbox`.
+- Modal backend honours the new spec fields; `disk_sync` restores the bucket prefix
+  onto local disk with s5cmd (`with_s5cmd(image)`) and pushes it back. The toolset
+  host is reached through a cached Modal connect token, so no port is public.
+
 ## 0.8.1
 
 - Review fixes: a sandbox is reattached by its persisted id on every call, so one the
