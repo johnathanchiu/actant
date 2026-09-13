@@ -86,6 +86,19 @@ class SandboxSpec:
     timeout_s: int = 3600
     idle_timeout_s: int = 600
     env: Mapping[str, str] = field(default_factory=dict)
+    #: A GPU type the backend understands (``"L4"``, ``"H100"``); ``None`` for CPU only.
+    gpu: str | None = None
+    #: Outbound network. Off by default: turn it on only for tools that call services.
+    network: bool = False
+    #: Backend secret names (Modal secrets) injected into the sandbox's environment.
+    secrets: tuple[str, ...] = ()
+    #: Environment variables removed from commands the agent's own code runs, so a
+    #: script never sees the service keys that ``secrets`` put in the sandbox.
+    scrub_env: tuple[str, ...] = ()
+    #: ``"mount"``: the bucket prefix is the filesystem (whole-file writes only).
+    #: ``"disk_sync"``: a local disk, restored from the prefix on open and pushed back
+    #: with :meth:`sync` -- ordinary file semantics, a few seconds behind the bucket.
+    storage: str = "mount"
 
 
 class SandboxProvider(Protocol):
