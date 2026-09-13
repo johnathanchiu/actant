@@ -576,7 +576,8 @@ def test_stamp_gives_restored_files_their_object_mtimes(tmp_path: Path) -> None:
     ]  # fmt: skip
     assert stamp_mtimes(listing, prefix, tmp_path) == 2
     stamp = 1767323045
-    assert int((tmp_path / "dir" / "a.json").stat().st_mtime) == stamp
+    # Exact to the microsecond, never rounded past the object's time.
+    assert (tmp_path / "dir" / "a.json").stat().st_mtime_ns == stamp * 10**9 + 123456000
     assert int((tmp_path / "empty").stat().st_mtime) == stamp
     # A size mismatch keeps its fresh mtime, so the next push uploads it.
     assert int((tmp_path / "changed.txt").stat().st_mtime) > stamp

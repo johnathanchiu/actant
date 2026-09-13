@@ -20,6 +20,7 @@ workspace. A stamp failure only costs that re-upload, so it is logged, not fatal
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import os
 import signal
@@ -45,7 +46,10 @@ def stamp_mtimes(listing: Iterable[str], prefix: str, root: Path) -> int:
         try:
             item = json.loads(line)
             key = str(item["key"])
-            modified = datetime.fromisoformat(item["last_modified"]).timestamp()
+            when = datetime.fromisoformat(item["last_modified"])
+            # Integer nanoseconds, truncated: a float can round a stamp past its object's
+            # time, and s5cmd uploads any file even a nanosecond newer.
+            modified = calendar.timegm(when.utctimetuple()) * 10**9 + when.microsecond * 1000
         except (ValueError, KeyError, TypeError):
             continue
         if not key.startswith(prefix):
@@ -53,7 +57,7 @@ def stamp_mtimes(listing: Iterable[str], prefix: str, root: Path) -> int:
         path = root / key[len(prefix) :]
         try:
             if path.stat().st_size == int(item.get("size") or 0):
-                os.utime(path, (modified, modified))
+                os.utime(path, ns=(modified, modified))
                 stamped += 1
         except OSError:
             continue
