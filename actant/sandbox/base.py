@@ -65,6 +65,11 @@ class Sandbox(Protocol):
         env: Mapping[str, str] | None = None,
     ) -> ExecResult: ...
 
+    async def sync(self) -> ExecResult:
+        """Push the sandbox's files to durable storage. A no-op where storage already is
+        the filesystem (``mount``, ``local``)."""
+        ...
+
     async def close(self) -> None: ...
 
 
