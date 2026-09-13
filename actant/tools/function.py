@@ -57,6 +57,10 @@ class FunctionToolInvocation(BaseToolInvocation[ToolArguments, object]):
 class FunctionTool:
     """Adapt an annotated Python function to Actant's tool protocol."""
 
+    #: Subclasses whose functions take a product context first (``fn(ctx, **args)``)
+    #: set this so that parameter stays out of the schema.
+    _takes_context = False
+
     def __init__(
         self,
         function: ToolFunction,
@@ -75,7 +79,9 @@ class FunctionTool:
         self.approval = approval
         self.admission = admission
         self.resolve = resolve
-        self._params_model, self._injected = _parameter_model(function, self.name)
+        self._params_model, self._injected = _parameter_model(
+            function, self.name, skip_first=self._takes_context
+        )
         # A ``Sandbox`` parameter is the declaration: the runtime opens the
         # thread's sandbox before building this tool. ``CallContext`` alone
         # only asks for the call's identity.
@@ -222,18 +228,19 @@ def tool(
 
 
 def _parameter_model(
-    function: ToolFunction, tool_name: str
+    function: ToolFunction, tool_name: str, *, skip_first: bool = False
 ) -> tuple[type[BaseModel], dict[str, object]]:
     """The model for the parameters the model fills in, and the ones the runtime injects.
 
     A parameter annotated ``CallContext`` or ``Sandbox`` is the runtime's to
-    supply: it is left out of the schema and out of validation.
+    supply: it is left out of the schema and out of validation. ``skip_first``
+    drops the first parameter whatever its annotation (a product's context).
     """
-    signature = inspect.signature(function)
+    parameters = list(inspect.signature(function).parameters.values())[1 if skip_first else 0 :]
     hints = get_type_hints(function, include_extras=True)
     fields: dict[str, tuple[object, object]] = {}
     injected: dict[str, object] = {}
-    for parameter in signature.parameters.values():
+    for parameter in parameters:
         if parameter.kind in {
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.VAR_POSITIONAL,
