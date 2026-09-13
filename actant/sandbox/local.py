@@ -49,7 +49,7 @@ class LocalSandbox:
     ) -> None:
         self.root = root.resolve()
         self.id = str(self.root)
-        self.endpoint = endpoint
+        self._endpoint = endpoint
         self.host_process = host_process
         self._env = dict(env or {})
         self._scrub = tuple(scrub_env)
@@ -128,6 +128,11 @@ class LocalSandbox:
     async def sync(self) -> ExecResult:
         """The directory is already durable; nothing to push."""
         return ExecResult(0, "", "")
+
+    async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
+        """The host's fixed loopback URL and token; nothing to refresh."""
+        del refresh
+        return self._endpoint
 
     async def close(self) -> None:
         """Stop the toolset host, if any. The directory is the durable root."""

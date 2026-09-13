@@ -11,8 +11,8 @@ A product writes an ordinary class, with no actant import::
 
 Tools are the public coroutine functions on the class and its bases, minus
 ``open`` and ``close``. Each schema comes from the method's signature without
-``self``; annotations are resolved one parameter at a time, so a return
-annotation that only exists for type checkers does not matter.
+``self`` (:func:`actant.sandbox.host.parameters_model`); arguments are
+validated against it on both sides, so methods receive the annotated types.
 
 A method returns ``str``, an object with ``.text`` and ``.images`` (file paths
 or bytes), or any JSON-encodable value. Images become the base64 image content
@@ -31,11 +31,12 @@ import asyncio
 import inspect
 import json
 from collections.abc import Mapping
+from http import HTTPStatus
 from http.client import HTTPConnection, HTTPSConnection
 from typing import Protocol
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import ValidationError
 
 from actant.core import JSONObject
 import actant.sandbox.host as host
@@ -46,7 +47,10 @@ DEFAULT_CALL_TIMEOUT_S = 600.0
 
 
 class Runner(Protocol):
-    """Runs one toolset method and returns what the model sees."""
+    """Runs one toolset method and returns what the model sees. ``needs_sandbox`` asks
+    the runtime to put the thread's sandbox on the :class:`CallContext`."""
+
+    needs_sandbox: bool
 
     async def call(
         self, method: str, args: Mapping[str, object], ctx: CallContext
@@ -62,7 +66,8 @@ def to_tool_result(response: Mapping[str, object]) -> ToolResult:
     images = response.get("images") or []
     if not isinstance(images, list) or not images:
         return ToolResult.ok(text)
-    blocks: list[dict[str, object]] = [{"type": "text", "text": text}]
+    # LLM APIs reject empty text blocks.
+    blocks: list[dict[str, object]] = [{"type": "text", "text": text}] if text else []
     for image in images:
         blocks.append({"type": "text", "text": f"Image {image['name']}:"})
         blocks.append(
@@ -81,6 +86,8 @@ def to_tool_result(response: Mapping[str, object]) -> ToolResult:
 class LocalRunner:
     """Runs methods on an instance in this process."""
 
+    needs_sandbox = False
+
     def __init__(self, instance: object) -> None:
         self.instance = instance
 
@@ -92,6 +99,8 @@ class LocalRunner:
 class RemoteRunner:
     """Runs methods on a toolset host. ``key`` names the host-side instance, created
     from ``init`` on its first call."""
+
+    needs_sandbox = False
 
     def __init__(
         self,
@@ -113,7 +122,8 @@ class RemoteRunner:
 
 class SandboxRunner:
     """Runs methods on the host serving the calling thread's sandbox (``SandboxSpec.toolset``),
-    one instance per thread, created from ``init``."""
+    one instance per thread, created from ``init``. A connect credential the host
+    rejects is refreshed once through :meth:`Sandbox.endpoint`."""
 
     needs_sandbox = True
 
@@ -124,10 +134,18 @@ class SandboxRunner:
         self.timeout = timeout
 
     async def call(self, method: str, args: Mapping[str, object], ctx: CallContext) -> ToolResult:
-        endpoint = ctx.sandbox.endpoint if ctx.sandbox is not None else None
-        if endpoint is None:
+        sandbox = ctx.sandbox
+        endpoint = await sandbox.endpoint() if sandbox is not None else None
+        if sandbox is None or endpoint is None:
             return ToolResult.fail("this thread's sandbox serves no toolset (SandboxSpec.toolset)")
-        return await call_host(endpoint, ctx.thread_id, self.init, method, args, self.timeout)
+        status, result = await _call(
+            endpoint, ctx.thread_id, self.init, method, args, self.timeout
+        )
+        if status == HTTPStatus.UNAUTHORIZED:  # rejected before running: safe to retry
+            endpoint = await sandbox.endpoint(refresh=True)
+            assert endpoint is not None
+            _, result = await _call(endpoint, ctx.thread_id, self.init, method, args, self.timeout)
+        return result
 
 
 async def call_host(
@@ -139,19 +157,30 @@ async def call_host(
     timeout: float = DEFAULT_CALL_TIMEOUT_S,
 ) -> ToolResult:
     """``POST /v1/call`` to a toolset host. Transport failures become failed results."""
+    return (await _call(endpoint, key, init, method, args, timeout))[1]
+
+
+async def _call(
+    endpoint: Endpoint,
+    key: str,
+    init: Mapping[str, object],
+    method: str,
+    args: Mapping[str, object],
+    timeout: float,
+) -> tuple[int | None, ToolResult]:
     body = json.dumps({"key": key, "init": dict(init), "method": method, "args": dict(args)})
     try:
         status, data = await asyncio.to_thread(_post, endpoint, body.encode(), timeout)
     except OSError as error:
-        return ToolResult.fail(f"toolset host unreachable at {endpoint.url}: {error}")
+        return None, ToolResult.fail(f"toolset host unreachable at {endpoint.url}: {error}")
     try:
         response = json.loads(data)
     except ValueError:
         response = None
     if not isinstance(response, dict):
         tail = data[-1000:].decode(errors="replace")
-        return ToolResult.fail(f"toolset host returned HTTP {status}: {tail}")
-    return to_tool_result(response)
+        return status, ToolResult.fail(f"toolset host returned HTTP {status}: {tail}")
+    return status, to_tool_result(response)
 
 
 def _post(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int, bytes]:
@@ -166,32 +195,6 @@ def _post(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int, bytes]:
         return response.status, response.read()
     finally:
         connection.close()
-
-
-def _parameters_model(cls: type, method: str) -> type[BaseModel]:
-    function = inspect.getattr_static(cls, method)
-    parameters = list(inspect.signature(function).parameters.values())[1:]  # ``self``
-    fields: dict[str, tuple[object, object]] = {}
-    for parameter in parameters:
-        if parameter.kind in {
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        }:
-            raise TypeError(f"{cls.__name__}.{method} must use named parameters only")
-        annotation = parameter.annotation
-        if annotation is inspect.Parameter.empty:
-            raise TypeError(f"{cls.__name__}.{method}: parameter {parameter.name!r} needs a type")
-        if isinstance(annotation, str):
-            # ``from __future__ import annotations``: resolve in the method's module.
-            annotation = eval(annotation, function.__globals__, {cls.__name__: cls})  # noqa: S307
-        default = ... if parameter.default is inspect.Parameter.empty else parameter.default
-        fields[parameter.name] = (annotation, default)
-    return create_model(  # pyright: ignore[reportCallIssue, reportArgumentType]
-        f"{cls.__name__}{method.title().replace('_', '')}Params",
-        __config__=ConfigDict(extra="forbid"),
-        **fields,  # pyright: ignore[reportArgumentType]
-    )
 
 
 class ToolsetInvocation(BaseToolInvocation[dict[str, object], ToolResult]):
@@ -213,8 +216,8 @@ class ToolsetTool:
     def __init__(self, cls: type, method: str, runner: Runner) -> None:
         self.name = method
         self.runner = runner
-        self.needs_sandbox = bool(getattr(runner, "needs_sandbox", False))
-        self._model = _parameters_model(cls, method)
+        self.needs_sandbox = runner.needs_sandbox
+        self._model = host.parameters_model(cls, method)
         description = inspect.getdoc(getattr(cls, method)) or f"Run {method}."
         self._schema: ToolSchema = {
             "type": "function",

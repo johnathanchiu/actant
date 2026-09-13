@@ -16,18 +16,17 @@ The toolset is fixed at launch. Requests name a method and never a module.
 
 Protocol (JSON bodies)::
 
-    GET  /v1/health                                  -> {"ok": true}
     POST /v1/call {key, init, method, args}          -> {text, images, error}
          images: [{name, media_type, data_b64}]
 
 One instance per ``key``, created on its first call with ``init``
 (``await Class.open(**init)`` when the class defines ``open``, else
 ``Class(**init)``); later calls with that key reuse it and ignore ``init``.
+Arguments are validated against the method's signature before the call, so a
+parameter annotated with a pydantic model or a ``Literal`` receives that type.
 Calls run concurrently. When ``ACTANT_HOST_TOKEN`` is set at launch, every call
-needs ``Authorization: Bearer <token>``; the variable is removed from the
-process environment once read.
-
-Stdlib only: this module must import in any image that has actant installed.
+needs ``Authorization: Bearer <token>`` (checked before the body is read); the
+variable is removed from the process environment once read.
 """
 
 from __future__ import annotations
@@ -36,6 +35,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import functools
 import hmac
 import importlib
 import inspect
@@ -49,11 +49,12 @@ from collections.abc import Mapping, Sequence
 from http import HTTPStatus
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict, create_model
+
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
 #: The line the host prints to stdout once it accepts connections: ``<prefix> <port>``.
 READY_PREFIX = "actant-host-listening"
 CALL_PATH = "/v1/call"
-HEALTH_PATH = "/v1/health"
 #: The instance lifecycle; never exposed as tools.
 LIFECYCLE = frozenset({"open", "close"})
 MAX_BODY = 256 * 1024 * 1024
@@ -61,7 +62,6 @@ _IMAGE_MAGIC = {
     b"\x89PNG": "image/png",
     b"\xff\xd8\xff": "image/jpeg",
     b"GIF8": "image/gif",
-    b"RIFF": "image/webp",
 }
 
 _scrub: frozenset[str] = frozenset()
@@ -94,6 +94,45 @@ def public_methods(cls: type) -> list[str]:
     ]
 
 
+@functools.cache
+def parameters_model(cls: type, method: str) -> type[BaseModel]:
+    """The pydantic model of ``cls.method``'s parameters, without ``self``.
+
+    Annotations are resolved one parameter at a time, so a return annotation that
+    only exists for type checkers does not matter.
+    """
+    function = inspect.getattr_static(cls, method)
+    parameters = list(inspect.signature(function).parameters.values())[1:]  # ``self``
+    fields: dict[str, tuple[object, object]] = {}
+    for parameter in parameters:
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        }:
+            raise TypeError(f"{cls.__name__}.{method} must use named parameters only")
+        annotation = parameter.annotation
+        if annotation is inspect.Parameter.empty:
+            raise TypeError(f"{cls.__name__}.{method}: parameter {parameter.name!r} needs a type")
+        if isinstance(annotation, str):
+            # ``from __future__ import annotations``: resolve in the method's module.
+            annotation = eval(annotation, function.__globals__, {cls.__name__: cls})  # noqa: S307
+        default = ... if parameter.default is inspect.Parameter.empty else parameter.default
+        fields[parameter.name] = (annotation, default)
+    return create_model(  # pyright: ignore[reportCallIssue, reportArgumentType]
+        f"{cls.__name__}{method.title().replace('_', '')}Params",
+        __config__=ConfigDict(extra="forbid"),
+        **fields,  # pyright: ignore[reportArgumentType]
+    )
+
+
+def image_type(data: bytes) -> str | None:
+    """The media type of PNG, JPEG, GIF or WebP bytes; ``None`` for anything else."""
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return next((kind for magic, kind in _IMAGE_MAGIC.items() if data.startswith(magic)), None)
+
+
 def load(path: str) -> type:
     """``"pkg.mod:Class"`` to the class."""
     module_name, _, qualname = path.partition(":")
@@ -115,9 +154,10 @@ def encode_output(output: object) -> dict[str, object]:
     """A tool's return value as a response.
 
     ``str`` is the text. An object with ``.text`` and ``.images`` carries images as
-    file paths or bytes; a path must name an image file (by extension), because a
-    path can be model-steered and anything else would leave the sandbox. Other
-    values are JSON-encoded.
+    file paths or bytes; a path must name an image file (by extension) and bytes
+    must be one (by magic number), because a path can be model-steered and
+    anything else would leave the sandbox or be rejected by the LLM. Other values
+    are JSON-encoded.
     """
     if isinstance(output, str):
         return response(output)
@@ -127,10 +167,10 @@ def encode_output(output: object) -> dict[str, object]:
         for index, image in enumerate(output.images):  # pyright: ignore[reportAttributeAccessIssue]
             if isinstance(image, bytes | bytearray):
                 name, data = f"image-{index}", bytes(image)
-                media_type = next(
-                    (kind for magic, kind in _IMAGE_MAGIC.items() if data.startswith(magic)),
-                    "image/png",
-                )
+                media_type = image_type(data) or ""
+                if not media_type:
+                    text += f"\n(dropped {name}: not PNG, JPEG, GIF or WebP bytes)"
+                    continue
             else:
                 name = str(image)
                 media_type = mimetypes.guess_type(name)[0] or ""
@@ -161,9 +201,11 @@ def failure(error: BaseException) -> dict[str, object]:
 async def call_method(
     instance: object, method: str, args: Mapping[str, object]
 ) -> dict[str, object]:
-    """Run one tool method and encode its result or its exception."""
+    """Validate the arguments, run one tool method, and encode its result or its exception."""
     try:
-        return encode_output(await getattr(instance, method)(**args))
+        params = parameters_model(type(instance), method).model_validate(args)
+        kwargs = {name: getattr(params, name) for name in type(params).model_fields}
+        return encode_output(await getattr(instance, method)(**kwargs))
     except Exception as error:  # noqa: BLE001 -- a tool failure is a result, not a crash
         return failure(error)
 
@@ -233,11 +275,10 @@ class Host:
                     flush=True,
                 )
 
-    async def route(
-        self, verb: str, path: str, headers: Mapping[str, str], body: bytes
-    ) -> tuple[HTTPStatus, dict[str, object]]:
-        if verb == "GET" and path == HEALTH_PATH:
-            return HTTPStatus.OK, {"ok": True}
+    def reject(
+        self, verb: str, path: str, headers: Mapping[str, str]
+    ) -> tuple[HTTPStatus, dict[str, object]] | None:
+        """Why a request is refused before its body is read, or ``None``."""
         if path != CALL_PATH:
             return HTTPStatus.NOT_FOUND, response(error=f"no route {verb} {path}")
         if verb != "POST":
@@ -246,6 +287,11 @@ class Host:
             headers.get("authorization", ""), f"Bearer {self.token}"
         ):
             return HTTPStatus.UNAUTHORIZED, response(error="bad or missing bearer token")
+        if int(headers.get("content-length") or 0) > MAX_BODY:
+            return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, response(error="body too large")
+        return None
+
+    async def route(self, body: bytes) -> tuple[HTTPStatus, dict[str, object]]:
         try:
             request = json.loads(body)
         except ValueError as error:
@@ -265,15 +311,12 @@ class Host:
                     name, sep, value = line.partition(":")
                     if sep:
                         headers[name.strip().lower()] = value.strip()
-                length = int(headers.get("content-length") or 0)
-                if length > MAX_BODY:
-                    status, payload = (
-                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                        response(error="body too large"),
-                    )
+                refused = self.reject(verb, target.split("?")[0], headers)
+                if refused is not None:
+                    status, payload = refused
                 else:
-                    body = await reader.readexactly(length)
-                    status, payload = await self.route(verb, target.split("?")[0], headers, body)
+                    body = await reader.readexactly(int(headers.get("content-length") or 0))
+                    status, payload = await self.route(body)
             except (ValueError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as error:
                 status, payload = (
                     HTTPStatus.BAD_REQUEST,

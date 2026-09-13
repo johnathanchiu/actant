@@ -6,9 +6,16 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
+
+from pydantic import BaseModel
 
 from actant.sandbox.host import script_env
+
+
+class Box(BaseModel):
+    width: float
+    height: float
 
 
 @dataclass
@@ -49,6 +56,13 @@ class Counter:
             return Picture("bytes", [data])
         Path("picture.png").write_bytes(data)
         return Picture("file", ["picture.png", "secret.txt"])
+
+    async def area(self, box: Box, unit: Literal["m", "cm"] = "m") -> str:
+        """Methods receive the annotated types, not their JSON."""
+        return f"{type(box).__name__} {box.width * box.height:g} {unit}"
+
+    async def raw(self, data: str) -> Picture:
+        return Picture("", [data.encode()])
 
     async def length(self, text: str) -> int:
         return len(text)

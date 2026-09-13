@@ -53,11 +53,9 @@ class Sandbox(Protocol):
     boundary: code running as the same user can read another process's
     ``/proc/<pid>/environ`` or call the toolset host.
 
-    ``endpoint`` is where the spec's toolset is served, ``None`` when it has none.
     """
 
     id: str
-    endpoint: Endpoint | None
 
     async def read(self, path: str) -> bytes: ...
 
@@ -78,6 +76,14 @@ class Sandbox(Protocol):
         """Push the sandbox's files to durable storage. A no-op where storage already is
         the filesystem (``mount``, ``local``). ``close`` also pushes, best effort, so
         calling this is only needed for a checkpoint mid-run."""
+        ...
+
+    async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
+        """Where the spec's toolset is served, ``None`` when it has none.
+
+        Backends that authenticate with short-lived credentials cache them per
+        sandbox; ``refresh`` asks for new ones after the host rejected the old.
+        """
         ...
 
     async def close(self) -> None: ...

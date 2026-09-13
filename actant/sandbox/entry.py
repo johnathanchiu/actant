@@ -8,8 +8,6 @@ The restore runs to completion before the host binds its port, so a readiness
 probe on that port (or on :data:`READY_FILE` without a toolset) only passes once
 the files are in place. A failed restore exits non-zero, which ends the sandbox.
 An empty bucket prefix (a new thread) is not a failure.
-
-Stdlib only, like :mod:`actant.sandbox.host`.
 """
 
 from __future__ import annotations

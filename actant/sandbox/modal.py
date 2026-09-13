@@ -27,9 +27,11 @@ A spec's toolset is served by :mod:`actant.sandbox.host`, launched as the
 sandbox entrypoint through :mod:`actant.sandbox.entry` (which restores
 ``disk_sync`` storage first). Readiness is a TCP probe on the host's port: the
 host binds only after the restore and the toolset import. The endpoint is a
-Modal connect token for that port: Modal's proxy authenticates each request, no
-port is exposed publicly, and ``attach`` mints a fresh token with the worker's
-Modal client, so nothing secret is persisted. The image must have actant and
+Modal connect token for that port: Modal's proxy authenticates each request and
+no port is exposed publicly. The token is minted with the worker's Modal client
+on first use, cached on the handle, and re-minted only when the proxy rejects it,
+so nothing secret is persisted. The provider keeps the handles it made, so the
+per-call ``attach`` is one ``poll``. The image must have actant and
 the toolset's package installed.
 
 Requires the ``modal`` extra. Imported lazily so the package stays importable
@@ -43,8 +45,9 @@ import contextlib
 import importlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import actant.sandbox.entry as entry
 from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec, Storage
@@ -92,6 +95,10 @@ class ModalSandboxProvider:
     #: ``AWS_REGION`` defaults to ``us-east-1``. Takes precedence over ``secret_name``.
     bucket_env: Mapping[str, str] | None = None
     client: Any = None
+    # ponytail: handles of closed sandboxes stay until their id is attached again
+    _live: dict[str, tuple[Any, ModalSandbox]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
         del agent_id
@@ -138,7 +145,7 @@ class ModalSandboxProvider:
             gpu=spec.gpu,
             timeout=spec.timeout_s,
             idle_timeout=spec.idle_timeout_s,
-            block_network=not spec.network,
+            **self._network(spec),
             # The host and s5cmd need these; ``exec`` removes ``scrub_env`` per command.
             secrets=secrets,
             env=dict(spec.env) or None,
@@ -161,34 +168,57 @@ class ModalSandboxProvider:
                 raise RuntimeError(
                     f"sandbox for thread {thread_id} never became ready: {exc}\n{detail}"
                 ) from exc
-        return await self._handle(sandbox, spec, thread_id)
+        return self._handle(sandbox, spec, thread_id)
 
     async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
-        modal = importlib.import_module("modal")
-        try:
-            sandbox = await modal.Sandbox.from_id.aio(sandbox_id, client=self.client)
-        except Exception as exc:  # noqa: BLE001 -- any lookup failure means "gone"
-            raise KeyError(sandbox_id) from exc
+        live = self._live.get(sandbox_id)
+        if live is None:
+            modal = importlib.import_module("modal")
+            try:
+                sandbox = await modal.Sandbox.from_id.aio(sandbox_id, client=self.client)
+            except Exception as exc:  # noqa: BLE001 -- any lookup failure means "gone"
+                raise KeyError(sandbox_id) from exc
+            if await sandbox.poll.aio() is not None:
+                raise KeyError(sandbox_id)
+            # A live sandbox still has its disk: nothing to restore.
+            thread_id = (await sandbox.get_tags.aio())[THREAD_TAG]
+            return self._handle(sandbox, spec, thread_id)
+        sandbox, handle = live
         if await sandbox.poll.aio() is not None:
+            del self._live[sandbox_id]
             raise KeyError(sandbox_id)
-        # A live sandbox still has its disk: nothing to restore.
-        thread_id = (await sandbox.get_tags.aio())[THREAD_TAG]
-        return await self._handle(sandbox, spec, thread_id)
+        return handle
 
-    async def _handle(self, sandbox: Any, spec: SandboxSpec, thread_id: str) -> ModalSandbox:
-        endpoint = None
-        if spec.toolset:
-            creds = await sandbox.create_connect_token.aio(port=spec.toolset_port)
-            endpoint = Endpoint(creds.url, {"Authorization": f"Bearer {creds.token}"})
+    def _handle(self, sandbox: Any, spec: SandboxSpec, thread_id: str) -> ModalSandbox:
         disk_sync = spec.storage == Storage.DISK_SYNC
-        return ModalSandbox(
+        handle = ModalSandbox(
             sandbox,
             spec.env,
             root=DISK_PATH if disk_sync else MOUNT_PATH,
             sync_argv=self.sync_argv(thread_id) if disk_sync else None,
             scrub_env=spec.scrub_env,
-            endpoint=endpoint,
+            toolset_port=spec.toolset_port if spec.toolset else None,
         )
+        self._live[handle.id] = (sandbox, handle)
+        return handle
+
+    def _network(self, spec: SandboxSpec) -> dict[str, list[str]]:
+        """Outbound allowlists for ``spec.network=False``.
+
+        Not ``block_network``: that also cuts the inbound connect-token proxy and
+        rejects a TCP probe. An empty allowlist denies all outbound traffic; a
+        ``disk_sync`` sandbox may still reach its bucket endpoint.
+        """
+        if spec.network:
+            return {}
+        if spec.storage != Storage.DISK_SYNC:
+            return {"outbound_cidr_allowlist": []}
+        host = urlsplit(self.endpoint_url or "").hostname
+        if host is None:
+            raise ValueError(
+                "disk_sync without network needs endpoint_url: s5cmd may reach only that host"
+            )
+        return {"outbound_domain_allowlist": [host]}
 
     def _host_args(self, spec: SandboxSpec, thread_id: str) -> list[str]:
         assert spec.toolset
@@ -231,7 +261,7 @@ class ModalSandbox:
         root: str = MOUNT_PATH,
         sync_argv: Sequence[str] | None = None,
         scrub_env: Sequence[str] = (),
-        endpoint: Endpoint | None = None,
+        toolset_port: int | None = None,
     ) -> None:
         self._sandbox = sandbox
         self._env = dict(env)
@@ -239,7 +269,20 @@ class ModalSandbox:
         self._root = root
         self._sync_argv = list(sync_argv) if sync_argv else None
         self.id = str(sandbox.object_id)
-        self.endpoint = endpoint
+        self._toolset_port = toolset_port
+        self._endpoint: Endpoint | None = None
+
+    async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
+        """A connect token for the toolset port, minted once and again on ``refresh``.
+
+        Modal documents no expiry; a token is re-minted only after the proxy answers 401.
+        """
+        if self._toolset_port is None:
+            return None
+        if self._endpoint is None or refresh:
+            creds = await self._sandbox.create_connect_token.aio(port=self._toolset_port)
+            self._endpoint = Endpoint(creds.url, {"Authorization": f"Bearer {creds.token}"})
+        return self._endpoint
 
     @staticmethod
     def _check(path: str) -> str:

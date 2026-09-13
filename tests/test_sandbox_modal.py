@@ -121,10 +121,10 @@ async def test_mount_without_toolset_has_no_entrypoint(
     fake = _FakeModal()
     _use(monkeypatch, fake)
     sandbox = await provider.open(SandboxSpec(backend="modal"), agent_id="a", thread_id="t1")
-    assert isinstance(sandbox, ModalSandbox) and sandbox.endpoint is None
+    assert isinstance(sandbox, ModalSandbox) and await sandbox.endpoint() is None
     args, kw = fake.created
     assert args == () and kw["readiness_probe"] is None
-    assert kw["block_network"] is True and kw["gpu"] is None and kw["secrets"] == []
+    assert kw["outbound_cidr_allowlist"] == [] and kw["gpu"] is None and kw["secrets"] == []
     assert kw["workdir"] == MOUNT_PATH and kw["env"] is None
     assert kw["volumes"][MOUNT_PATH] == (
         "mount",
@@ -170,12 +170,15 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     ]  # fmt: skip
     assert kw["readiness_probe"] == _Probe(tcp=9000)
     assert "encrypted_ports" not in kw and "unencrypted_ports" not in kw
-    assert kw["gpu"] == "L4" and kw["block_network"] is False
+    assert kw["gpu"] == "L4" and "outbound_cidr_allowlist" not in kw
     assert kw["secrets"] == ["secret:service", "secret:r2"]
     assert kw["env"] == {"MODE": "test"} and kw["tags"] == {"actant_thread": "t1"}
     assert kw["volumes"] == {} and kw["workdir"] == DISK_PATH
+    # The token is minted on first use, then cached until a refresh.
+    assert fake.tokens == []
+    tok1 = Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok1"})
+    assert await sandbox.endpoint() == tok1 and await sandbox.endpoint() == tok1
     assert fake.tokens == [9000]
-    assert sandbox.endpoint == Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok1"})
 
     # Agent commands lose the scrubbed keys (argv, no shell) unless passed explicitly.
     await sandbox.exec(["python", "run.py"], timeout=5)
@@ -191,10 +194,16 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     ((argv, kwargs),) = fake.execs
     assert list(argv[2:]) == push and kwargs["workdir"] == DISK_PATH
 
-    # attach recovers the prefix from the tag and mints a fresh token.
-    attached = await provider.attach(spec, "sb-1")
-    assert isinstance(attached, ModalSandbox)
-    assert attached.endpoint == Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok2"})
+    # attach returns the live handle (one poll, no new token); refresh re-mints.
+    assert await provider.attach(spec, "sb-1") is sandbox and fake.tokens == [9000]
+    tok2 = Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok2"})
+    assert await sandbox.endpoint(refresh=True) == tok2 and await sandbox.endpoint() == tok2
+
+    # Another worker's attach recovers the prefix from the tag.
+    attached = await ModalSandboxProvider(
+        app_name="app", bucket="b", endpoint_url="https://r2.example", secret_name="r2"
+    ).attach(spec, "sb-1")
+    assert isinstance(attached, ModalSandbox) and attached is not sandbox
     fake.execs.clear()
     await attached.sync()
     assert fake.execs[0][0][-1] == "s3://b/sandboxes/t1/"
@@ -203,6 +212,9 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     fake.execs.clear()
     await sandbox.close()
     assert list(fake.execs[0][0][2:]) == push and fake.terminated
+    fake.sandbox.poll = _Aio(_async(0))
+    with pytest.raises(KeyError):
+        await provider.attach(spec, "sb-1")
 
 
 async def test_disk_sync_without_toolset_waits_for_the_restore_marker(
@@ -215,7 +227,13 @@ async def test_disk_sync_without_toolset_waits_for_the_restore_marker(
     args, kw = fake.created
     assert args[:4] == ("python", "-m", "actant.sandbox.entry", "--restore") and "--" not in args
     assert kw["readiness_probe"] == _Probe(exec_argv=("test", "-f", READY_FILE))
-    assert sandbox.endpoint is None and fake.execs == []
+    assert await sandbox.endpoint() is None and fake.execs == []
+    # Without network, s5cmd may reach only the bucket endpoint.
+    assert kw["outbound_domain_allowlist"] == ["r2.example"]
+    with pytest.raises(ValueError, match="endpoint_url"):
+        await ModalSandboxProvider(app_name="app", bucket="b").open(
+            spec, agent_id="a", thread_id="t"
+        )
 
 
 async def test_open_fails_with_the_entrypoint_stderr_when_never_ready(

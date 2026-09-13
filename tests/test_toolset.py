@@ -10,7 +10,7 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -116,10 +116,11 @@ async def _call(
 async def test_local_and_remote_runners_give_identical_results(
     sandbox: LocalSandbox, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert sandbox.endpoint is not None
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
     monkeypatch.chdir(sandbox.root)
     local = LocalRunner(Counter())
-    remote = RemoteRunner(sandbox.endpoint, key="k1")
+    remote = RemoteRunner(endpoint, key="k1")
     for method, args in [
         ("bump", {"by": 2}),
         ("length", {"text": "hello"}),
@@ -143,9 +144,10 @@ async def test_local_and_remote_runners_give_identical_results(
 async def test_instances_are_per_key_opened_once_and_calls_run_in_parallel(
     sandbox: LocalSandbox,
 ) -> None:
-    assert sandbox.endpoint is not None
-    a = RemoteRunner(sandbox.endpoint, key="a", init={"start": 10})
-    b = RemoteRunner(sandbox.endpoint, key="b")
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    a = RemoteRunner(endpoint, key="a", init={"start": 10})
+    b = RemoteRunner(endpoint, key="b")
     # Two first calls on one key race; both must land on one instance.
     first = await asyncio.gather(_call(a, "bump"), _call(a, "bump"))
     assert sorted(json.loads(str(r.output))["count"] for r in first) == [11, 12]
@@ -167,20 +169,57 @@ async def test_sandbox_runner_uses_the_thread_sandbox(sandbox: LocalSandbox) -> 
     assert failed.error and "serves no toolset" in failed.error
 
 
+async def test_arguments_arrive_as_the_annotated_types_and_bytes_must_be_images(
+    sandbox: LocalSandbox,
+) -> None:
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    for runner in (LocalRunner(Counter()), RemoteRunner(endpoint, key="types")):
+        box = {"width": 2, "height": 3}
+        assert (await _call(runner, "area", box=box, unit="cm")).output == "Box 6 cm"
+        dropped = await _call(runner, "raw", data="not an image")
+        assert "dropped image-0" in str(dropped.output) and not dropped.content_blocks
+    # The host validates too, for callers that skip ``build``.
+    bad = await call_host(endpoint, "types", {}, "area", {"box": {"width": 1}})
+    assert bad.error and "ValidationError" in bad.error
+
+
+async def test_sandbox_runner_refreshes_a_rejected_credential_once(sandbox: LocalSandbox) -> None:
+    good = await sandbox.endpoint()
+    assert good is not None
+
+    class Rotating:
+        refreshes = 0
+
+        async def endpoint(self, *, refresh: bool = False) -> Endpoint:
+            assert good is not None
+            if refresh:
+                Rotating.refreshes += 1
+            return good if Rotating.refreshes else Endpoint(good.url, {"Authorization": "x"})
+
+    stale = cast(LocalSandbox, Rotating())
+    result = await _call(SandboxRunner(), "bump", _ctx(stale))
+    assert json.loads(str(result.output)) == {"count": 1} and Rotating.refreshes == 1
+    await _call(SandboxRunner(), "bump", _ctx(stale))
+    assert Rotating.refreshes == 1
+
+
 async def test_bad_token_unknown_method_and_host_survives_errors(sandbox: LocalSandbox) -> None:
-    assert sandbox.endpoint is not None
-    wrong = Endpoint(sandbox.endpoint.url, {"Authorization": "Bearer nope"})
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    wrong = Endpoint(endpoint.url, {"Authorization": "Bearer nope"})
     denied = await call_host(wrong, "k", {}, "bump", {})
     assert denied.error and "bearer" in denied.error
-    unknown = await call_host(sandbox.endpoint, "k", {}, "__init__", {})
+    unknown = await call_host(endpoint, "k", {}, "__init__", {})
     assert unknown.error and "unknown tool method" in unknown.error
-    assert (await call_host(sandbox.endpoint, "k", {}, "fail", {})).error
-    assert (await call_host(sandbox.endpoint, "k", {}, "length", {"text": "ok"})).output == "2"
+    assert (await call_host(endpoint, "k", {}, "fail", {})).error
+    assert (await call_host(endpoint, "k", {}, "length", {"text": "ok"})).output == "2"
 
 
 async def test_large_arguments_and_images_round_trip(sandbox: LocalSandbox) -> None:
-    assert sandbox.endpoint is not None
-    runner = RemoteRunner(sandbox.endpoint, key="big")
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    runner = RemoteRunner(endpoint, key="big")
     text = "x" * (2 * 1024 * 1024)
     assert (await _call(runner, "length", text=text)).output == str(len(text))
     result = await _call(runner, "picture", size=5 * 1024 * 1024)
@@ -190,8 +229,9 @@ async def test_large_arguments_and_images_round_trip(sandbox: LocalSandbox) -> N
 
 
 async def test_script_env_scrubs_what_the_host_keeps(sandbox: LocalSandbox) -> None:
-    assert sandbox.endpoint is not None
-    runner = RemoteRunner(sandbox.endpoint, key="env")
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    runner = RemoteRunner(endpoint, key="env")
     result = json.loads(str((await _call(runner, "env", name="SERVICE_KEY")).output))
     assert result == {"host": "k", "script": None}
     token = json.loads(str((await _call(runner, "env", name=host.TOKEN_ENV)).output))
@@ -206,13 +246,13 @@ async def test_attach_reuses_the_running_host_and_close_stops_it(tmp_path: Path)
     opened = await provider.open(spec, agent_id="a", thread_id="t")
     try:
         attached = await provider.attach(spec, opened.id)
-        assert attached is opened and opened.endpoint is not None
-        await _call(RemoteRunner(opened.endpoint, key="k"), "bump")
+        assert attached is opened and await opened.endpoint() is not None
+        await _call(RemoteRunner(await opened.endpoint(), key="k"), "bump")
     finally:
         await opened.close()
     restarted = await provider.attach(spec, opened.id)
     try:
-        assert restarted is not opened and restarted.endpoint != opened.endpoint
+        assert restarted is not opened and await restarted.endpoint() != await opened.endpoint()
     finally:
         await restarted.close()
 
