@@ -4,7 +4,10 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## 0.9.1
+## 0.10.0
+
+**Breaking:** `python -m actant.sandbox.entry` takes one `EntryConfig` JSON document
+(see below); a sandbox image must carry the same actant version as the worker.
 
 - Storage sync never fails or stalls a run. The toolset host kills a push after
   `SandboxSpec.sync_timeout_s` (default 300) and keeps pushing; it also pushes every
