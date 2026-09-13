@@ -159,6 +159,8 @@ class SandboxSpec:
     def __post_init__(self) -> None:
         # Coerce (and validate) a plain string from an untyped config.
         object.__setattr__(self, "storage", Storage(self.storage))
+        if self.sync_interval_s <= 0 or self.sync_timeout_s <= 0:
+            raise ValueError("sync_interval_s and sync_timeout_s must be positive")
 
 
 class SandboxProvider(Protocol):

@@ -31,7 +31,7 @@ from actant.tools.admission import (
     ToolResolution,
     ToolResolve,
 )
-from actant.tools.base import CallContext, Tool, ToolInvocation, ToolResult
+from actant.tools.base import CallContext, MetadataKey, Tool, ToolInvocation, ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 HEARTBEAT_SECONDS = 30.0
@@ -206,8 +206,8 @@ class ToolActivities(ActivityContext):
         ``finish`` tool is the explicit way to do it. A missing file or sink is
         the tool's failure, and not terminal, so the model can correct it.
         """
-        raw = result.metadata.get("deliverables")
-        if not result.metadata.get("terminal") or not raw:
+        raw = result.metadata.get(MetadataKey.DELIVERABLES)
+        if not result.metadata.get(MetadataKey.TERMINAL) or not raw:
             return result
         paths = [str(item) for item in raw] if isinstance(raw, list) else []
         if not paths:
@@ -216,7 +216,9 @@ class ToolActivities(ActivityContext):
             failed = ToolResult.fail(
                 "deliverables were listed but the worker has no artifact sink"
             )
-            failed.metadata = {k: v for k, v in result.metadata.items() if k != "terminal"}
+            failed.metadata = {
+                k: v for k, v in result.metadata.items() if k != MetadataKey.TERMINAL
+            }
             return failed
         sandbox = ctx.sandbox
         if sandbox is None:
@@ -227,13 +229,15 @@ class ToolActivities(ActivityContext):
                 data = await sandbox.read(path)
             except Exception as exc:  # noqa: BLE001 -- the path is the model's claim
                 failed = ToolResult.fail(f"deliverable {path!r} could not be read: {exc}")
-                failed.metadata = {k: v for k, v in result.metadata.items() if k != "terminal"}
+                failed.metadata = {
+                    k: v for k, v in result.metadata.items() if k != MetadataKey.TERMINAL
+                }
                 return failed
             mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
             name = path.rsplit("/", 1)[-1]
             ref = await self.artifact_sink.save(record.thread_id, name, data, mime)
             refs.append(ref.to_dict())
-        result.metadata["artifacts"] = refs
+        result.metadata[MetadataKey.ARTIFACTS] = refs
         return result
 
     async def _execute_failed(self, tool_call_id: str, reason: str) -> ExecuteOutcome:
@@ -353,7 +357,7 @@ def _outcome(tool_call_id: str, result: ToolResult) -> ExecuteOutcome:
     return ExecuteOutcome(
         tool_call_id=tool_call_id,
         status=(ExecuteStatus.COMPLETED if result.is_success() else ExecuteStatus.FAILED).value,
-        terminal=bool(result.metadata.get("terminal")),
+        terminal=bool(result.metadata.get(MetadataKey.TERMINAL)),
     )
 
 

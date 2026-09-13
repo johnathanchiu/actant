@@ -24,6 +24,7 @@ from actant.runtime.temporal.types import (
 )
 from actant.runtime.types.context import TurnContext
 from actant.runtime.types.threads import RunStatus, ThreadStatus
+from actant.tools.base import MetadataKey
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 FINISH_REMINDER = (
@@ -196,7 +197,7 @@ class RunActivities(ActivityContext):
         for record in await self.stores.tool_calls.get_by_run(payload.run_id):
             raw = record.result if isinstance(record.result, dict) else {}
             metadata = raw.get("metadata")
-            refs = metadata.get("artifacts") if isinstance(metadata, dict) else None
+            refs = metadata.get(MetadataKey.ARTIFACTS) if isinstance(metadata, dict) else None
             if isinstance(refs, list):
                 artifacts.extend(ref for ref in refs if isinstance(ref, dict))
 

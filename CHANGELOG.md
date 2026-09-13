@@ -16,7 +16,16 @@ affect users.
 - `disk_sync` restore has a timeout (fails startup) and gives restored files their
   objects' mtimes, so pushes no longer re-upload the whole workspace after a restore.
 - `ModalSandbox.sync` and `close` are bounded even when Modal's API hangs, and
-  `close` never raises.
+  `close` never raises (failures are logged).
+- `SandboxSpec` rejects a non-positive `sync_interval_s` or `sync_timeout_s`.
+- Typed wire and launch messages in `actant.sandbox.protocol`: host bodies are
+  `CallRequest`/`CallResponse` (JSON unchanged; a malformed call body is now HTTP
+  400), `StorageStatus` is exported from `actant.sandbox`, routes and headers are
+  `Route`/`Header`, and `actant.tools.MetadataKey` names the runtime's metadata keys.
+- **Entrypoint command line:** `python -m actant.sandbox.entry` now takes one
+  `EntryConfig` JSON document instead of `--restore`/`--` host flags, and
+  `host.launch_args`, `host.CALL_PATH` and `host.SHUTDOWN_PATH` are gone. The
+  image's actant must match the worker's.
 
 ## 0.9.0
 

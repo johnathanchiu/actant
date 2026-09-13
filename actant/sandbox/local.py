@@ -19,6 +19,7 @@ from pathlib import Path
 
 import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec
+from actant.sandbox.protocol import EntryConfig, Header, HostConfig
 
 #: How long a host may take to import its toolsets and bind.
 HOST_START_TIMEOUT_S = 60
@@ -151,8 +152,12 @@ async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.s
     """Launch the host for ``spec.toolsets`` in ``root`` on a free port; return once it listens."""
     assert spec.toolsets
     token = secrets.token_urlsafe(32)
-    argv = [sys.executable, "-m", ENTRY_MODULE, "--"]
-    argv += host.launch_args(spec.toolsets, port=0, bind="127.0.0.1", scrub=spec.scrub_env)
+    config = EntryConfig(
+        host=HostConfig(
+            toolsets=dict(spec.toolsets), port=0, bind="127.0.0.1", scrub=list(spec.scrub_env)
+        )
+    )
+    argv = [sys.executable, "-m", ENTRY_MODULE, config.model_dump_json()]
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=root,
@@ -175,7 +180,7 @@ async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.s
     # Keep reading: a tool that prints would otherwise fill the pipe and stall the host.
     _drains.add(task := asyncio.create_task(_forward(process.stdout)))
     task.add_done_callback(_drains.discard)
-    endpoint = Endpoint(f"http://127.0.0.1:{port}", {"Authorization": f"Bearer {token}"})
+    endpoint = Endpoint(f"http://127.0.0.1:{port}", {Header.AUTHORIZATION: f"Bearer {token}"})
     return endpoint, process
 
 

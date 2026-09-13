@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 from collections.abc import Mapping
 from http import HTTPStatus
 from typing import Protocol
@@ -41,7 +40,8 @@ from pydantic import ValidationError
 from actant.core import JSONObject
 import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint
-from actant.tools.base import BaseToolInvocation, CallContext, ToolResult, ToolSchema
+from actant.sandbox.protocol import CallRequest, CallResponse, Route
+from actant.tools.base import BaseToolInvocation, CallContext, MetadataKey, ToolResult, ToolSchema
 
 DEFAULT_CALL_TIMEOUT_S = 600.0
 
@@ -57,38 +57,36 @@ class Runner(Protocol):
     ) -> ToolResult: ...
 
 
-def to_tool_result(response: Mapping[str, object]) -> ToolResult:
-    """A host response (``{text, images, error, storage?}``) as a :class:`ToolResult`.
+def to_tool_result(response: CallResponse) -> ToolResult:
+    """A host response as a :class:`ToolResult`.
 
-    A host that pushes storage reports its push status as ``storage``; it lands on
-    ``metadata["storage"]`` (fields in :mod:`actant.sandbox.host`) so a product can
-    warn when pushes fail, without the call itself failing.
+    A host that pushes storage reports a :class:`~actant.sandbox.protocol.StorageStatus`;
+    its JSON lands on ``metadata[MetadataKey.STORAGE]`` so a product can warn when
+    pushes fail, without the call itself failing.
     """
     result = _result(response)
-    if isinstance(response.get("storage"), dict):
-        result.metadata["storage"] = response["storage"]
+    if response.storage is not None:
+        result.metadata[MetadataKey.STORAGE] = response.storage.model_dump(mode="json")
     return result
 
 
-def _result(response: Mapping[str, object]) -> ToolResult:
-    text = str(response.get("text") or "")
-    error = response.get("error")
-    if error is not None:
-        return ToolResult.fail("\n".join(part for part in (str(error), text) if part))
-    images = response.get("images") or []
-    if not isinstance(images, list) or not images:
+def _result(response: CallResponse) -> ToolResult:
+    text = response.text
+    if response.error is not None:
+        return ToolResult.fail("\n".join(part for part in (response.error, text) if part))
+    if not response.images:
         return ToolResult.ok(text)
     # LLM APIs reject empty text blocks.
     blocks: list[dict[str, object]] = [{"type": "text", "text": text}] if text else []
-    for image in images:
-        blocks.append({"type": "text", "text": f"Image {image['name']}:"})
+    for image in response.images:
+        blocks.append({"type": "text", "text": f"Image {image.name}:"})
         blocks.append(
             {
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": image["media_type"],
-                    "data": image["data_b64"],
+                    "media_type": image.media_type,
+                    "data": image.data_b64,
                 },
             }
         )
@@ -194,22 +192,22 @@ async def call_host(
 def _body(
     toolset: str, key: str, init: Mapping[str, object], method: str, args: Mapping[str, object]
 ) -> bytes:
-    request = {"toolset": toolset, "key": key, "init": dict(init), "method": method}
-    return json.dumps({**request, "args": dict(args)}).encode()
+    request = CallRequest(
+        toolset=toolset, key=key, init=dict(init), method=method, args=dict(args)
+    )
+    return request.model_dump_json().encode()
 
 
 async def _send(endpoint: Endpoint, body: bytes, timeout: float) -> tuple[int | None, ToolResult]:
     try:
-        status, data = await asyncio.to_thread(host.post, endpoint, host.CALL_PATH, body, timeout)
+        status, data = await asyncio.to_thread(host.post, endpoint, Route.CALL, body, timeout)
     except OSError as error:
         return None, ToolResult.fail(
             f"toolset host call to {endpoint.url} failed and may have run: {error}"
         )
     try:
-        response = json.loads(data)
-    except ValueError:
-        response = None
-    if not isinstance(response, dict):
+        response = CallResponse.model_validate_json(data)
+    except ValidationError:
         tail = data[-1000:].decode(errors="replace")
         return status, ToolResult.fail(f"toolset host returned HTTP {status}: {tail}")
     return status, to_tool_result(response)

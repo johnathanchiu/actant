@@ -324,7 +324,8 @@ makes one call from product code (with `await sandbox.endpoint()`); every
 runner encodes results the same way.
 
 A sandbox serves several named toolsets from one host (`python -m
-actant.sandbox.entry -- --toolset=name=pkg.mod:Class ...`). Give the model its
+actant.sandbox.entry '{"host": {"toolsets": {"name": "pkg.mod:Class"}}}'`, an
+`actant.sandbox.protocol.EntryConfig`). Give the model its
 tools on one class and put the product's own calls on another, instead of
 filtering methods. The host keeps one instance per toolset and thread and runs
 calls concurrently. Toolsets do not share instances: two classes over the same
@@ -346,7 +347,9 @@ Storage pushes never fail or stall a run. The host pushes after calls and every
 `SandboxSpec.sync_interval_s` (default 60) while completed calls are unpushed,
 one push at a time; a push running longer than `sync_timeout_s` (default 300)
 is killed and the next still runs. A failure is logged and reported: every call
-through a host that pushes carries `ToolResult.metadata["storage"]`:
+through a host that pushes carries `ToolResult.metadata[MetadataKey.STORAGE]`, the
+JSON of an `actant.sandbox.StorageStatus` (read it with
+`StorageStatus.model_validate`):
 
 | Field | Meaning |
 | --- | --- |

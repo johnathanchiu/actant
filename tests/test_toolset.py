@@ -16,10 +16,18 @@ from urllib.parse import urlsplit
 import pytest
 
 from actant.sandbox import Endpoint, LocalSandbox, LocalSandboxProvider, SandboxSpec
-from actant.sandbox import host
+from actant.sandbox import StorageStatus, host
+from actant.sandbox.protocol import (
+    EntryConfig,
+    Header,
+    HostConfig,
+    PushConfig,
+    RestoreConfig,
+    Route,
+)
 from actant.tools import LocalRunner, RemoteRunner, SandboxRunner, tools, toolset_schema
 from actant.core import JSONObject
-from actant.tools.base import CallContext, ToolResult
+from actant.tools.base import CallContext, MetadataKey, ToolResult
 from actant.tools.toolset import call_host
 from toolset_fixtures import Counter, Stages
 
@@ -278,7 +286,7 @@ async def test_sandbox_runner_refreshes_a_rejected_credential_once(sandbox: Loca
             assert good is not None
             if refresh:
                 Rotating.refreshes += 1
-            return good if Rotating.refreshes else Endpoint(good.url, {"Authorization": "x"})
+            return good if Rotating.refreshes else Endpoint(good.url, {Header.AUTHORIZATION: "x"})
 
     stale = cast(LocalSandbox, Rotating())
     result = await _call(SandboxRunner("counter"), "bump", _ctx(stale))
@@ -290,16 +298,17 @@ async def test_sandbox_runner_refreshes_a_rejected_credential_once(sandbox: Loca
 async def test_bad_token_unknown_method_and_host_survives_errors(sandbox: LocalSandbox) -> None:
     endpoint = await sandbox.endpoint()
     assert endpoint is not None
-    wrong = Endpoint(endpoint.url, {"Authorization": "Bearer nope"})
+    wrong = Endpoint(endpoint.url, {Header.AUTHORIZATION: "Bearer nope"})
     denied = await call_host(wrong, "counter", "bump", {}, key="k")
     assert denied.error and "bearer" in denied.error
     unknown = await call_host(endpoint, "counter", "__init__", {}, key="k")
     assert unknown.error and "unknown tool method" in unknown.error
     assert (await call_host(endpoint, "counter", "fail", {}, key="k")).error
     body = json.dumps({"toolset": "counter", "key": "k", "method": ["bump"]}).encode()
-    status, _ = await asyncio.to_thread(host.post, endpoint, host.CALL_PATH, body, 30)
-    assert status == 404
-    assert (await call_host(endpoint, "counter", "length", {"text": "ok"}, key="k")).output == "2"
+    status, _ = await asyncio.to_thread(host.post, endpoint, Route.CALL, body, 30)
+    assert status == 400
+    ok = await call_host(endpoint, "counter", "length", {"text": "ok"}, key="k")
+    assert ok.output == "2" and MetadataKey.STORAGE not in ok.metadata  # no push, no status
     assert "Bearer" not in repr(endpoint)
 
 
@@ -374,16 +383,15 @@ async def pushing_host(
         sys.executable,
         "-m",
         "actant.sandbox.entry",
-        "--restore",
-        json.dumps(restore),
-        "--",
-        "--toolset=counter=toolset_fixtures:Counter",
-        "--bind",
-        "127.0.0.1",
-        "--port",
-        "0",
-        "--push",
-        json.dumps(push),
+        EntryConfig(
+            restore=RestoreConfig(argv=restore),
+            host=HostConfig(
+                toolsets={"counter": "toolset_fixtures:Counter"},
+                port=0,
+                bind="127.0.0.1",
+                push=PushConfig(argv=push),
+            ),
+        ).model_dump_json(),
         cwd=tmp_path,
         env={"PYTHONPATH": TESTS, "PATH": "/usr/bin:/bin"},
         stdout=asyncio.subprocess.PIPE,
@@ -429,7 +437,7 @@ async def test_shutdown_closes_instances_pushes_and_exits(
         if log.exists():
             break
         await asyncio.sleep(0.1)
-    status, _ = await asyncio.to_thread(host.post, endpoint, host.SHUTDOWN_PATH, b"{}", 30)
+    status, _ = await asyncio.to_thread(host.post, endpoint, Route.SHUTDOWN, b"{}", 30)
     assert status == 200 and (tmp_path / "closed-at-2").exists()
     assert await asyncio.wait_for(process.wait(), 10) == 0
     assert log.read_text().count("push") == 2  # after the call, and once more at shutdown
@@ -438,7 +446,12 @@ async def test_shutdown_closes_instances_pushes_and_exits(
 def test_entry_exits_when_restore_fails(tmp_path: Path) -> None:
     restore = [sys.executable, "-c", "import sys; sys.stderr.write('access denied'); sys.exit(1)"]
     done = subprocess.run(
-        [sys.executable, "-m", "actant.sandbox.entry", "--restore", json.dumps(restore)],
+        [
+            sys.executable,
+            "-m",
+            "actant.sandbox.entry",
+            EntryConfig(restore=RestoreConfig(argv=restore)).model_dump_json(),
+        ],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -457,17 +470,21 @@ sys.exit(int(open('code').read()) if os.path.exists('code') else 0)
 """
 
 
-async def _start_host(tmp_path: Path, *extra: str) -> tuple[Endpoint, asyncio.subprocess.Process]:
+async def _start_host(tmp_path: Path) -> tuple[Endpoint, asyncio.subprocess.Process]:
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         "actant.sandbox.entry",
-        "--",
-        "--toolset=counter=toolset_fixtures:Counter",
-        *host.launch_args({}, port=0, bind="127.0.0.1", push_interval_s=0.3, push_timeout_s=1),
-        "--push",
-        json.dumps([sys.executable, "-c", PUSH_SCRIPT]),
-        *extra,
+        EntryConfig(
+            host=HostConfig(
+                toolsets={"counter": "toolset_fixtures:Counter"},
+                port=0,
+                bind="127.0.0.1",
+                push=PushConfig(
+                    argv=[sys.executable, "-c", PUSH_SCRIPT], interval_s=0.3, timeout_s=1
+                ),
+            )
+        ).model_dump_json(),
         cwd=tmp_path,
         env={"PYTHONPATH": TESTS, "PATH": "/usr/bin:/bin"},
         stdout=asyncio.subprocess.PIPE,
@@ -496,26 +513,26 @@ async def test_push_failures_and_hangs_never_touch_calls_and_show_in_status(
     def count() -> int:
         return len(pushes.read_text().splitlines()) if pushes.exists() else 0
 
-    async def storage() -> dict[str, Any]:
+    async def storage() -> StorageStatus:
         result = await call_host(endpoint, "counter", "length", {"text": "abc"}, key="k")
         assert result.output == "3" and result.error is None  # the call never suffers
-        return cast("dict[str, Any]", result.metadata["storage"])
+        return StorageStatus.model_validate(result.metadata[MetadataKey.STORAGE])
 
     try:
         # A hanging push is killed at the timeout; the pusher carries on and retries.
         (tmp_path / "hang").touch()
         first = await storage()
-        assert first["pending"] and first["consecutive_failures"] == 0
+        assert first.pending and first.consecutive_failures == 0
         await _until(lambda: count() >= 2, 10)  # the first timed out, the next started
         status = await storage()
-        assert status["last_error"] == "timed out after 1s" and status["consecutive_failures"] >= 1
+        assert status.last_error == "timed out after 1s" and status.consecutive_failures >= 1
 
         # A failing push: calls still succeed and the status names the exit.
         (tmp_path / "code").write_text("3")
         (tmp_path / "hang").unlink()
         await asyncio.sleep(1)
         status = await storage()
-        assert status["last_error"].startswith("exited 3") and status["last_success_at"] is None
+        assert (status.last_error or "").startswith("exited 3") and status.last_success_at is None
 
         # Periodic: with no calls at all, the unpushed work is retried until it lands.
         before = count()
@@ -525,8 +542,8 @@ async def test_push_failures_and_hangs_never_touch_calls_and_show_in_status(
         await _until(lambda: count() > before, 10)
         await asyncio.sleep(0.5)
         status = await storage()
-        assert status["last_error"] is None and status["consecutive_failures"] == 0
-        assert status["last_success_at"] is not None
+        assert status.last_error is None and status.consecutive_failures == 0
+        assert status.last_success_at is not None
         # Once pushed, a quiet host stops pushing.
         await asyncio.sleep(1)
         quiet = count()
@@ -542,7 +559,7 @@ async def test_shutdown_finishes_within_the_timeout_when_the_push_hangs(tmp_path
     (tmp_path / "hang").touch()
     await call_host(endpoint, "counter", "bump", {}, key="k")
     started = time.monotonic()
-    status, _ = await asyncio.to_thread(host.post, endpoint, host.SHUTDOWN_PATH, b"{}", 30)
+    status, _ = await asyncio.to_thread(host.post, endpoint, Route.SHUTDOWN, b"{}", 30)
     assert status == 200 and await asyncio.wait_for(process.wait(), 10) == 0
     assert time.monotonic() - started < 5  # a running push plus the final one, 1 s each
 
@@ -551,8 +568,8 @@ def test_entry_fails_when_restore_times_out(tmp_path: Path) -> None:
     restore = [sys.executable, "-c", "import time; time.sleep(60)"]
     started = time.monotonic()
     done = subprocess.run(
-        [sys.executable, "-m", "actant.sandbox.entry", "--restore", json.dumps(restore),
-         "--restore-timeout", "0.5"],
+        [sys.executable, "-m", "actant.sandbox.entry",
+         EntryConfig(restore=RestoreConfig(argv=restore, timeout_s=0.5)).model_dump_json()],
         cwd=tmp_path, capture_output=True, text=True, timeout=30,
     )  # fmt: skip
     assert done.returncode == 1 and "restore timed out after 0.5s" in done.stderr

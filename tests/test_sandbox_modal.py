@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +14,15 @@ from actant.sandbox import Endpoint, SandboxSpec, Storage
 from actant.sandbox import host
 from actant.sandbox.entry import READY_FILE
 import actant.sandbox.modal as modal_backend
+from actant.sandbox.protocol import (
+    EntryConfig,
+    Header,
+    HostConfig,
+    PushConfig,
+    RestoreConfig,
+    Route,
+    StampConfig,
+)
 from actant.sandbox.modal import (
     DISK_PATH,
     MOUNT_PATH,
@@ -165,20 +173,25 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     args, kw = fake.created
     push = [*S5, "sync", "--delete", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
     restore = [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
-    assert list(args) == [
-        "python", "-m", "actant.sandbox.entry",
-        "--restore", json.dumps(restore),
-        "--restore-timeout", "1800",
-        "--stamp", json.dumps(
-            {"argv": ["s5cmd", "--json", *S5[1:], "ls", "s3://b/sandboxes/t1/*"],
-             "prefix": "s3://b/sandboxes/t1/", "root": DISK_PATH}
+    assert list(args[:3]) == ["python", "-m", "actant.sandbox.entry"] and len(args) == 4
+    assert EntryConfig.model_validate_json(args[3]) == EntryConfig(
+        restore=RestoreConfig(
+            argv=restore,
+            timeout_s=1800,
+            stamp=StampConfig(
+                argv=["s5cmd", "--json", *S5[1:], "ls", "s3://b/sandboxes/t1/*"],
+                prefix="s3://b/sandboxes/t1/",
+                root=DISK_PATH,
+            ),
         ),
-        "--",
-        "--toolset=notes=pkg.tools:Notes", "--port", "9000", "--bind", "0.0.0.0",
-        "--push-interval", "30", "--push-timeout", "120",
-        "--scrub=SERVICE_KEY", "--scrub=AWS_SECRET_ACCESS_KEY",
-        "--push", json.dumps(push),
-    ]  # fmt: skip
+        host=HostConfig(
+            toolsets={"notes": "pkg.tools:Notes"},
+            port=9000,
+            bind="0.0.0.0",
+            scrub=["SERVICE_KEY", "AWS_SECRET_ACCESS_KEY"],
+            push=PushConfig(argv=push, interval_s=30, timeout_s=120),
+        ),
+    )
     assert kw["readiness_probe"] == _Probe(tcp=9000)
     assert "encrypted_ports" not in kw and "unencrypted_ports" not in kw
     assert kw["gpu"] == "L4" and "outbound_cidr_allowlist" not in kw
@@ -187,7 +200,7 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     assert kw["volumes"] == {} and kw["workdir"] == DISK_PATH
     # The token is minted on first use, then cached until a refresh.
     assert fake.tokens == []
-    tok1 = Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok1"})
+    tok1 = Endpoint("https://sb.modal.host", {Header.AUTHORIZATION: "Bearer tok1"})
     assert await sandbox.endpoint() == tok1 and await sandbox.endpoint() == tok1
     assert fake.tokens == [9000]
 
@@ -211,7 +224,7 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
 
     # attach returns the live handle (one poll, no new token); refresh re-mints.
     assert await provider.attach(spec, "sb-1") is sandbox and fake.tokens == [9000]
-    tok2 = Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok2"})
+    tok2 = Endpoint("https://sb.modal.host", {Header.AUTHORIZATION: "Bearer tok2"})
     assert await sandbox.endpoint(refresh=True) == tok2 and await sandbox.endpoint() == tok2
 
     # Another worker's attach recovers the prefix from the tag.
@@ -228,13 +241,13 @@ async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_toke
     posts: list[tuple[str, str]] = []
 
     def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[int, bytes]:
-        posts.append((endpoint.headers["Authorization"], path))
+        posts.append((endpoint.headers[Header.AUTHORIZATION], path))
         return (401, b"") if len(posts) == 1 else (200, b"")
 
     monkeypatch.setattr(host, "post", post)
     fake.execs.clear()
     await sandbox.close()
-    assert [p for _, p in posts] == [host.SHUTDOWN_PATH] * 2 and posts[1][0] == "Bearer tok3"
+    assert [p for _, p in posts] == [Route.SHUTDOWN] * 2 and posts[1][0] == "Bearer tok3"
     assert fake.execs == [] and fake.terminated
     monkeypatch.setattr(host, "post", lambda *_: (_ for _ in ()).throw(OSError("gone")))
     await sandbox.close()
@@ -252,7 +265,8 @@ async def test_disk_sync_without_toolset_waits_for_the_restore_marker(
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
     sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
     args, kw = fake.created
-    assert args[:4] == ("python", "-m", "actant.sandbox.entry", "--restore") and "--" not in args
+    config = EntryConfig.model_validate_json(args[3])
+    assert config.restore is not None and config.host is None
     assert kw["readiness_probe"] == _Probe(exec_argv=("test", "-f", READY_FILE))
     assert await sandbox.endpoint() is None and fake.execs == []
     # Without network, s5cmd may reach only the bucket endpoint.
@@ -314,6 +328,8 @@ def test_storage_accepts_the_enum_or_its_string_and_rejects_others() -> None:
     assert SandboxSpec().storage is Storage.MOUNT
     with pytest.raises(ValueError):
         SandboxSpec(storage="nfs")  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="positive"):
+        SandboxSpec(sync_timeout_s=0)
 
 
 async def test_sync_and_close_are_bounded_when_modal_hangs(
