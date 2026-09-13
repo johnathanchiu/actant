@@ -14,6 +14,7 @@ from actant.sandbox.base import (
 )
 from actant.sandbox.protocol import StorageStatus
 from actant.sandbox.local import LocalSandbox, LocalSandboxProvider
+from actant.sandbox.service import LocalRunner, RemoteRunner, Runner, SandboxRunner, call_host
 
 __all__ = [
     "ArtifactRef",
@@ -22,11 +23,16 @@ __all__ = [
     "Endpoint",
     "Entry",
     "ExecResult",
+    "LocalRunner",
     "LocalSandbox",
     "LocalSandboxProvider",
+    "RemoteRunner",
+    "Runner",
     "Sandbox",
     "SandboxProvider",
+    "SandboxRunner",
     "SandboxSpec",
     "Storage",
     "StorageStatus",
+    "call_host",
 ]

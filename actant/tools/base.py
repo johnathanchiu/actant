@@ -44,7 +44,7 @@ class MetadataKey(StrEnum):
     DELIVERABLES = "deliverables"
     #: The stored refs of ``deliverables``; written by the runtime, never by a tool.
     ARTIFACTS = "artifacts"
-    #: A toolset host's :class:`~actant.sandbox.protocol.StorageStatus`, as JSON.
+    #: A service host's :class:`~actant.sandbox.protocol.StorageStatus`, as JSON.
     STORAGE = "storage"
 
 

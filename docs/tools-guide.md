@@ -255,12 +255,15 @@ under the ten-minute tool activity. Mounted buckets write whole files only
 `scrub_env` names variables (service keys from `secrets`) that `exec` removes
 from the agent's own commands. It is best effort, not a security boundary.
 
-## Toolsets
+## Services and tools
 
-When tools share state or work on many files, write them as a plain class.
-Its public methods are the tools; the schema comes from each signature
-without `self`, the description from the docstring. `open` (an optional
-classmethod) and `close` are lifecycle, not tools. A plain `def` runs in a
+A service is a class served next to the sandbox's files; `tools()` exposes a
+service to a model. Orchestration code calls services directly through a runner.
+
+Write a service when tools share state or work on many files. Its public
+methods are callable; as tools, the schema comes from each signature without
+`self`, the description from the docstring. `open` (an optional classmethod)
+and `close` are lifecycle, not callable. A plain `def` runs in a
 worker thread. An `async def` runs on the host's event loop: blocking or
 CPU-heavy work inside one stalls every other call until it awaits, so write
 such a method as a plain `def` (or call `asyncio.to_thread` yourself).
@@ -268,7 +271,8 @@ such a method as a plain `def` (or call `asyncio.to_thread` yourself).
 ```python
 from dataclasses import dataclass, field
 
-from actant.tools import LocalRunner, SandboxRunner, tools
+from actant.sandbox import LocalRunner, SandboxRunner
+from actant.tools import tools
 
 
 @dataclass
@@ -305,7 +309,7 @@ agent = AgentDefinition(
     tools=ToolRegistry(tools(Notebook, SandboxRunner("notebook", init={"title": "scratch"}))),
     sandbox=SandboxSpec(
         backend="modal",
-        toolsets={
+        services={
             "notebook": "myproduct.notebook:Notebook",
             # Calls the product makes itself, kept off the model's tool list.
             "pipeline": "myproduct.notebook:Pipeline",
@@ -318,22 +322,24 @@ A method returns a `str`, an object with `.text` and `.images` (image file
 paths or bytes, sent as image content blocks), or any JSON value. An exception
 becomes a failed result with the traceback tail. Arguments are validated
 against the signature, so a parameter typed as a pydantic model arrives as
-that model. `RemoteRunner(endpoint, toolset, key, init)` calls a host you
-reach yourself, and `call_host(endpoint, toolset, method, args, key=...)`
-makes one call from product code (with `await sandbox.endpoint()`); every
-runner encodes results the same way.
+that model. `RemoteRunner(endpoint, service, key, init)` calls a host you
+reach yourself, and `call_host(endpoint, service, method, args, key=...)`
+makes one call (with `await sandbox.endpoint()`). Every runner returns the same
+`CallResponse` (`text`, `images`, `error`, `storage`); `tools()` turns it into a
+`ToolResult`. From orchestration code, call a runner directly:
+`await SandboxRunner("pipeline").call("stage", {}, key=thread_id, sandbox=sandbox)`.
 
-A sandbox serves several named toolsets from one host (`python -m
-actant.sandbox.entry '{"host": {"toolsets": {"name": "pkg.mod:Class"}}}'`, an
+A sandbox serves several named services from one host (`python -m
+actant.sandbox.entry '{"host": {"services": {"name": "pkg.mod:Class"}}}'`, an
 `actant.sandbox.protocol.EntryConfig`). Give the model its
 tools on one class and put the product's own calls on another, instead of
-filtering methods. The host keeps one instance per toolset and thread and runs
-calls concurrently. Toolsets do not share instances: two classes over the same
+filtering methods. The host keeps one instance per service and thread and runs
+calls concurrently. Services do not share instances: two classes over the same
 state build it from the same `init` (the sandbox's files, or an object their
 `open` looks up). Inside it, tools that
 start scripts should pass `env=actant.sandbox.host.script_env()` so the
 scripts do not inherit `scrub_env`. On Modal the host is the sandbox
-entrypoint, readiness is a TCP probe on `toolset_port`, `disk_sync` storage is
+entrypoint, readiness is a TCP probe on `service_port`, `disk_sync` storage is
 restored before it listens and pushed after calls and periodically, and requests go through a
 Modal connect token (cached, re-minted on a 401), so no port is public.
 Connections are kept alive and pooled, so a call costs one round trip.
@@ -341,7 +347,7 @@ Connections are kept alive and pooled, so a call costs one round trip.
 pushes `disk_sync` storage once more, and exits (SIGTERM, SIGINT and SIGHUP do
 the same). Modal's `terminate`, `timeout` and `idle_timeout` kill the container
 outright, so `close` does not run on those paths. The image needs actant and
-the toolsets' package installed.
+the services' package installed.
 
 Storage pushes never fail or stall a run. The host pushes after calls and every
 `SandboxSpec.sync_interval_s` (default 60) while completed calls are unpushed,

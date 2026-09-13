@@ -1,4 +1,4 @@
-"""The typed messages between a worker, a sandbox's entrypoint and its toolset host.
+"""The typed messages between a worker, a sandbox's entrypoint and its service host.
 
 HTTP bodies (:class:`CallRequest`, :class:`CallResponse`) are JSON on the wire;
 the launch configuration (:class:`EntryConfig`) is one JSON document on the
@@ -33,7 +33,7 @@ class _Message(BaseModel):
 
 
 class CallRequest(_Message):
-    toolset: str
+    service: str
     key: str
     method: str
     init: dict[str, Any] = Field(default_factory=dict)
@@ -85,8 +85,8 @@ class PushConfig(_Message):
 
 
 class HostConfig(_Message):
-    #: Toolset name to ``"pkg.mod:Class"``.
-    toolsets: dict[str, str] = Field(min_length=1)
+    #: Service name to ``"pkg.mod:Class"``.
+    services: dict[str, str] = Field(min_length=1)
     #: ``0`` picks a free port.
     port: int = Field(default=8080, ge=0, le=65535)
     bind: str = "0.0.0.0"

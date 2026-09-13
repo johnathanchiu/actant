@@ -22,6 +22,15 @@ def test_actant_module_imports_are_acyclic() -> None:
     assert _find_cycle(graph) is None
 
 
+def test_services_do_not_depend_on_the_llm_or_runtime() -> None:
+    package = Path(__file__).parents[1] / "actant"
+    for name in ("service", "host", "protocol", "base", "entry"):
+        path = package / "sandbox" / f"{name}.py"
+        imports = _absolute_imports(ast.parse(path.read_text(), filename=str(path)))
+        banned = ("actant.llm", "actant.runtime", "actant.tools")
+        assert not [i for i in imports if i.startswith(banned)], name
+
+
 def _module_name(path: Path, package_parent: Path) -> str:
     module = ".".join(path.relative_to(package_parent).with_suffix("").parts)
     return module.removesuffix(".__init__")

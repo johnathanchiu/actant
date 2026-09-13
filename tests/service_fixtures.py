@@ -1,4 +1,4 @@
-"""A generic toolset the toolset tests run in-process and inside a real host process."""
+"""A generic service the service tests run in-process and inside a real host process."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ class Counter:
 
 
 class Stages:
-    """A second toolset for the product's own calls, served next to ``Counter``."""
+    """A second service for the product's own calls, served next to ``Counter``."""
 
     def __init__(self) -> None:
         self.stage = 0

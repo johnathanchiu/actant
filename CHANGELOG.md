@@ -4,6 +4,37 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.11.0
+
+**Breaking:** toolsets are now services. The sandbox host serves plain classes whose
+public methods are callable remotely, by a model's tools or by orchestration code
+alike. No compatibility aliases; host and client must run the same actant version.
+
+- The generic machinery (runners, `call_host`) lives in `actant.sandbox.service` and
+  is exported from `actant.sandbox`; it does not import `actant.llm`, `actant.runtime`
+  or `actant.tools`. `actant.tools` keeps only the model adapter: `tools(cls, runner)`
+  and `tool_schemas(cls)`.
+- Runners return a `CallResponse` (`text`, `images`, `error`, `storage`) instead of a
+  `ToolResult`: `Runner.call(method, args, *, key=None, sandbox=None)`, so code calls
+  a service without a `CallContext`. `call_host` returns a `CallResponse` too. Tools
+  still see a `ToolResult`, with storage status on `metadata["storage"]`.
+- Wire and launch messages: `CallRequest.service` and `HostConfig.services`.
+
+| 0.10 | 0.11 |
+| --- | --- |
+| `SandboxSpec.toolsets` | `SandboxSpec.services` |
+| `SandboxSpec.toolset_port` | `SandboxSpec.service_port` |
+| `HostConfig.toolsets` | `HostConfig.services` |
+| `CallRequest.toolset` (JSON `"toolset"`) | `CallRequest.service` (JSON `"service"`) |
+| `actant.tools.toolset` | `actant.sandbox.service` (runners) + `actant.tools.service` (adapter) |
+| `actant.tools.LocalRunner`, `RemoteRunner`, `SandboxRunner`, `Runner`, `call_host` | `actant.sandbox.…` (same names) |
+| `actant.tools.toolset_schema(cls)` | `actant.tools.tool_schemas(cls)` |
+| `host.public_methods(cls)` | `host.service_methods(cls)` |
+| `ToolsetTool`, `ToolsetInvocation` | `ServiceTool`, `ServiceInvocation` |
+| `Runner.call(method, args, ctx) -> ToolResult` | `Runner.call(method, args, *, key, sandbox) -> CallResponse` |
+| `call_host(...) -> ToolResult` | `call_host(...) -> CallResponse` |
+| `RemoteRunner(endpoint, toolset, key)`, `SandboxRunner(toolset)` | `RemoteRunner(endpoint, service, key)`, `SandboxRunner(service)` |
+
 ## 0.10.0
 
 **Breaking:** `python -m actant.sandbox.entry` takes one `EntryConfig` JSON document
