@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import importlib
+import json
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from actant.sandbox import SandboxSpec, Storage
-from actant.sandbox.local import LocalSandbox
+from actant.sandbox import Endpoint, SandboxSpec, Storage
+from actant.sandbox.entry import READY_FILE
 from actant.sandbox.modal import (
     DISK_PATH,
     MOUNT_PATH,
-    ModalSandbox,
     S5CMD_URL,
+    ModalSandbox,
     ModalSandboxProvider,
-    sync_command,
     with_s5cmd,
 )
 
@@ -26,13 +27,6 @@ class _Aio:
         self.aio = fn
 
 
-class _Process:
-    def __init__(self, code: int, stderr: str) -> None:
-        self.stdout = SimpleNamespace(read=_Aio(_async("")))
-        self.stderr = SimpleNamespace(read=_Aio(_async(stderr)))
-        self.wait = _Aio(_async(code))
-
-
 def _async(value: Any) -> Any:
     async def fn(*_: Any, **__: Any) -> Any:
         return value
@@ -40,32 +34,56 @@ def _async(value: Any) -> Any:
     return fn
 
 
+@dataclass(frozen=True)
+class _Probe:
+    tcp: int | None = None
+    exec_argv: tuple[str, ...] | None = None
+
+
 class _FakeModal:
-    def __init__(self, restore_code: int = 0, restore_stderr: str = "") -> None:
-        self.created: dict[str, Any] = {}
+    def __init__(
+        self, *, ready_error: Exception | None = None, exit_code: int | None = None
+    ) -> None:
+        self.created: tuple[tuple[str, ...], dict[str, Any]] = ((), {})
         self.execs: list[tuple[tuple[str, ...], dict[str, Any]]] = []
-        self.tags: dict[str, str] = {}
+        self.tokens: list[int] = []
+        self.terminated = False
         fake = self
 
-        async def exec_(*argv: str, **kwargs: Any) -> _Process:
+        async def exec_(*argv: str, **kwargs: Any) -> Any:
             fake.execs.append((argv, kwargs))
-            return _Process(restore_code, restore_stderr)
+            return SimpleNamespace(
+                stdout=SimpleNamespace(read=_Aio(_async(""))),
+                stderr=SimpleNamespace(read=_Aio(_async(""))),
+                wait=_Aio(_async(0)),
+            )
 
-        async def get_tags() -> dict[str, str]:
-            return fake.tags
+        async def wait_until_ready(timeout: int) -> None:
+            del timeout
+            if ready_error is not None:
+                raise ready_error
+
+        async def create_connect_token(port: int) -> Any:
+            fake.tokens.append(port)
+            return SimpleNamespace(url="https://sb.modal.host", token=f"tok{len(fake.tokens)}")
+
+        async def terminate() -> None:
+            fake.terminated = True
 
         self.sandbox = SimpleNamespace(
             object_id="sb-1",
             exec=_Aio(exec_),
-            poll=_Aio(_async(None)),
-            get_tags=_Aio(get_tags),
-            terminate=_Aio(_async(None)),
+            poll=_Aio(_async(exit_code)),
+            get_tags=_Aio(lambda: _async(fake.created[1]["tags"])()),
+            wait_until_ready=_Aio(wait_until_ready),
+            create_connect_token=_Aio(create_connect_token),
+            stderr=SimpleNamespace(read=_Aio(_async("restore exited 1: access denied"))),
+            terminate=_Aio(terminate),
             wait=_Aio(_async(None)),
         )
 
-        async def create(**kwargs: Any) -> Any:
-            fake.created = kwargs
-            fake.tags = kwargs["tags"]
+        async def create(*args: str, **kwargs: Any) -> Any:
+            fake.created = (args, kwargs)
             return fake.sandbox
 
         self.App = SimpleNamespace(lookup=_Aio(_async("app")))
@@ -74,6 +92,10 @@ class _FakeModal:
             from_name=lambda name: f"secret:{name}", from_dict=lambda env: ("dict", env)
         )
         self.CloudBucketMount = lambda bucket, **kw: ("mount", bucket, kw)
+        self.Probe = SimpleNamespace(
+            with_tcp=lambda port: _Probe(tcp=port),
+            with_exec=lambda *argv: _Probe(exec_argv=argv),
+        )
 
 
 @pytest.fixture
@@ -90,14 +112,18 @@ def _use(monkeypatch: pytest.MonkeyPatch, fake: _FakeModal) -> None:
     )
 
 
-async def test_mount_keeps_the_bucket_secret_on_the_mount(
+S5 = ("s5cmd", "--endpoint-url", "https://r2.example")
+
+
+async def test_mount_without_toolset_has_no_entrypoint(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
     fake = _FakeModal()
     _use(monkeypatch, fake)
     sandbox = await provider.open(SandboxSpec(backend="modal"), agent_id="a", thread_id="t1")
-    assert isinstance(sandbox, ModalSandbox)
-    kw = fake.created
+    assert isinstance(sandbox, ModalSandbox) and sandbox.endpoint is None
+    args, kw = fake.created
+    assert args == () and kw["readiness_probe"] is None
     assert kw["block_network"] is True and kw["gpu"] is None and kw["secrets"] == []
     assert kw["workdir"] == MOUNT_PATH and kw["env"] is None
     assert kw["volumes"][MOUNT_PATH] == (
@@ -109,98 +135,109 @@ async def test_mount_keeps_the_bucket_secret_on_the_mount(
             "secret": "secret:r2",
         },
     )
-    assert fake.execs == []  # no restore
+    assert fake.tokens == []
     assert (await sandbox.sync()).returncode == 0 and fake.execs == []
 
 
-async def test_disk_sync_restores_on_open_and_pushes_on_sync(
+async def test_toolset_with_disk_sync_restores_then_serves_behind_a_connect_token(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
-    fake = _FakeModal(restore_code=1, restore_stderr="ERROR no object found")
+    fake = _FakeModal()
     _use(monkeypatch, fake)
     spec = SandboxSpec(
         backend="modal",
         storage=Storage.DISK_SYNC,
+        toolset="pkg.tools:Notes",
+        toolset_port=9000,
         gpu="L4",
         network=True,
-        secrets=("openai",),
-        scrub_env=("OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY"),
+        secrets=("service",),
+        scrub_env=("SERVICE_KEY", "AWS_SECRET_ACCESS_KEY"),
+        env={"MODE": "test"},
     )
     sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
     assert isinstance(sandbox, ModalSandbox)
-    kw = fake.created
+    args, kw = fake.created
+    push = [*S5, "sync", "--delete", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
+    restore = [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
+    assert list(args) == [
+        "python", "-m", "actant.sandbox.entry",
+        "--restore", json.dumps(restore),
+        "--",
+        "--toolset", "pkg.tools:Notes", "--port", "9000", "--bind", "0.0.0.0",
+        "--scrub", "SERVICE_KEY", "--scrub", "AWS_SECRET_ACCESS_KEY",
+        "--push", json.dumps(push),
+    ]  # fmt: skip
+    assert kw["readiness_probe"] == _Probe(tcp=9000)
+    assert "encrypted_ports" not in kw and "unencrypted_ports" not in kw
     assert kw["gpu"] == "L4" and kw["block_network"] is False
-    assert kw["secrets"] == ["secret:openai", "secret:r2"]
+    assert kw["secrets"] == ["secret:service", "secret:r2"]
+    assert kw["env"] == {"MODE": "test"} and kw["tags"] == {"actant_thread": "t1"}
     assert kw["volumes"] == {} and kw["workdir"] == DISK_PATH
-    assert kw["env"] == {"ACTANT_SCRUB_ENV": "OPENAI_API_KEY,AWS_SECRET_ACCESS_KEY"}
+    assert fake.tokens == [9000]
+    assert sandbox.endpoint == Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok1"})
 
-    endpoint = ("s5cmd", "--endpoint-url", "https://r2.example")
-    ((argv, _),) = fake.execs
-    exclude = ("--exclude", ".actant/*")
-    assert argv[2:] == (*endpoint, "sync", *exclude, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/")
+    # Agent commands lose the scrubbed keys (argv, no shell) unless passed explicitly.
+    await sandbox.exec(["python", "run.py"], timeout=5)
+    await sandbox.exec(["python", "run.py"], timeout=5, env={"SERVICE_KEY": "mine"})
+    assert [argv for argv, _ in fake.execs] == [
+        ("timeout", "5", "env", "-uSERVICE_KEY", "-uAWS_SECRET_ACCESS_KEY", "python", "run.py"),
+        ("timeout", "5", "env", "-uAWS_SECRET_ACCESS_KEY", "python", "run.py"),
+    ]
 
-    assert sync_command(provider, "t1") == (
-        "s5cmd --endpoint-url https://r2.example sync --delete --exclude '.actant/*' "
-        f"{DISK_PATH}/ s3://b/sandboxes/t1/"
-    )
+    # sync keeps the bucket keys s5cmd needs.
     fake.execs.clear()
     await sandbox.sync()
     ((argv, kwargs),) = fake.execs
-    assert argv[2:] == (
-        *endpoint,
-        "sync",
-        "--delete",
-        *exclude,
-        f"{DISK_PATH}/",
-        "s3://b/sandboxes/t1/",
-    )
-    assert kwargs["workdir"] == DISK_PATH
+    assert list(argv[2:]) == push and kwargs["workdir"] == DISK_PATH
 
-    # Reattaching a live sandbox skips the restore but still knows its prefix.
-    fake.execs.clear()
+    # attach recovers the prefix from the tag and mints a fresh token.
     attached = await provider.attach(spec, "sb-1")
-    assert fake.execs == []
     assert isinstance(attached, ModalSandbox)
+    assert attached.endpoint == Endpoint("https://sb.modal.host", {"Authorization": "Bearer tok2"})
+    fake.execs.clear()
     await attached.sync()
     assert fake.execs[0][0][-1] == "s3://b/sandboxes/t1/"
 
-    # Commands lose the scrubbed keys unless kept (or passed explicitly).
+    # close pushes, then terminates.
     fake.execs.clear()
-    await sandbox.exec(["python", "run.py"], timeout=5)
-    await sandbox.exec(["python", "run.py"], timeout=5, env={"OPENAI_API_KEY": "mine"})
-    await sandbox.exec(["python", "run.py"], timeout=5, keep_env=True)
-    assert [argv for argv, _ in fake.execs] == [
-        ("env", "-uOPENAI_API_KEY", "-uAWS_SECRET_ACCESS_KEY", "timeout", "5", "python", "run.py"),
-        ("env", "-uAWS_SECRET_ACCESS_KEY", "timeout", "5", "python", "run.py"),
-        ("timeout", "5", "python", "run.py"),
-    ]
-
-    # close pushes the disk before terminating, and terminates even though this push exits 1.
-    order: list[str] = []
-    fake.execs.clear()
-    fake.sandbox.terminate = _Aio(lambda: _record(order, "terminate"))
     await sandbox.close()
-    assert fake.execs[0][0][2:6] == (*endpoint, "sync") and "--delete" in fake.execs[0][0]
-    assert order == ["terminate"]
+    assert list(fake.execs[0][0][2:]) == push and fake.terminated
 
 
-async def _record(order: list[str], name: str) -> None:
-    order.append(name)
-
-
-async def test_disk_sync_open_fails_when_the_restore_fails(
+async def test_disk_sync_without_toolset_waits_for_the_restore_marker(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
-    _use(monkeypatch, _FakeModal(restore_code=1, restore_stderr="access denied"))
-    with pytest.raises(RuntimeError, match="access denied"):
-        await provider.open(
-            SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), agent_id="a", thread_id="t1"
-        )
+    fake = _FakeModal()
+    _use(monkeypatch, fake)
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
+    args, kw = fake.created
+    assert args[:4] == ("python", "-m", "actant.sandbox.entry", "--restore") and "--" not in args
+    assert kw["readiness_probe"] == _Probe(exec_argv=("test", "-f", READY_FILE))
+    assert sandbox.endpoint is None and fake.execs == []
 
 
-async def test_inline_bucket_env_against_a_tunnelled_minio(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_open_fails_with_the_entrypoint_stderr_when_never_ready(
+    monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
+    fake = _FakeModal(ready_error=TimeoutError("probe"), exit_code=1)
+    _use(monkeypatch, fake)
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, toolset="pkg:T")
+    with pytest.raises(RuntimeError, match="access denied"):
+        await provider.open(spec, agent_id="a", thread_id="t1")
+    assert fake.terminated
+
+
+async def test_attach_to_an_exited_sandbox_is_gone(
+    monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
+) -> None:
+    _use(monkeypatch, _FakeModal(exit_code=0))
+    with pytest.raises(KeyError):
+        await provider.attach(SandboxSpec(backend="modal"), "sb-1")
+
+
+async def test_inline_bucket_env(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeModal()
     _use(monkeypatch, fake)
     provider = ModalSandboxProvider(
@@ -213,12 +250,11 @@ async def test_inline_bucket_env_against_a_tunnelled_minio(
         SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), agent_id="a", thread_id="t"
     )
     creds = {"AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"}
-    assert fake.created["secrets"] == [("dict", creds)]
-    assert fake.execs[0][0][2:5] == ("s5cmd", "--endpoint-url", "https://abc.trycloudflare.com")
+    assert fake.created[1]["secrets"] == [("dict", creds)]
 
     await provider.open(SandboxSpec(backend="modal"), agent_id="a", thread_id="t")
-    assert fake.created["secrets"] == []
-    assert fake.created["volumes"][MOUNT_PATH][2]["secret"] == ("dict", creds)
+    assert fake.created[1]["secrets"] == []
+    assert fake.created[1]["volumes"][MOUNT_PATH][2]["secret"] == ("dict", creds)
 
 
 def test_with_s5cmd_installs_the_pinned_binary() -> None:
@@ -226,10 +262,6 @@ def test_with_s5cmd_installs_the_pinned_binary() -> None:
     cmds = with_s5cmd(image)
     assert S5CMD_URL.endswith("/v2.3.0/s5cmd_2.3.0_Linux-64bit.tar.gz")
     assert S5CMD_URL in cmds[0]
-
-
-async def test_local_sync_is_a_no_op(tmp_path: Any) -> None:
-    assert (await LocalSandbox(tmp_path).sync()).returncode == 0
 
 
 def test_storage_accepts_the_enum_or_its_string_and_rejects_others() -> None:

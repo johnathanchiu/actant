@@ -49,13 +49,15 @@ class Sandbox(Protocol):
     object storage cannot append or seek, so no tool should rely on either.
 
     ``exec`` removes the spec's ``scrub_env`` names from the command's environment
-    unless ``keep_env`` is set, which only trusted infrastructure (the tool host,
-    storage sync) should pass. Scrubbing is best effort, not a security boundary:
-    code running as the same user can read another process's ``/proc/<pid>/environ``
-    or talk to the tool host's socket.
+    (an explicit ``env`` entry still wins). Scrubbing is best effort, not a security
+    boundary: code running as the same user can read another process's
+    ``/proc/<pid>/environ`` or call the toolset host.
+
+    ``endpoint`` is where the spec's toolset is served, ``None`` when it has none.
     """
 
     id: str
+    endpoint: Endpoint | None
 
     async def read(self, path: str) -> bytes: ...
 
@@ -70,7 +72,6 @@ class Sandbox(Protocol):
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
-        keep_env: bool = False,
     ) -> ExecResult: ...
 
     async def sync(self) -> ExecResult:
@@ -80,6 +81,14 @@ class Sandbox(Protocol):
         ...
 
     async def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    """How to reach a sandbox's toolset host: a base URL plus the headers that authenticate."""
+
+    url: str
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class Backend(StrEnum):
@@ -127,6 +136,11 @@ class SandboxSpec:
     scrub_env: tuple[str, ...] = ()
     #: How a cloud backend keeps files; see :class:`Storage`.
     storage: Storage = Storage.MOUNT
+    #: ``"pkg.mod:Class"`` served by a toolset host inside the sandbox (see
+    #: :mod:`actant.tools.toolset`). Fixed here, at launch; requests only name methods.
+    toolset: str | None = None
+    #: The port the host listens on inside a container. ``local`` picks a free one.
+    toolset_port: int = 8080
 
     def __post_init__(self) -> None:
         # Coerce (and validate) a plain string from an untyped config.

@@ -1,34 +1,58 @@
 """The local backend: a directory on this machine, commands as subprocesses.
 
 No isolation. It is the development backend and the one tests use; in
-production the directory is whatever the operator mounted there.
+production the directory is whatever the operator mounted there. A spec's
+toolset is served by a host subprocess on 127.0.0.1 with a random token.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import secrets
 import signal
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from actant.sandbox.base import Entry, ExecResult, Sandbox, SandboxSpec
-from actant.sandbox.host import SCRUB_ENV_VAR
+import actant.sandbox.host as host
+from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec
+
+#: How long a host may take to import its toolset and bind.
+HOST_START_TIMEOUT_S = 60
+#: :mod:`actant.sandbox.entry`, named not imported: running a module this package imports
+#: with ``-m`` would load it twice.
+ENTRY_MODULE = "actant.sandbox.entry"
+
+
+def _environment(env: Mapping[str, str]) -> dict[str, str]:
+    # ``python`` in argv is this interpreter: the one the tools' own package is
+    # installed in, which is what a container backend bakes into its image.
+    return {
+        **os.environ,
+        "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
+        **env,
+    }
 
 
 class LocalSandbox:
     def __init__(
-        self, root: Path, env: Mapping[str, str] | None = None, scrub_env: Sequence[str] = ()
+        self,
+        root: Path,
+        env: Mapping[str, str] | None = None,
+        scrub_env: Sequence[str] = (),
+        *,
+        endpoint: Endpoint | None = None,
+        host_process: asyncio.subprocess.Process | None = None,
     ) -> None:
         self.root = root.resolve()
         self.id = str(self.root)
+        self.endpoint = endpoint
+        self.host_process = host_process
         self._env = dict(env or {})
         self._scrub = tuple(scrub_env)
-        if self._scrub:
-            # What the Modal backend sets in the container, so the tool host scrubs alike.
-            self._env[SCRUB_ENV_VAR] = ",".join(self._scrub)
 
     def _path(self, path: str) -> Path:
         target = (self.root / path).resolve()
@@ -71,17 +95,8 @@ class LocalSandbox:
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
-        keep_env: bool = False,
     ) -> ExecResult:
-        # ``python`` in argv is this interpreter: the one the tools' own package is
-        # installed in, which is what a container backend bakes into its image.
-        inherited = {
-            **os.environ,
-            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
-            **self._env,
-        }
-        if not keep_env:
-            inherited = {k: v for k, v in inherited.items() if k not in self._scrub}
+        inherited = {k: v for k, v in _environment(self._env).items() if k not in self._scrub}
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=self._path(cwd) if cwd else self.root,
@@ -115,24 +130,94 @@ class LocalSandbox:
         return ExecResult(0, "", "")
 
     async def close(self) -> None:
-        """The directory is the durable root; nothing to release."""
+        """Stop the toolset host, if any. The directory is the durable root."""
+        process = self.host_process
+        if process is None or process.returncode is not None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), 10)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+
+async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.subprocess.Process]:
+    """Launch ``spec.toolset``'s host in ``root`` on a free port; return once it listens."""
+    assert spec.toolset
+    token = secrets.token_urlsafe(32)
+    argv = [sys.executable, "-m", ENTRY_MODULE, "--", "--toolset", spec.toolset]
+    argv += ["--bind", "127.0.0.1", "--port", "0"]
+    for name in spec.scrub_env:
+        argv += ["--scrub", name]
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        cwd=root,
+        env={**_environment(spec.env), host.TOKEN_ENV: token},
+        stdout=asyncio.subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), HOST_START_TIMEOUT_S)
+    except TimeoutError:
+        line = b""
+    prefix, _, port = line.decode().strip().partition(" ")
+    if prefix != host.READY_PREFIX:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+        raise RuntimeError(
+            f"toolset host for {spec.toolset} did not start (exit {process.returncode})"
+        )
+    # Keep reading: a tool that prints would otherwise fill the pipe and stall the host.
+    _drains.add(task := asyncio.create_task(_forward(process.stdout)))
+    task.add_done_callback(_drains.discard)
+    endpoint = Endpoint(f"http://127.0.0.1:{port}", {"Authorization": f"Bearer {token}"})
+    return endpoint, process
+
+
+_drains: set[asyncio.Task[None]] = set()
+
+
+async def _forward(stream: asyncio.StreamReader) -> None:
+    while line := await stream.readline():
+        sys.stdout.write(line.decode(errors="replace"))
 
 
 class LocalSandboxProvider:
-    """Sandboxes under ``spec.mount`` (or ``root``, or a temp dir), one directory per thread."""
+    """Sandboxes under ``spec.mount`` (or ``root``, or a temp dir), one directory per thread.
+
+    Toolset hosts live as long as this provider's process; ``attach`` reuses a
+    running one and restarts a dead one.
+    """
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = root
+        self._live: dict[Path, LocalSandbox] = {}
 
     async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
         del agent_id
         base = Path(spec.mount) if spec.mount else (self.root or Path(tempfile.mkdtemp("-actant")))
         root = base / thread_id
         root.mkdir(parents=True, exist_ok=True)
-        return LocalSandbox(root, spec.env, spec.scrub_env)
+        return await self._sandbox(spec, root)
 
     async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
         root = Path(sandbox_id)
         if not root.is_dir():
             raise KeyError(sandbox_id)
-        return LocalSandbox(root, spec.env, spec.scrub_env)
+        return await self._sandbox(spec, root)
+
+    async def _sandbox(self, spec: SandboxSpec, root: Path) -> LocalSandbox:
+        root = root.resolve()
+        live = self._live.get(root)
+        if live and live.host_process and live.host_process.returncode is None:
+            return live
+        if not spec.toolset:
+            return LocalSandbox(root, spec.env, spec.scrub_env)
+        endpoint, process = await start_host(spec, root)
+        sandbox = LocalSandbox(
+            root, spec.env, spec.scrub_env, endpoint=endpoint, host_process=process
+        )
+        self._live[root] = sandbox
+        return sandbox

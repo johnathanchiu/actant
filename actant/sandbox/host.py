@@ -1,21 +1,33 @@
-"""The in-sandbox half of remote tools: a server that keeps tool state next to the files.
+"""The toolset host: serves one toolset class over HTTP from inside a sandbox.
 
-Product tools are plain ``async def fn(ctx, **args)`` functions that read and
-write files and keep in-memory state on ``ctx``. Running their bodies on the
-worker would ship every file across the sandbox boundary; running each call as
-a fresh process would lose ``ctx``. So one long-lived process inside the
-sandbox owns the contexts and runs the tools, and the worker sends it a JSON
-line per call through ``python -m actant.sandbox.host call`` (the only thing a
-sandbox's ``exec`` can reach). See :mod:`actant.sandbox.remote` for the worker
-side.
+A toolset is a plain class whose public ``async def`` methods are tools (see
+:mod:`actant.tools.toolset`). Running its methods next to the sandbox's files
+keeps file-heavy work and in-memory state out of the worker; only text and
+image bytes cross the boundary.
 
-Stdlib only: the sandbox image installs actant without the runtime or any
-backend extra, and this module must import there.
+::
 
-Protocol, one JSON line each way per connection::
+    python -m actant.sandbox.entry -- --toolset pkg.mod:Class --port 8080
 
-    {"context": str, "init": dict | null, "tool": "pkg.mod:fn", "args": dict}  (Field)
-    {"text": str, "images": [{"path": str, "data": base64}], "error": str | null}
+(:mod:`actant.sandbox.entry` is the command line; this module is imported, never
+run as ``__main__``, so :func:`script_env` sees the configuration ``main`` set.)
+
+The toolset is fixed at launch. Requests name a method and never a module.
+
+Protocol (JSON bodies)::
+
+    GET  /v1/health                                  -> {"ok": true}
+    POST /v1/call {key, init, method, args}          -> {text, images, error}
+         images: [{name, media_type, data_b64}]
+
+One instance per ``key``, created on its first call with ``init``
+(``await Class.open(**init)`` when the class defines ``open``, else
+``Class(**init)``); later calls with that key reuse it and ignore ``init``.
+Calls run concurrently. When ``ACTANT_HOST_TOKEN`` is set at launch, every call
+needs ``Authorization: Bearer <token>``; the variable is removed from the
+process environment once read.
+
+Stdlib only: this module must import in any image that has actant installed.
 """
 
 from __future__ import annotations
@@ -23,261 +35,301 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import fcntl
+import contextlib
+import hmac
 import importlib
 import inspect
 import json
 import mimetypes
 import os
-import socket as socketlib
+import signal
 import sys
-import time
 import traceback
-from collections.abc import Callable, Sequence
-from enum import StrEnum
+from collections.abc import Mapping, Sequence
+from http import HTTPStatus
 from pathlib import Path
 
-PING = "__ping__"
-#: Names the variables ``exec`` and :func:`scrubbed_env` remove, comma-separated.
-SCRUB_ENV_VAR = "ACTANT_SCRUB_ENV"
-#: Per-sandbox state, relative to the sandbox root; kept out of storage sync.
-STATE_DIR = ".actant"
-#: Request files ``call`` reads and deletes.
-REQUESTS_DIR = f"{STATE_DIR}/requests"
-#: Default socket; ``{key}`` is a short hash of the sandbox id (paths cap at ~104 bytes).
-SOCKET_TEMPLATE = "/tmp/actant-host-{key}.sock"
-#: What ``call`` prints when nothing listens; the worker restarts the host on it.
-NO_HOST = "no actant host"
+TOKEN_ENV = "ACTANT_HOST_TOKEN"
+#: The line the host prints to stdout once it accepts connections: ``<prefix> <port>``.
+READY_PREFIX = "actant-host-listening"
+CALL_PATH = "/v1/call"
+HEALTH_PATH = "/v1/health"
+#: The instance lifecycle; never exposed as tools.
+LIFECYCLE = frozenset({"open", "close"})
+MAX_BODY = 256 * 1024 * 1024
+_IMAGE_MAGIC = {
+    b"\x89PNG": "image/png",
+    b"\xff\xd8\xff": "image/jpeg",
+    b"GIF8": "image/gif",
+    b"RIFF": "image/webp",
+}
+
+_scrub: frozenset[str] = frozenset()
 
 
-class Command(StrEnum):
-    SERVE = "serve"
-    CALL = "call"
+def script_env() -> dict[str, str]:
+    """This process's environment minus the names the host was launched with ``--scrub``.
 
-
-class Field(StrEnum):
-    """Keys of the request and response lines."""
-
-    CONTEXT = "context"
-    INIT = "init"
-    TOOL = "tool"
-    ARGS = "args"
-    TEXT = "text"
-    IMAGES = "images"
-    PATH = "path"
-    DATA = "data"
-    ERROR = "error"
-
-
-def response(
-    text: str, images: Sequence[dict[str, str]] = (), error: str | None = None
-) -> dict[str, object]:
-    return {Field.TEXT: text, Field.IMAGES: list(images), Field.ERROR: error}
-
-
-def scrubbed_env() -> dict[str, str]:
-    """``os.environ`` minus the names in ``ACTANT_SCRUB_ENV`` (comma-separated).
-
-    The server itself keeps every variable: the factory and the tools call
-    services with those keys. Pass this as ``env=`` to any subprocess that runs
-    model-written code, so the script never sees them.
-
-    Best effort, not a security boundary: code running as the same user can
-    still read ``/proc/<pid>/environ`` of the server or talk to its socket.
+    The host keeps every variable because tools call services with them. Pass this
+    as ``env=`` to any subprocess a tool starts for code it did not write. Best
+    effort, not a security boundary.
     """
-    scrub = {name.strip() for name in os.environ.get(SCRUB_ENV_VAR, "").split(",")}
-    return {key: value for key, value in os.environ.items() if key not in scrub}
+    return {name: value for name, value in os.environ.items() if name not in _scrub}
 
 
-def resolve(path: str) -> Callable[..., object]:
-    """``"pkg.mod:qual.name"`` to the object it names."""
+def public_methods(cls: type) -> list[str]:
+    """The toolset's tools: public coroutine functions on the class and its bases,
+    in definition order, excluding :data:`LIFECYCLE`."""
+    names: list[str] = []
+    for klass in reversed(cls.__mro__):
+        for name in vars(klass):
+            if name not in names:
+                names.append(name)
+    return [
+        name
+        for name in names
+        if not name.startswith("_")
+        and name not in LIFECYCLE
+        and inspect.iscoroutinefunction(inspect.getattr_static(cls, name))
+    ]
+
+
+def load(path: str) -> type:
+    """``"pkg.mod:Class"`` to the class."""
     module_name, _, qualname = path.partition(":")
     target: object = importlib.import_module(module_name)
     for part in qualname.split("."):
         target = getattr(target, part)
-    return target  # pyright: ignore[reportReturnType]
+    if not isinstance(target, type):
+        raise TypeError(f"{path} is not a class")
+    return target
 
 
-def adapt(output: object) -> dict[str, object]:
-    """A tool's return value as a response: text, plus image bytes read from disk.
+def response(
+    text: str = "", images: Sequence[Mapping[str, str]] = (), error: str | None = None
+) -> dict[str, object]:
+    return {"text": text, "images": list(images), "error": error}
 
-    An object with ``.text`` and ``.images`` (paths) is how a tool hands back
-    renders; the bytes are read here because the files only exist in the sandbox.
-    Only image files under the working directory are read: a path is model-steerable,
-    and anything else (``/proc/self/environ``, a key file) would leave the sandbox.
+
+def encode_output(output: object) -> dict[str, object]:
+    """A tool's return value as a response.
+
+    ``str`` is the text. An object with ``.text`` and ``.images`` carries images as
+    file paths or bytes; a path must name an image file (by extension), because a
+    path can be model-steered and anything else would leave the sandbox. Other
+    values are JSON-encoded.
     """
     if isinstance(output, str):
         return response(output)
     if hasattr(output, "text") and hasattr(output, "images"):
         text = str(output.text)  # pyright: ignore[reportAttributeAccessIssue]
-        images = []
-        cwd = Path.cwd().resolve()
-        for path in output.images:  # pyright: ignore[reportAttributeAccessIssue]
-            target = Path(path).resolve()
-            is_image = (mimetypes.guess_type(target.name)[0] or "").startswith("image/")
-            if not is_image or cwd not in target.parents:
-                text += f"\n(dropped {path}: not an image file under the working directory)"
-                continue
-            data = base64.b64encode(target.read_bytes()).decode()
-            images.append({Field.PATH: str(path), Field.DATA: data})
+        images: list[dict[str, str]] = []
+        for index, image in enumerate(output.images):  # pyright: ignore[reportAttributeAccessIssue]
+            if isinstance(image, bytes | bytearray):
+                name, data = f"image-{index}", bytes(image)
+                media_type = next(
+                    (kind for magic, kind in _IMAGE_MAGIC.items() if data.startswith(magic)),
+                    "image/png",
+                )
+            else:
+                name = str(image)
+                media_type = mimetypes.guess_type(name)[0] or ""
+                if not media_type.startswith("image/"):
+                    text += f"\n(dropped {name}: not an image file)"
+                    continue
+                data = Path(name).read_bytes()
+            images.append(
+                {
+                    "name": name,
+                    "media_type": media_type,
+                    "data_b64": base64.b64encode(data).decode(),
+                }
+            )
         return response(text, images)
     try:
-        text = json.dumps(output, default=str)
+        return response(json.dumps(output, default=str))
     except (TypeError, ValueError):
-        text = str(output)
-    return response(text)
+        return response(str(output))
 
 
 def failure(error: BaseException) -> dict[str, object]:
     """An exception as a response the model can correct from; the tail keeps it short."""
     tail = "".join(traceback.format_exception(error)[-3:])
-    return response(tail, error=f"{type(error).__name__}: {error}")
+    return response(error=f"{type(error).__name__}: {error}\n{tail}")
 
 
-async def invoke(fn: Callable[..., object], ctx: object, args: dict[str, object]) -> object:
-    if inspect.iscoroutinefunction(fn):
-        return await fn(ctx, **args)
-    return await asyncio.to_thread(fn, ctx, **args)
+async def call_method(
+    instance: object, method: str, args: Mapping[str, object]
+) -> dict[str, object]:
+    """Run one tool method and encode its result or its exception."""
+    try:
+        return encode_output(await getattr(instance, method)(**args))
+    except Exception as error:  # noqa: BLE001 -- a tool failure is a result, not a crash
+        return failure(error)
 
 
-class Server:
-    def __init__(self, factory: str, after: str | None) -> None:
-        self.factory = resolve(factory)
-        self.after = after
-        # Futures, not contexts: two parallel first calls must share one factory run.
-        self.contexts: dict[str, asyncio.Future[object]] = {}
-        self._after_due = asyncio.Event()
+async def open_instance(cls: type, init: Mapping[str, object]) -> object:
+    opener = getattr(cls, "open", None)
+    return await opener(**init) if opener is not None else cls(**init)
 
-    async def context(self, key: str, init: dict[str, object] | None) -> object:
-        if key not in self.contexts:
 
-            async def create() -> object:
-                made = self.factory(key, init)
-                return await made if inspect.isawaitable(made) else made
+class Host:
+    def __init__(
+        self, cls: type, *, token: str | None = None, push: Sequence[str] | None = None
+    ) -> None:
+        self.cls = cls
+        self.methods = frozenset(public_methods(cls))
+        self.token = token
+        self.push = list(push) if push else None
+        # Futures, not instances: two parallel first calls share one ``open``.
+        self.instances: dict[str, asyncio.Future[object]] = {}
+        self._push_due = asyncio.Event()
 
-            self.contexts[key] = asyncio.ensure_future(create())
-        future = self.contexts[key]
+    async def instance(self, key: str, init: Mapping[str, object]) -> object:
+        future = self.instances.get(key)
+        if future is None:
+            future = self.instances[key] = asyncio.ensure_future(open_instance(self.cls, init))
         try:
             return await future
         except BaseException:
-            # Let the next call retry the factory, unless a retry already replaced it.
-            if self.contexts.get(key) is future:
-                del self.contexts[key]
+            # The next call retries ``open``, unless a retry already replaced this one.
+            if self.instances.get(key) is future:
+                del self.instances[key]
             raise
 
-    async def handle(self, request: dict[str, object]) -> dict[str, object]:
-        if request.get(Field.TOOL) == PING:
-            return response("pong")
+    async def call(self, body: Mapping[str, object]) -> tuple[HTTPStatus, dict[str, object]]:
+        method, key = body.get("method"), body.get("key")
+        init, args = body.get("init") or {}, body.get("args") or {}
+        if not isinstance(key, str) or not isinstance(init, dict) or not isinstance(args, dict):
+            return HTTPStatus.BAD_REQUEST, response(
+                error="`key` must be a string; `init` and `args` objects"
+            )
+        if method not in self.methods:
+            return HTTPStatus.NOT_FOUND, response(error=f"unknown tool method {method!r}")
         try:
-            init = request.get(Field.INIT)
-            args = request.get(Field.ARGS) or {}
-            if not isinstance(init, dict | None) or not isinstance(args, dict):
-                raise TypeError("`init` and `args` must be JSON objects")
-            ctx = await self.context(str(request[Field.CONTEXT]), init)
-            return adapt(await invoke(resolve(str(request[Field.TOOL])), ctx, args))
-        except Exception as error:
-            return failure(error)
+            instance = await self.instance(key, init)
+            return HTTPStatus.OK, await call_method(instance, str(method), args)
+        except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
+            return HTTPStatus.OK, failure(error)
         finally:
-            if self.after:
-                self._after_due.set()
+            if self.push:
+                self._push_due.set()
 
-    async def connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            line = await reader.readline()
-            try:
-                reply = await self.handle(json.loads(line))
-            except ValueError as error:
-                reply = failure(error)
-            writer.write(json.dumps(reply).encode() + b"\n")
-            await writer.drain()
-        finally:
-            writer.close()
-
-    async def run_after(self) -> None:
-        """Run ``after`` once per burst of requests: one running, at most one pending."""
+    async def pusher(self) -> None:
+        """Push storage after calls: one push running, at most one pending."""
+        assert self.push
         while True:
-            await self._after_due.wait()
-            self._after_due.clear()
-            process = await asyncio.create_subprocess_shell(
-                self.after or "", stderr=asyncio.subprocess.PIPE
+            await self._push_due.wait()
+            self._push_due.clear()
+            process = await asyncio.create_subprocess_exec(
+                *self.push, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
             )
             _, stderr = await process.communicate()
             if process.returncode:
-                # Nobody waits on the hook (a failed push is otherwise invisible); stderr is the log.
                 tail = stderr.decode(errors="replace")[-2000:]
                 print(
-                    f"after hook exited {process.returncode}: {tail}", file=sys.stderr, flush=True
+                    f"storage push exited {process.returncode}: {tail}",
+                    file=sys.stderr,
+                    flush=True,
                 )
 
-
-async def serve(socket_path: str, factory: str, after: str | None) -> None:
-    # Held for the server's life. Two launches racing each other (two RemoteHosts on
-    # one sandbox) would both see no answer on the socket before either binds, so a
-    # connect check is not enough; the loser must not unlink the winner's socket.
-    lock = open(socket_path + ".lock", "w")  # noqa: SIM115 -- released only on exit
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise SystemExit(f"an actant host is already serving {socket_path}") from None
-    server = Server(factory, after)
-    Path(socket_path).unlink(missing_ok=True)  # a stale file from a dead server
-    # Responses carry base64 images; the default 64 KiB line limit is too small.
-    unix = await asyncio.start_unix_server(server.connection, socket_path, limit=2**30)
-    after_task = asyncio.create_task(server.run_after()) if after else None
-    async with unix:
-        await unix.serve_forever()
-    del after_task, lock
-
-
-def call(socket_path: str, request_file: str, wait: float) -> int:
-    """Send one request and print the response line. Waits for a booting server.
-
-    The request comes from a file, not argv: one argument is capped at 128 KiB on
-    Linux, which a tool's ``write`` content easily exceeds. The file is deleted here.
-    """
-    request_path = Path(request_file)
-    request = request_path.read_bytes()
-    request_path.unlink(missing_ok=True)
-    deadline = time.monotonic() + wait
-    while True:
-        sock = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+    async def route(
+        self, verb: str, path: str, headers: Mapping[str, str], body: bytes
+    ) -> tuple[HTTPStatus, dict[str, object]]:
+        if verb == "GET" and path == HEALTH_PATH:
+            return HTTPStatus.OK, {"ok": True}
+        if path != CALL_PATH:
+            return HTTPStatus.NOT_FOUND, response(error=f"no route {verb} {path}")
+        if verb != "POST":
+            return HTTPStatus.METHOD_NOT_ALLOWED, response(error="use POST")
+        if self.token is not None and not hmac.compare_digest(
+            headers.get("authorization", ""), f"Bearer {self.token}"
+        ):
+            return HTTPStatus.UNAUTHORIZED, response(error="bad or missing bearer token")
         try:
-            sock.connect(socket_path)
-            break
-        except (FileNotFoundError, ConnectionRefusedError) as error:
-            sock.close()
-            if time.monotonic() >= deadline:
-                print(f"{NO_HOST} at {socket_path}: {error}", file=sys.stderr)
-                return 1
-            time.sleep(0.05)
-    with sock, sock.makefile("rwb") as stream:
-        stream.write(request.strip() + b"\n")
-        stream.flush()
-        line = stream.readline()
-    if not line:
-        print("actant host closed the connection without a response", file=sys.stderr)
-        return 1
-    sys.stdout.write(line.decode())
-    return 0
+            request = json.loads(body)
+        except ValueError as error:
+            return HTTPStatus.BAD_REQUEST, response(error=f"body is not JSON: {error}")
+        if not isinstance(request, dict):
+            return HTTPStatus.BAD_REQUEST, response(error="body must be a JSON object")
+        return await self.call(request)
+
+    async def connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """One HTTP/1.1 request per connection, answered with ``Connection: close``."""
+        try:
+            try:
+                head = (await reader.readuntil(b"\r\n\r\n")).decode("latin-1").split("\r\n")
+                verb, target, _ = head[0].split(" ", 2)
+                headers = {}
+                for line in head[1:]:
+                    name, sep, value = line.partition(":")
+                    if sep:
+                        headers[name.strip().lower()] = value.strip()
+                length = int(headers.get("content-length") or 0)
+                if length > MAX_BODY:
+                    status, payload = (
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        response(error="body too large"),
+                    )
+                else:
+                    body = await reader.readexactly(length)
+                    status, payload = await self.route(verb, target.split("?")[0], headers, body)
+            except (ValueError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as error:
+                status, payload = (
+                    HTTPStatus.BAD_REQUEST,
+                    response(error=f"malformed request: {error}"),
+                )
+            data = json.dumps(payload).encode()
+            writer.write(
+                f"HTTP/1.1 {status.value} {status.phrase}\r\nContent-Type: application/json\r\n"
+                f"Content-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode()
+                + data
+            )
+            await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+    async def close_instances(self) -> None:
+        for future in self.instances.values():
+            if future.done() and not future.cancelled() and future.exception() is None:
+                closer = getattr(future.result(), "close", None)
+                if closer is not None:
+                    with contextlib.suppress(Exception):
+                        await closer()
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m actant.sandbox.host")
-    commands = parser.add_subparsers(dest="command", required=True)
-    serve_cmd = commands.add_parser(Command.SERVE)
-    serve_cmd.add_argument("--socket", required=True)
-    serve_cmd.add_argument("--factory", required=True, help="pkg.mod:fn(key, init) -> ctx")
-    serve_cmd.add_argument("--after", help="shell command run (debounced) after requests")
-    call_cmd = commands.add_parser(Command.CALL)
-    call_cmd.add_argument("--socket", required=True)
-    call_cmd.add_argument("--request-file", required=True, help="JSON request; deleted once read")
-    call_cmd.add_argument("--wait", type=float, default=30.0)
+async def serve(host: Host, bind: str, port: int) -> None:
+    server = await asyncio.start_server(host.connection, bind, port)
+    bound = server.sockets[0].getsockname()[1]
+    print(f"{READY_PREFIX} {bound}", flush=True)
+    pusher = asyncio.create_task(host.pusher()) if host.push else None
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stop.set)
+    async with server:
+        await stop.wait()
+    if pusher is not None:
+        pusher.cancel()
+    await host.close_instances()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    global _scrub
+    parser = argparse.ArgumentParser(prog="python -m actant.sandbox.entry --")
+    parser.add_argument("--toolset", required=True, help="pkg.mod:Class")
+    parser.add_argument("--port", type=int, default=8080, help="0 picks a free port")
+    parser.add_argument("--bind", default="0.0.0.0")
+    parser.add_argument("--scrub", action="append", default=[], help="name script_env() removes")
+    parser.add_argument("--push", help="JSON argv run (debounced) after calls to push storage")
     args = parser.parse_args(argv)
-    if args.command == Command.SERVE:
-        asyncio.run(serve(args.socket, args.factory, args.after))
-        return 0
-    return call(args.socket, args.request_file, args.wait)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    _scrub = frozenset(args.scrub)
+    host = Host(
+        load(args.toolset),
+        token=os.environ.pop(TOKEN_ENV, None),
+        push=json.loads(args.push) if args.push else None,
+    )
+    asyncio.run(serve(host, args.bind, args.port))
+    return 0

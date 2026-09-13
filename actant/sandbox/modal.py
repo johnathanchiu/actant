@@ -9,8 +9,9 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
 ``"disk_sync"``
     Files live on the container's own disk under :data:`DISK_PATH`, with normal
     POSIX semantics. ``open`` restores the prefix onto the disk with s5cmd and
-    :meth:`ModalSandbox.sync` (or :func:`sync_command` run after each tool call)
-    pushes it back, deleting remote files removed locally. The tradeoff: s5cmd
+    :meth:`ModalSandbox.sync` pushes it back, deleting remote files removed
+    locally; a toolset host also pushes after its calls, and ``close`` pushes
+    once more. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
     needs s5cmd (:func:`with_s5cmd`).
@@ -22,6 +23,15 @@ Modal secret holding ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` (plus
 cloudflared tunnel included); s5cmd uses path-style addressing for any custom
 endpoint, which MinIO needs.
 
+A spec's toolset is served by :mod:`actant.sandbox.host`, launched as the
+sandbox entrypoint through :mod:`actant.sandbox.entry` (which restores
+``disk_sync`` storage first). Readiness is a TCP probe on the host's port: the
+host binds only after the restore and the toolset import. The endpoint is a
+Modal connect token for that port: Modal's proxy authenticates each request, no
+port is exposed publicly, and ``attach`` mints a fresh token with the worker's
+Modal client, so nothing secret is persisted. The image must have actant and
+the toolset's package installed.
+
 Requires the ``modal`` extra. Imported lazily so the package stays importable
 without it.
 """
@@ -32,13 +42,12 @@ import asyncio
 import contextlib
 import importlib
 import json
-import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from actant.sandbox.base import Entry, ExecResult, Sandbox, SandboxSpec, Storage
-from actant.sandbox.host import SCRUB_ENV_VAR, STATE_DIR
+import actant.sandbox.entry as entry
+from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec, Storage
 
 MOUNT_PATH = "/mnt/sandbox"
 DISK_PATH = "/root/sandbox"
@@ -46,8 +55,6 @@ THREAD_TAG = "actant_thread"
 SYNC_TIMEOUT_S = 1800
 #: How long ``close`` lets the final push run before terminating anyway.
 CLOSE_SYNC_TIMEOUT_S = 300
-#: Tool-host state (request files): never synced.
-SYNC_EXCLUDE = f"{STATE_DIR}/*"
 S5CMD_VERSION = "2.3.0"
 S5CMD_URL = (
     f"https://github.com/peak/s5cmd/releases/download/v{S5CMD_VERSION}/"
@@ -68,7 +75,7 @@ _LS = (
 
 @dataclass
 class ModalSandboxProvider:
-    """``app_name`` groups the sandboxes on Modal; the bucket settings describe the mount.
+    """``app_name`` groups the sandboxes on Modal; the bucket settings describe storage.
 
     ``secret_name`` is a Modal secret holding the bucket's access keys. With
     ``storage="mount"`` the mount consumes it and the process never sees it;
@@ -97,7 +104,8 @@ class ModalSandboxProvider:
         else:
             bucket_secret = None
         secrets = [modal.Secret.from_name(name) for name in spec.secrets]
-        if spec.storage == Storage.DISK_SYNC:
+        disk_sync = spec.storage == Storage.DISK_SYNC
+        if disk_sync:
             root, volumes = DISK_PATH, {}
             if bucket_secret is not None:
                 secrets.append(bucket_secret)
@@ -111,7 +119,18 @@ class ModalSandboxProvider:
                     secret=bucket_secret,
                 )
             }
+        command: list[str] = []
+        probe = None
+        if disk_sync or spec.toolset:
+            command = ["python", "-m", entry.__name__]
+            if disk_sync:
+                command += ["--restore", json.dumps(self.restore_argv(thread_id))]
+                probe = modal.Probe.with_exec("test", "-f", entry.READY_FILE)
+            if spec.toolset:
+                command += ["--", *self._host_args(spec, thread_id)]
+                probe = modal.Probe.with_tcp(spec.toolset_port)
         sandbox = await modal.Sandbox.create.aio(
+            *command,
             app=app,
             image=spec.image,
             cpu=spec.cpu,
@@ -120,34 +139,29 @@ class ModalSandboxProvider:
             timeout=spec.timeout_s,
             idle_timeout=spec.idle_timeout_s,
             block_network=not spec.network,
+            # The host and s5cmd need these; ``exec`` removes ``scrub_env`` per command.
             secrets=secrets,
-            # Not scrubbed here: the tool server needs these. In-sandbox code reads
-            # ACTANT_SCRUB_ENV and removes them from what the agent's own code runs.
-            env={SCRUB_ENV_VAR: ",".join(spec.scrub_env)} if spec.scrub_env else None,
+            env=dict(spec.env) or None,
             # ``attach`` gets no thread id; the tag carries it for ``sync``.
             tags={THREAD_TAG: thread_id},
             volumes=volumes,
             workdir=root,
+            readiness_probe=probe,
             client=self.client,
         )
-        if spec.storage == Storage.MOUNT:
-            return ModalSandbox(sandbox, spec.env, scrub_env=spec.scrub_env)
-        handle = ModalSandbox(
-            sandbox,
-            spec.env,
-            root=DISK_PATH,
-            sync_argv=shlex.split(sync_command(self, thread_id)),
-            scrub_env=spec.scrub_env,
-        )
-        restore = await handle.exec(
-            shlex.split(restore_command(self, thread_id)), timeout=SYNC_TIMEOUT_S, keep_env=True
-        )
-        # A new thread has an empty prefix, which s5cmd reports as an error.
-        if restore.returncode != 0 and "no object found" not in restore.stderr:
-            with contextlib.suppress(Exception):
-                await handle.close()
-            raise RuntimeError(f"restoring {self._remote(thread_id)} failed: {restore.stderr}")
-        return handle
+        if probe is not None:
+            try:
+                await sandbox.wait_until_ready.aio(timeout=SYNC_TIMEOUT_S)
+            except Exception as exc:
+                detail = ""
+                if await sandbox.poll.aio() is not None:  # exited: its stderr is complete
+                    detail = (await sandbox.stderr.read.aio())[-4000:]
+                with contextlib.suppress(Exception):
+                    await sandbox.terminate.aio()
+                raise RuntimeError(
+                    f"sandbox for thread {thread_id} never became ready: {exc}\n{detail}"
+                ) from exc
+        return await self._handle(sandbox, spec, thread_id)
 
     async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
         modal = importlib.import_module("modal")
@@ -157,17 +171,33 @@ class ModalSandboxProvider:
             raise KeyError(sandbox_id) from exc
         if await sandbox.poll.aio() is not None:
             raise KeyError(sandbox_id)
-        if spec.storage != Storage.DISK_SYNC:
-            return ModalSandbox(sandbox, spec.env, scrub_env=spec.scrub_env)
         # A live sandbox still has its disk: nothing to restore.
         thread_id = (await sandbox.get_tags.aio())[THREAD_TAG]
+        return await self._handle(sandbox, spec, thread_id)
+
+    async def _handle(self, sandbox: Any, spec: SandboxSpec, thread_id: str) -> ModalSandbox:
+        endpoint = None
+        if spec.toolset:
+            creds = await sandbox.create_connect_token.aio(port=spec.toolset_port)
+            endpoint = Endpoint(creds.url, {"Authorization": f"Bearer {creds.token}"})
+        disk_sync = spec.storage == Storage.DISK_SYNC
         return ModalSandbox(
             sandbox,
             spec.env,
-            root=DISK_PATH,
-            sync_argv=shlex.split(sync_command(self, thread_id)),
+            root=DISK_PATH if disk_sync else MOUNT_PATH,
+            sync_argv=self.sync_argv(thread_id) if disk_sync else None,
             scrub_env=spec.scrub_env,
+            endpoint=endpoint,
         )
+
+    def _host_args(self, spec: SandboxSpec, thread_id: str) -> list[str]:
+        assert spec.toolset
+        args = ["--toolset", spec.toolset, "--port", str(spec.toolset_port), "--bind", "0.0.0.0"]
+        for name in spec.scrub_env:
+            args += ["--scrub", name]
+        if spec.storage == Storage.DISK_SYNC:
+            args += ["--push", json.dumps(self.sync_argv(thread_id))]
+        return args
 
     def _remote(self, thread_id: str) -> str:
         return f"s3://{self.bucket}/{self.key_prefix}{thread_id}/"
@@ -176,32 +206,13 @@ class ModalSandboxProvider:
         endpoint = ["--endpoint-url", self.endpoint_url] if self.endpoint_url else []
         return ["s5cmd", *endpoint, *args]
 
+    def sync_argv(self, thread_id: str) -> list[str]:
+        """Push a ``disk_sync`` disk to its prefix, mirroring: remote files removed locally go."""
+        return self._s5cmd("sync", "--delete", f"{DISK_PATH}/", self._remote(thread_id))
 
-def sync_command(provider: ModalSandboxProvider, thread_id: str) -> str:
-    """The shell command that pushes a disk_sync sandbox's disk to its bucket prefix.
-
-    Mirrors exactly: remote files removed locally are deleted. A product hands
-    this to the host server's ``--after`` hook to push after every tool call.
-    """
-    return shlex.join(
-        provider._s5cmd(
-            "sync",
-            "--delete",
-            "--exclude",
-            SYNC_EXCLUDE,
-            f"{DISK_PATH}/",
-            provider._remote(thread_id),
-        )
-    )
-
-
-def restore_command(provider: ModalSandboxProvider, thread_id: str) -> str:
-    """The shell command that pulls a thread's bucket prefix onto the disk (never deletes)."""
-    return shlex.join(
-        provider._s5cmd(
-            "sync", "--exclude", SYNC_EXCLUDE, f"{provider._remote(thread_id)}*", f"{DISK_PATH}/"
-        )
-    )
+    def restore_argv(self, thread_id: str) -> list[str]:
+        """Pull a thread's prefix onto the disk (never deletes)."""
+        return self._s5cmd("sync", f"{self._remote(thread_id)}*", f"{DISK_PATH}/")
 
 
 def with_s5cmd(image: Any) -> Any:
@@ -220,6 +231,7 @@ class ModalSandbox:
         root: str = MOUNT_PATH,
         sync_argv: Sequence[str] | None = None,
         scrub_env: Sequence[str] = (),
+        endpoint: Endpoint | None = None,
     ) -> None:
         self._sandbox = sandbox
         self._env = dict(env)
@@ -227,13 +239,7 @@ class ModalSandbox:
         self._root = root
         self._sync_argv = list(sync_argv) if sync_argv else None
         self.id = str(sandbox.object_id)
-
-    async def sync(self) -> ExecResult:
-        """Push the disk to the bucket prefix (``disk_sync``). A no-op for a mount."""
-        if self._sync_argv is None:
-            return ExecResult(0, "", "")
-        # s5cmd needs the bucket keys that scrub_env usually lists.
-        return await self.exec(self._sync_argv, timeout=SYNC_TIMEOUT_S, keep_env=True)
+        self.endpoint = endpoint
 
     @staticmethod
     def _check(path: str) -> str:
@@ -263,37 +269,44 @@ class ModalSandbox:
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
-        keep_env: bool = False,
+    ) -> ExecResult:
+        # The SDK drops ``None`` values from ``env`` rather than unsetting them, and
+        # secrets are container-wide, so ``env -u`` (argv, no shell) removes them here.
+        unset = [f"-u{name}" for name in self._scrub if name not in (env or {})]
+        prefix = ["env", *unset] if unset else []
+        return await self._run([*prefix, *argv], cwd=cwd, timeout=timeout, env=env)
+
+    async def _run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: str | None = None,
+        timeout: float,
+        env: Mapping[str, str] | None = None,
     ) -> ExecResult:
         workdir = f"{self._root}/{self._check(cwd)}" if cwd else self._root
-        # Secrets are in the container's environment, and Modal's ``env`` can only
-        # add variables, so ``env -u`` removes the scrubbed ones in the container.
-        unset = (
-            [] if keep_env else [f"-u{name}" for name in self._scrub if name not in (env or {})]
-        )
         # ``timeout`` runs inside the container, so the process group dies
         # there; 124 is its exit code, the same one the local backend uses.
         process = await self._sandbox.exec.aio(
-            *(["env", *unset] if unset else []),
-            "timeout",
-            str(int(timeout)),
-            *argv,
-            workdir=workdir,
-            env={**self._env, **(env or {})},
+            "timeout", str(int(timeout)), *argv, workdir=workdir, env={**self._env, **(env or {})}
         )
         stdout, stderr = await process.stdout.read.aio(), await process.stderr.read.aio()
         code = await process.wait.aio()
         return ExecResult(code, stdout, stderr, timed_out=code == 124)
 
-    async def close(self) -> None:
-        """Push a ``disk_sync`` disk (best effort, bounded), then terminate.
+    async def sync(self) -> ExecResult:
+        """Push the disk to the bucket prefix (``disk_sync``). A no-op for a mount."""
+        if self._sync_argv is None:
+            return ExecResult(0, "", "")
+        # Unscrubbed: s5cmd needs the bucket keys that ``scrub_env`` usually lists.
+        return await self._run(self._sync_argv, timeout=SYNC_TIMEOUT_S)
 
-        Without the push, whatever the last ``after`` hook missed would die with the disk.
-        """
+    async def close(self) -> None:
+        """Push a ``disk_sync`` disk (best effort, bounded), then terminate."""
         if self._sync_argv is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
-                    self.exec(self._sync_argv, timeout=CLOSE_SYNC_TIMEOUT_S, keep_env=True),
+                    self._run(self._sync_argv, timeout=CLOSE_SYNC_TIMEOUT_S),
                     CLOSE_SYNC_TIMEOUT_S + 30,
                 )
         # ``terminate`` only requests the stop; wait so ``attach`` sees it finished.
@@ -303,4 +316,4 @@ class ModalSandbox:
             await self._sandbox.wait.aio(raise_on_termination=False)
 
     def __repr__(self) -> str:
-        return f"ModalSandbox({shlex.quote(self.id)})"
+        return f"ModalSandbox({self.id!r})"
