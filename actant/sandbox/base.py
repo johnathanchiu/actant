@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Protocol
 
 
@@ -46,6 +47,12 @@ class Sandbox(Protocol):
     Paths are relative to the sandbox root; implementations reject paths that
     escape it. ``write`` replaces the whole file: the backends that mount
     object storage cannot append or seek, so no tool should rely on either.
+
+    ``exec`` removes the spec's ``scrub_env`` names from the command's environment
+    (an explicit ``env`` entry still wins). Scrubbing is best effort, not a security
+    boundary: code running as the same user can read another process's
+    ``/proc/<pid>/environ`` or call the toolset host.
+
     """
 
     id: str
@@ -65,7 +72,46 @@ class Sandbox(Protocol):
         env: Mapping[str, str] | None = None,
     ) -> ExecResult: ...
 
+    async def sync(self) -> ExecResult:
+        """Push the sandbox's files to durable storage. A no-op where storage already is
+        the filesystem (``mount``, ``local``). ``close`` also pushes, best effort, so
+        calling this is only needed for a checkpoint mid-run."""
+        ...
+
+    async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
+        """Where the spec's toolsets are served, ``None`` when it has none.
+
+        Backends that authenticate with short-lived credentials cache them per
+        sandbox; ``refresh`` asks for new ones after the host rejected the old.
+        """
+        ...
+
     async def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    """How to reach a sandbox's toolset host: a base URL plus the headers that authenticate."""
+
+    url: str
+    #: Kept out of ``repr``: they carry the bearer token.
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+
+
+class Backend(StrEnum):
+    """The backends actant ships. ``SandboxSpec.backend`` stays a ``str``: a product
+    may register its own provider under any name."""
+
+    LOCAL = "local"
+    MODAL = "modal"
+
+
+class Storage(StrEnum):
+    #: The bucket prefix is the filesystem (whole-file writes only).
+    MOUNT = "mount"
+    #: A local disk, restored from the prefix on open and pushed back with
+    #: :meth:`Sandbox.sync` -- ordinary file semantics, a few seconds behind the bucket.
+    DISK_SYNC = "disk_sync"
 
 
 @dataclass(frozen=True)
@@ -78,7 +124,7 @@ class SandboxSpec:
     ``modal.Image`` for Modal) and ignored by ``local``.
     """
 
-    backend: str = "local"
+    backend: str = Backend.LOCAL
     mount: str | None = None
     image: object | None = None
     cpu: int = 2
@@ -86,6 +132,27 @@ class SandboxSpec:
     timeout_s: int = 3600
     idle_timeout_s: int = 600
     env: Mapping[str, str] = field(default_factory=dict)
+    #: A GPU type the backend understands (``"L4"``, ``"H100"``); ``None`` for CPU only.
+    gpu: str | None = None
+    #: Outbound network. Off by default: turn it on only for tools that call services.
+    network: bool = False
+    #: Backend secret names (Modal secrets) injected into the sandbox's environment.
+    secrets: tuple[str, ...] = ()
+    #: Environment variables removed from commands the agent's own code runs, so a
+    #: script never sees the service keys that ``secrets`` put in the sandbox.
+    scrub_env: tuple[str, ...] = ()
+    #: How a cloud backend keeps files; see :class:`Storage`.
+    storage: Storage = Storage.MOUNT
+    #: Name to ``"pkg.mod:Class"``, served by one toolset host inside the sandbox (see
+    #: :mod:`actant.tools.toolset`). Fixed here, at launch; requests name a toolset
+    #: and a method, never a module.
+    toolsets: Mapping[str, str] = field(default_factory=dict)
+    #: The port the host listens on inside a container. ``local`` picks a free one.
+    toolset_port: int = 8080
+
+    def __post_init__(self) -> None:
+        # Coerce (and validate) a plain string from an untyped config.
+        object.__setattr__(self, "storage", Storage(self.storage))
 
 
 class SandboxProvider(Protocol):

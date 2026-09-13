@@ -227,7 +227,7 @@ agent = AgentDefinition(
 ```
 
 `Sandbox` is a filesystem plus `exec`: `read`, `write` (whole file), `ls`,
-`exec(argv, cwd=, timeout=, env=)`, `close`. Paths are relative to the
+`exec(argv, cwd=, timeout=, env=)`, `sync`, `close`. Paths are relative to the
 thread's root. A class-based tool sets `needs_sandbox = True` and reads
 `ctx.sandbox` in `build`. A `CallContext` parameter alone gives a tool its
 agent, thread, run and call ids without a sandbox. `ctx.parent_thread_id` is
@@ -235,9 +235,9 @@ set when the calling thread is a subagent; `TaskTool` refuses to spawn from
 one, so delegation is one level deep.
 
 Backends: `local` (a directory under `mount`, subprocesses; always
-registered) and `modal` (`actant[modal]`: a network-blocked `modal.Sandbox`
-over a bucket prefix mounted from your object storage, so the files live
-with you, not on Modal). Register providers on the worker:
+registered) and `modal` (`actant[modal]`: a `modal.Sandbox` whose files live in
+your object storage, either mounted or restored to local disk and pushed back
+with `storage="disk_sync"`). Register providers on the worker:
 
 ```python
 TemporalRuntimeWorker(
@@ -251,6 +251,96 @@ The sandbox id is stored on the thread, so another worker reattaches rather
 than opening a second one over the same files. An exec's `timeout` must stay
 under the ten-minute tool activity. Mounted buckets write whole files only
 (no append, no seek), which is what `write` promises anyway.
+
+`scrub_env` names variables (service keys from `secrets`) that `exec` removes
+from the agent's own commands. It is best effort, not a security boundary.
+
+## Toolsets
+
+When tools share state or work on many files, write them as a plain class.
+Its public methods are the tools; the schema comes from each signature
+without `self`, the description from the docstring. `open` (an optional
+classmethod) and `close` are lifecycle, not tools. A plain `def` runs in a
+worker thread. An `async def` runs on the host's event loop: blocking or
+CPU-heavy work inside one stalls every other call until it awaits, so write
+such a method as a plain `def` (or call `asyncio.to_thread` yourself).
+
+```python
+from dataclasses import dataclass, field
+
+from actant.tools import LocalRunner, SandboxRunner, tools
+
+
+@dataclass
+class Page:
+    text: str
+    images: list[str | bytes] = field(default_factory=list)
+
+
+class Notebook:
+    @classmethod
+    async def open(cls, title: str) -> "Notebook":
+        return cls(title)
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+        self.lines: list[str] = []
+
+    async def append(self, line: str) -> str:
+        """Add a line to the notebook."""
+        self.lines.append(line)
+        return f"{len(self.lines)} lines"
+
+    async def sketch(self, path: str) -> Page:
+        """Return a saved drawing."""
+        return Page("the sketch", [path])
+
+
+# In-process: the same tools, run on an instance you hold.
+local_tools = tools(Notebook, LocalRunner(Notebook("scratch")))
+
+# In the thread's sandbox: the spec names the class, the host serves it there.
+agent = AgentDefinition(
+    ...,
+    tools=ToolRegistry(tools(Notebook, SandboxRunner("notebook", init={"title": "scratch"}))),
+    sandbox=SandboxSpec(
+        backend="modal",
+        toolsets={
+            "notebook": "myproduct.notebook:Notebook",
+            # Calls the product makes itself, kept off the model's tool list.
+            "pipeline": "myproduct.notebook:Pipeline",
+        },
+    ),
+)
+```
+
+A method returns a `str`, an object with `.text` and `.images` (image file
+paths or bytes, sent as image content blocks), or any JSON value. An exception
+becomes a failed result with the traceback tail. Arguments are validated
+against the signature, so a parameter typed as a pydantic model arrives as
+that model. `RemoteRunner(endpoint, toolset, key, init)` calls a host you
+reach yourself, and `call_host(endpoint, toolset, method, args, key=...)`
+makes one call from product code (with `await sandbox.endpoint()`); every
+runner encodes results the same way.
+
+A sandbox serves several named toolsets from one host (`python -m
+actant.sandbox.entry -- --toolset=name=pkg.mod:Class ...`). Give the model its
+tools on one class and put the product's own calls on another, instead of
+filtering methods. The host keeps one instance per toolset and thread and runs
+calls concurrently. Toolsets do not share instances: two classes over the same
+state build it from the same `init` (the sandbox's files, or an object their
+`open` looks up). Inside it, tools that
+start scripts should pass `env=actant.sandbox.host.script_env()` so the
+scripts do not inherit `scrub_env`. On Modal the host is the sandbox
+entrypoint, readiness is a TCP probe on `toolset_port`, `disk_sync` storage is
+restored before it listens and pushed after calls, and requests go through a
+Modal connect token (cached, re-minted on a 401), so no port is public.
+Connections are kept alive and pooled, so a call costs one round trip.
+`Sandbox.close` asks the host to shut down: it calls each instance's `close`,
+pushes `disk_sync` storage once more, and exits (SIGTERM, SIGINT and SIGHUP do
+the same). Modal's `terminate`, `timeout` and `idle_timeout` kill the container
+outright, so `close` does not run on those paths. The image needs actant and
+the toolsets' package installed.
 
 ## Finishing a task
 
