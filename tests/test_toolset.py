@@ -296,7 +296,11 @@ async def test_bad_token_unknown_method_and_host_survives_errors(sandbox: LocalS
     unknown = await call_host(endpoint, "counter", "__init__", {}, key="k")
     assert unknown.error and "unknown tool method" in unknown.error
     assert (await call_host(endpoint, "counter", "fail", {}, key="k")).error
+    body = json.dumps({"toolset": "counter", "key": "k", "method": ["bump"]}).encode()
+    status, _ = await asyncio.to_thread(host.post, endpoint, host.CALL_PATH, body, 30)
+    assert status == 404
     assert (await call_host(endpoint, "counter", "length", {"text": "ok"}, key="k")).output == "2"
+    assert "Bearer" not in repr(endpoint)
 
 
 async def test_toolsets_on_one_host_are_separate_by_name(sandbox: LocalSandbox) -> None:

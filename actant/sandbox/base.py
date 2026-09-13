@@ -94,7 +94,8 @@ class Endpoint:
     """How to reach a sandbox's toolset host: a base URL plus the headers that authenticate."""
 
     url: str
-    headers: Mapping[str, str] = field(default_factory=dict)
+    #: Kept out of ``repr``: they carry the bearer token.
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
 
 
 class Backend(StrEnum):

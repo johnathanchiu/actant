@@ -257,6 +257,18 @@ _idle: dict[tuple[str, str], list[tuple[HTTPConnection, float]]] = {}
 _idle_lock = threading.Lock()
 
 
+def _prune() -> None:
+    """Close stale idle connections to every host, so closed sandboxes leave no sockets."""
+    now = time.monotonic()
+    for slot, pool in list(_idle.items()):
+        for connection, since in pool:
+            if now - since >= IDLE_REUSE_S:
+                connection.close()
+        pool[:] = [(c, since) for c, since in pool if now - since < IDLE_REUSE_S]
+        if not pool:
+            del _idle[slot]
+
+
 def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[int, bytes]:
     """``POST`` to a host over a pooled keep-alive connection. Blocking: run it in a thread.
 
@@ -273,12 +285,12 @@ def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[in
     while True:
         connection = None
         with _idle_lock:
+            _prune()
             pool = _idle.get(slot, [])
             while pool and connection is None:
-                candidate, since = pool.pop()
+                candidate, _ = pool.pop()
                 sock = candidate.sock
-                fresh = time.monotonic() - since < IDLE_REUSE_S
-                if fresh and sock is not None and not select.select([sock], [], [], 0)[0]:
+                if sock is not None and not select.select([sock], [], [], 0)[0]:
                     connection = candidate
                 else:
                     candidate.close()
@@ -356,8 +368,9 @@ class Host:
         try:
             return await future
         except BaseException:
-            # The next call retries ``open``, unless a retry already replaced this one.
-            if self.instances.get(slot) is future:
+            # A failed ``open``: the next call retries it, unless a retry already replaced
+            # this one. A cancelled waiter leaves an ``open`` still running in place.
+            if future.done() and self.instances.get(slot) is future:
                 del self.instances[slot]
             raise
 
@@ -372,11 +385,11 @@ class Host:
             return HTTPStatus.NOT_FOUND, response(
                 error=f"unknown toolset {toolset!r}; served: {sorted(self.toolsets)}"
             )
-        if method not in self.methods[toolset]:
+        if not isinstance(method, str) or method not in self.methods[toolset]:
             return HTTPStatus.NOT_FOUND, response(error=f"unknown tool method {method!r}")
         try:
             instance = await self.instance(toolset, key, init)
-            return HTTPStatus.OK, await call_method(instance, str(method), args)
+            return HTTPStatus.OK, await call_method(instance, method, args)
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
             return HTTPStatus.OK, failure(error)
         finally:
