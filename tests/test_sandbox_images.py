@@ -35,7 +35,7 @@ args = sys.argv[1:]
 log = os.environ["FAKE_S5CMD_LOG"]
 command = next(a for a in args if a in ("pipe", "presign"))
 import time
-time.sleep(float(os.environ.get("FAKE_S5CMD_SLEEP", "0")))
+time.sleep(float(os.environ.get("FAKE_S5CMD_SLEEP_" + command.upper(), "0")))
 data = sys.stdin.buffer.read() if command == "pipe" else b""
 with open(log, "a") as out:
     out.write(json.dumps({{"argv": args, "stdin": len(data)}}) + "\\n")
@@ -225,7 +225,7 @@ async def test_without_an_upload_endpoint_uploads_go_to_aws(s5cmd_log: Path) -> 
 async def test_a_hung_bucket_costs_one_budget_per_image_then_bytes(
     s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FAKE_S5CMD_SLEEP", "30")
+    monkeypatch.setenv("FAKE_S5CMD_SLEEP_PIPE", "30")
     started = time.monotonic()
     budget = CONFIG.model_copy(update={"timeout_s": 0.5})
     kept, error = await host.upload_images(CallResponse(images=[_inline()]), budget)
@@ -237,13 +237,35 @@ async def test_a_hung_bucket_costs_one_budget_per_image_then_bytes(
     )
 
 
+async def test_a_presign_shares_what_the_upload_left_and_does_not_stop_other_images(
+    s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(host, "UPLOAD_CONCURRENCY", 1)
+    monkeypatch.setenv("FAKE_S5CMD_SLEEP_PIPE", "0.4")
+    monkeypatch.setenv("FAKE_S5CMD_SLEEP_PRESIGN", "5")
+    budget = CONFIG.model_copy(update={"timeout_s": 1.0})
+    images = [_inline("a.png"), _inline("b.png", PNG + b"b")]
+    started = time.monotonic()
+    kept, error = await host.upload_images(CallResponse(images=images), budget)
+    # Each image costs at most its budget (plus process start and kill), not the presign's 5 s.
+    assert time.monotonic() - started < 2 * 1.0 + 2
+    assert kept.images == images and error and error.startswith("a.png: presign timed out")
+    # The presign timeout did not skip b.png: both uploaded.
+    commands = [json.loads(line)["argv"] for line in s5cmd_log.read_text().splitlines()]
+    assert sum("pipe" in argv for argv in commands) == 2
+
+
 def test_a_bucket_needs_a_public_endpoint_and_the_spec_a_positive_upload_timeout() -> None:
     with pytest.raises(TypeError):
         ImageBucket("b")  # pyright: ignore[reportCallIssue]
-    with pytest.raises(ValueError, match="public_endpoint_url"):
-        ImageBucket("b", public_endpoint_url="127.0.0.1:9000")
-    with pytest.raises(ValueError, match="image_upload_timeout_s"):
-        SandboxSpec(image_upload_timeout_s=0)
+    for bad_url in ("127.0.0.1:9000", "https://", "http:///x", "https://a b"):
+        with pytest.raises(ValueError, match="public_endpoint_url"):
+            ImageBucket("b", public_endpoint_url=bad_url)
+    for bad_timeout in (0, -1, float("nan"), float("inf"), True, "10"):
+        with pytest.raises(ValueError, match="image_upload_timeout_s"):
+            SandboxSpec(image_upload_timeout_s=bad_timeout)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="image_url_ttl_s"):
+        SandboxSpec(image_url_ttl_s=True)
     config = host.image_upload_config(
         ImageBucket("b", "https://p.example"), SandboxSpec(image_upload_timeout_s=3), "t"
     )

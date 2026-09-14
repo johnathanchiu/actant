@@ -353,6 +353,30 @@ async def test_disk_sync_services_need_a_public_endpoint_unless_urls_are_off(
     await provider.open(bytes_only, agent_id="a", thread_id="t")
     host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
     assert host_config is not None and host_config.images is None
+    # Mounted storage never uploads images, so it needs no public endpoint either.
+    mounted = SandboxSpec(backend="modal", services={"t": "pkg:T"})
+    await provider.open(mounted, agent_id="a", thread_id="t")
+    host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
+    assert host_config is not None and host_config.images is None
+
+    public = ModalSandboxProvider(
+        app_name="app",
+        bucket="b",
+        endpoint_url="http://10.0.0.5:9000",
+        public_endpoint_url="https://tunnel.example",
+    )
+    timed = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        services={"t": "pkg:T"},
+        network=True,
+        image_upload_timeout_s=2.5,
+    )
+    await public.open(timed, agent_id="a", thread_id="t")
+    host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
+    assert host_config is not None and host_config.images is not None
+    assert host_config.images.timeout_s == 2.5
+    assert host_config.images.public_endpoint_url == "https://tunnel.example"
 
 
 def test_with_s5cmd_installs_the_pinned_binary() -> None:

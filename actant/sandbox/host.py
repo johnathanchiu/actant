@@ -350,13 +350,14 @@ async def upload_images(
     """``response`` with each image uploaded and presigned where possible, and the reason
     the first that could not be stayed inline. Never raises.
 
-    At most :data:`UPLOAD_CONCURRENCY` upload at once. After one fails, the images not yet
+    At most :data:`UPLOAD_CONCURRENCY` upload at once. After an upload fails, the images not yet
     started stay inline without trying: a bucket that refused one would cost every other
     image its own timeout."""
     if not response.images:
         return response, None
     gate = asyncio.Semaphore(UPLOAD_CONCURRENCY)
     failed: list[str] = []
+    errors: list[str] = []
 
     async def one(image: Image) -> Image:
         async with gate:
@@ -367,11 +368,14 @@ async def upload_images(
             except Exception as exc:  # noqa: BLE001 -- an upload failure never fails the call
                 uploaded, error = image, f"{image.name}: {type(exc).__name__}: {exc}"[:500]
             if error is not None:
-                failed.append(error)
+                errors.append(error)
+                # A presign that ran out of budget says nothing about the bucket.
+                if error.startswith(f"{image.name}: upload "):
+                    failed.append(error)
             return uploaded
 
     images = await asyncio.gather(*(one(image) for image in response.images))
-    return response.model_copy(update={"images": images}), failed[0] if failed else None
+    return response.model_copy(update={"images": images}), errors[0] if errors else None
 
 
 _idle: dict[tuple[str, str], list[tuple[HTTPConnection, float]]] = {}

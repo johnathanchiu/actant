@@ -127,11 +127,11 @@ class ImageUploadConfig(_Message):
     #: Where uploads go; ``None`` is AWS S3.
     endpoint_url: str | None = None
     #: The host presigned URLs name. A model provider fetches them, so it must reach it.
-    public_endpoint_url: str = Field(pattern=r"^https?://[^/]+")
+    public_endpoint_url: str = Field(pattern=r"^https?://[^/\s]+$|^https?://[^/\s]+/")
     expires_s: int = Field(gt=0, le=MAX_PRESIGN_S)
     #: Upload plus presign, per image; past it the commands are killed and the image
     #: goes inline.
-    timeout_s: PositiveFloat = 10.0
+    timeout_s: PositiveFloat = Field(default=10.0, allow_inf_nan=False)
 
 
 class HostConfig(_Message):

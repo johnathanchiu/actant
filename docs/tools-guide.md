@@ -384,24 +384,27 @@ fetches the URL, so each request stays small however many images a run re-sends.
 
 URLs are signed for `public_endpoint_url`, which the model provider must reach, so it is
 required: `ImageBucket` cannot be built without it, and a `disk_sync` spec with services
-fails `ModalSandboxProvider.open` without it (unless `image_url_ttl_s=None`). For R2 or S3
-it is the bucket endpoint itself; for a MinIO it is a public tunnel. URLs signed with
+fails `ModalSandboxProvider.open` without it (unless `image_url_ttl_s=None`). For R2 it is
+the bucket endpoint (`https://<account>.r2.cloudflarestorage.com`); for AWS S3 the bucket's
+regional endpoint (`https://s3.<region>.amazonaws.com`); for a MinIO a public tunnel. URLs signed with
 temporary credentials stop working when those do.
 
 A failed upload or presign never fails the call: that image goes inline and
 `StorageStatus.image_error` says why. Upload plus presign of one image is bounded by
-`SandboxSpec.image_upload_timeout_s` (default 10 s), so an unreachable bucket costs at
-most that per image before the bytes go instead; after one failure, images of the same
-response not yet started skip the upload.
+`SandboxSpec.image_upload_timeout_s` (default 10 s, counted from the image's upload start;
+at most 8 images upload at once), so an unreachable bucket costs about that per image
+before the bytes go instead; after an upload fails, images of the same response not yet
+started skip it.
 
 Nothing deletes uploaded images. Expire them with a lifecycle rule on the prefix, longer
 than `image_url_ttl_s` (a re-uploaded image resets its age):
 
 ```bash
 mc ilm rule add --expire-days 8 --prefix actant-images/ local/my-bucket    # MinIO
+# S3; for R2 add --endpoint-url https://<account>.r2.cloudflarestorage.com
 aws s3api put-bucket-lifecycle-configuration --bucket my-bucket --lifecycle-configuration \
   '{"Rules": [{"ID": "actant-images", "Status": "Enabled",
-    "Filter": {"Prefix": "actant-images/"}, "Expiration": {"Days": 8}}]}'  # S3, R2
+    "Filter": {"Prefix": "actant-images/"}, "Expiration": {"Days": 8}}]}'
 ```
 
 Local setup: run the local backend against a MinIO behind a tunnel, and give the tunnel's

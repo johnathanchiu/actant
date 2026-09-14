@@ -16,6 +16,7 @@ definitions and tools can name these types without cycles.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -181,10 +182,17 @@ class SandboxSpec:
         ):
             raise ValueError("seed is a key prefix ending in '/', for disk_sync storage")
         ttl = self.image_url_ttl_s
-        if ttl is not None and (not isinstance(ttl, int) or not 0 < ttl <= MAX_PRESIGN_S):
+        if ttl is not None and (
+            isinstance(ttl, bool) or not isinstance(ttl, int) or not 0 < ttl <= MAX_PRESIGN_S
+        ):
             raise ValueError("image_url_ttl_s must be whole seconds, positive, at most seven days")
-        if self.image_upload_timeout_s <= 0:
-            raise ValueError("image_upload_timeout_s must be positive")
+        timeout = self.image_upload_timeout_s
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int | float)
+            or not (math.isfinite(timeout) and timeout > 0)
+        ):
+            raise ValueError("image_upload_timeout_s must be a positive, finite number")
 
 
 @dataclass(frozen=True)
@@ -206,7 +214,8 @@ class ImageBucket:
     endpoint_url: str | None = None
 
     def __post_init__(self) -> None:
-        if urlsplit(self.public_endpoint_url).scheme not in {"http", "https"}:
+        url = urlsplit(self.public_endpoint_url)
+        if url.scheme not in {"http", "https"} or not url.hostname or " " in url.netloc:
             raise ValueError("public_endpoint_url must be an http(s) URL a model provider reaches")
 
     def destination(self, thread_id: str) -> str:
