@@ -25,7 +25,6 @@ import pytest
 from actant.sandbox import ImageBucket, LocalSandbox, LocalSandboxProvider, SandboxSpec
 from actant.sandbox import SandboxRunner
 from actant.sandbox.protocol import InlineSource, UrlSource
-from actant.tools import image_block
 
 ENDPOINT = os.environ.get("ACTANT_TEST_S3_ENDPOINT")
 PUBLIC = os.environ.get("ACTANT_TEST_S3_PUBLIC_ENDPOINT")
@@ -96,10 +95,8 @@ async def test_returned_images_arrive_as_urls_a_plain_get_fetches(
         data, content_type = _get(image.source.url)
         assert data.startswith(b"\x89PNG") and len(data) == 64 + 8
         assert content_type == "image/png"
-        assert image_block(image)["source"] == {"type": "url", "url": image.source.url}
-    # Beside the thread's prefix, never inside it: a push never mirrors or deletes images.
-    listed = _s5("ls", f"s3://{bucket}/sandboxes/*").stdout
-    assert "t1.actant-images/" in listed and "t1/" not in listed.replace("t1.actant-images/", "")
+    listed = _s5("ls", f"s3://{bucket}/actant-images/t1/*").stdout
+    assert len(listed.splitlines()) == 2
 
 
 async def test_an_unreachable_bucket_sends_bytes_and_says_why(tmp_path: Path, bucket: str) -> None:

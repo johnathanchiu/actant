@@ -100,6 +100,8 @@ MAX_IDLE_PER_HOST = 32
 #: The instance lifecycle; never callable.
 LIFECYCLE = frozenset({"open", "close"})
 MAX_BODY = 256 * 1024 * 1024
+#: Images a host uploads at once for one response.
+UPLOAD_CONCURRENCY = 8
 _IMAGE_MAGIC = {
     b"\x89PNG": "image/png",
     b"\xff\xd8\xff": "image/jpeg",
@@ -335,16 +337,31 @@ async def upload_image(image: Image, config: ImageUploadConfig) -> tuple[Image, 
 async def upload_images(
     response: CallResponse, config: ImageUploadConfig
 ) -> tuple[CallResponse, str | None]:
-    """``response`` with each image uploaded and presigned where possible (concurrently),
-    and the joined reasons for those that stayed inline. Never raises."""
+    """``response`` with each image uploaded and presigned where possible, and the reason
+    the first that could not be stayed inline. Never raises.
+
+    At most :data:`UPLOAD_CONCURRENCY` upload at once. After one fails, the images not yet
+    started stay inline without trying: a bucket that refused one would cost every other
+    image its own timeout."""
     if not response.images:
         return response, None
-    try:
-        done = await asyncio.gather(*(upload_image(image, config) for image in response.images))
-    except Exception as error:  # noqa: BLE001 -- an upload failure never fails the call
-        return response, f"{type(error).__name__}: {error}"[:500]
-    errors = "; ".join(error for _, error in done if error) or None
-    return response.model_copy(update={"images": [image for image, _ in done]}), errors
+    gate = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+    failed: list[str] = []
+
+    async def one(image: Image) -> Image:
+        async with gate:
+            if failed:
+                return image
+            try:
+                uploaded, error = await upload_image(image, config)
+            except Exception as exc:  # noqa: BLE001 -- an upload failure never fails the call
+                uploaded, error = image, f"{image.name}: {type(exc).__name__}: {exc}"[:500]
+            if error is not None:
+                failed.append(error)
+            return uploaded
+
+    images = await asyncio.gather(*(one(image) for image in response.images))
+    return response.model_copy(update={"images": images}), failed[0] if failed else None
 
 
 _idle: dict[tuple[str, str], list[tuple[HTTPConnection, float]]] = {}

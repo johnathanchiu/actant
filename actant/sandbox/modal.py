@@ -14,8 +14,8 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     remote files removed locally; a service host also pushes after its calls and every
     ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
     pushes once more. Restored files get their objects' mtimes, so a push
-    uploads only what changed. Images a service returns are uploaded at once beside
-    the prefix and sent as presigned URLs (``SandboxSpec.image_url_ttl_s``), signed
+    uploads only what changed. Images a service returns are uploaded at once under
+    ``image_prefix`` and sent as presigned URLs (``SandboxSpec.image_url_ttl_s``), signed
     for ``public_endpoint_url`` when set. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
@@ -122,6 +122,8 @@ class ModalSandboxProvider:
     #: The host presigned image URLs name, when the model provider cannot reach
     #: ``endpoint_url`` (a MinIO behind a tunnel); ``None`` is ``endpoint_url``.
     public_endpoint_url: str | None = None
+    #: Where a ``disk_sync`` host uploads returned images: ``<image_prefix><thread>/``.
+    image_prefix: str = "actant-images/"
     secret_name: str | None = None
     #: Inline bucket credentials (same keys as ``secret_name``), sent with
     #: ``modal.Secret.from_dict`` so a test needs no persisted Modal secret.
@@ -286,7 +288,7 @@ class ModalSandboxProvider:
     def image_bucket(self) -> ImageBucket:
         """Where a ``disk_sync`` host uploads the images its services return."""
         return ImageBucket(
-            self.bucket, self.key_prefix, self.endpoint_url, self.public_endpoint_url
+            self.bucket, self.image_prefix, self.endpoint_url, self.public_endpoint_url
         )
 
     def _remote(self, thread_id: str) -> str:

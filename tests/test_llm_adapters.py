@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import json
 from types import SimpleNamespace
 
@@ -365,3 +367,23 @@ async def test_openai_usage_callback_retains_cache_details(
     assert message.input_tokens == 5040
     assert received == [("resp-test", "gpt-6-astra", usage, "completed")]
     await provider.client.close()
+
+
+def test_replayed_url_images_drop_expires_at_and_expired_ones_become_a_note() -> None:
+    from actant.llm.providers._shared import EXPIRED_IMAGE, sanitize_tool_messages
+
+    live = {
+        "type": "image",
+        "source": {"type": "url", "url": "https://l", "expires_at": time.time() + 3600},
+    }
+    dead = {
+        "type": "image",
+        "source": {"type": "url", "url": "https://d", "expires_at": time.time() + 30},
+    }
+    stored = Message(role="tool", tool_call_id="t", content=[live, dead])
+    [sent] = sanitize_tool_messages([stored])
+    assert sent.content == [
+        {"type": "image", "source": {"type": "url", "url": "https://l"}},
+        {"type": "text", "text": EXPIRED_IMAGE},
+    ]
+    assert "expires_at" in live["source"]  # pyright: ignore[reportOperatorIssue] -- the stored message is untouched

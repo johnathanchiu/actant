@@ -100,9 +100,6 @@ class Endpoint:
 
 #: The longest a SigV4 presigned URL may live (seven days).
 MAX_PRESIGN_S = 7 * 24 * 3600
-#: Appended to a thread's key (not inside its prefix) for the prefix its images upload to,
-#: so no push or pull touches them.
-IMAGES_SUFFIX = ".actant-images/"
 
 
 class Backend(StrEnum):
@@ -180,27 +177,31 @@ class SandboxSpec:
             self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
         ):
             raise ValueError("seed is a key prefix ending in '/', for disk_sync storage")
-        if self.image_url_ttl_s is not None and not 0 < self.image_url_ttl_s <= MAX_PRESIGN_S:
-            raise ValueError("image_url_ttl_s must be positive and at most seven days")
+        ttl = self.image_url_ttl_s
+        if ttl is not None and (not isinstance(ttl, int) or not 0 < ttl <= MAX_PRESIGN_S):
+            raise ValueError("image_url_ttl_s must be whole seconds, positive, at most seven days")
 
 
 @dataclass(frozen=True)
 class ImageBucket:
     """Where a backend whose files are not in a bucket uploads returned images to presign them.
 
-    ``endpoint_url`` is where uploads go (``None`` is AWS S3); ``public_endpoint_url`` is the
-    host the presigned URLs name, for a model provider that cannot reach ``endpoint_url``
-    (``None`` is ``endpoint_url``). Bucket keys come from the environment.
+    Images land under ``<prefix><thread>/``, a prefix of their own so no push or pull of a
+    thread's files touches them and one lifecycle rule can expire them (nothing else
+    deletes them). ``endpoint_url`` is where uploads go (``None`` is AWS S3);
+    ``public_endpoint_url`` is the host the presigned URLs name, for a model provider that
+    cannot reach ``endpoint_url`` (``None`` is ``endpoint_url``). Bucket keys come from the
+    environment; URLs signed with temporary credentials stop working when those expire.
     """
 
     bucket: str
-    key_prefix: str = "sandboxes/"
+    prefix: str = "actant-images/"
     endpoint_url: str | None = None
     public_endpoint_url: str | None = None
 
     def destination(self, thread_id: str) -> str:
-        """The ``s3://`` prefix a thread's images upload to: a sibling of its files' prefix."""
-        return f"s3://{self.bucket}/{self.key_prefix}{thread_id}{IMAGES_SUFFIX}"
+        """The ``s3://`` prefix a thread's images upload to."""
+        return f"s3://{self.bucket}/{self.prefix}{thread_id}/"
 
 
 class SandboxProvider(Protocol):

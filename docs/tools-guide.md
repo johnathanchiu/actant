@@ -375,8 +375,9 @@ so a push uploads only files changed since.
 Images a service returns reach the model as presigned URLs when the host can
 reach a bucket: `disk_sync` on Modal, or a `LocalSandboxProvider(images=ImageBucket(...))`.
 The host uploads each image at once (content-addressed, under
-`<key_prefix><thread>.actant-images/`, beside the thread's prefix so no push touches
-it), presigns it for `SandboxSpec.image_url_ttl_s` (default 6 h, at most 7 days; `None`
+`actant-images/<thread>/` (`image_prefix` on `ModalSandboxProvider`, `prefix` on
+`ImageBucket`), apart from the thread's files so no push touches them; nothing deletes
+them, so give that prefix a lifecycle rule), presigns it for `SandboxSpec.image_url_ttl_s` (default 6 h, at most 7 days; `None`
 always sends bytes), and returns `Image.source` as a `UrlSource(url, expires_at)`
 instead of an `InlineSource(data_b64)`. The model provider fetches the URL, so each
 request stays small however many images a run re-sends. A failed upload or presign
@@ -386,7 +387,11 @@ when the provider cannot reach the upload endpoint, such as a local MinIO behind
 `cloudflared tunnel --url`; the tunnel must forward the public `Host` header, since the
 URL signs it. Code that calls a runner itself turns an image into a content block with
 `actant.tools.image_block(image)` (a URL source when present, else base64). A stored
-message keeps its URLs, so a thread resumed after they expire sends broken images.
+message keeps its URLs; on replay the LLM adapters replace an image whose URL has
+expired (or will within two minutes) with a text note, since a provider rejects the
+whole request when a fetch fails. URLs signed with temporary credentials stop working
+when those do. The presign endpoint must be reachable by the model provider: a private
+one uploads and presigns fine, and then the model request fails.
 
 `SandboxSpec.seed` (a bucket key prefix ending in `/`) starts a new thread from a
 template. When the thread's prefix is empty, the sandbox pulls the seed while

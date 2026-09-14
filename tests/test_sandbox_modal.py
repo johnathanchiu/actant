@@ -193,7 +193,7 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
             push=PushConfig(argv=push, interval_s=30, timeout_s=120),
             # Images upload beside the thread's prefix, never inside what the push mirrors.
             images=ImageUploadConfig(
-                destination="s3://b/sandboxes/t1.actant-images/",
+                destination="s3://b/actant-images/t1/",
                 endpoint_url="https://r2.example",
                 expires_s=6 * 3600,
             ),

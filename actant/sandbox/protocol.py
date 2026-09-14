@@ -86,8 +86,8 @@ class StorageStatus(_Message):
     consecutive_failures: int = 0
     #: Calls completed that no successful push has covered.
     pending: bool = False
-    #: Why an image in this response went inline instead of as a URL; ``None`` when
-    #: every image uploaded (or there were none).
+    #: Why the first image in this response that went inline instead of as a URL did;
+    #: ``None`` when every image uploaded (or there were none).
     image_error: str | None = None
 
 

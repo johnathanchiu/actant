@@ -41,12 +41,12 @@ if os.environ.get("FAKE_S5CMD_FAIL") == command:
     sys.stderr.write("denied\\n")
     sys.exit(1)
 if command == "presign":
-    endpoint = args[args.index("--endpoint-url") + 1]
+    endpoint = args[1] if args[0] == "--endpoint-url" else "https://s3.amazonaws.com"
     print(os.environ.get("FAKE_S5CMD_URL") or endpoint + "/" + args[-1][5:] + "?X-Amz-Signature=s")
 """
 
 CONFIG = ImageUploadConfig(
-    destination="s3://b/sandboxes/t1.actant-images/",
+    destination="s3://b/actant-images/t1/",
     endpoint_url="http://minio:9000",
     public_endpoint_url="https://public.example",
     expires_s=3600,
@@ -79,7 +79,7 @@ def test_image_block_prefers_the_url_and_otherwise_sends_bytes() -> None:
     linked = inline.model_copy(update={"source": UrlSource(url="https://u/x.png", expires_at=1)})
     assert image_block(linked) == {
         "type": "image",
-        "source": {"type": "url", "url": "https://u/x.png"},
+        "source": {"type": "url", "url": "https://u/x.png", "expires_at": 1},
     }
 
 
@@ -108,7 +108,7 @@ async def test_an_upload_is_content_addressed_and_presigned_for_the_public_endpo
     assert error is None and uploaded.text == "t"
     [image] = uploaded.images
     assert isinstance(image.source, UrlSource)
-    assert image.source.url.startswith("https://public.example/b/sandboxes/t1.actant-images/")
+    assert image.source.url.startswith("https://public.example/b/actant-images/t1/")
     assert image.source.url.split("?")[0].endswith(".png")
     assert before + 3600 <= image.source.expires_at <= time.time() + 3600
     pipe, presign = [json.loads(line) for line in s5cmd_log.read_text().splitlines()]
@@ -166,6 +166,7 @@ async def test_a_host_that_uploads_reports_image_errors_on_storage_status(
     assert result.content_blocks and result.content_blocks[-1]["source"] == {  # pyright: ignore[reportIndexIssue]
         "type": "url",
         "url": response.images[0].source.url,
+        "expires_at": response.images[0].source.expires_at,
     }
 
     monkeypatch.setenv("FAKE_S5CMD_FAIL", "pipe")
@@ -191,7 +192,28 @@ def test_the_spec_bounds_the_url_lifetime_and_buckets_key_images_beside_the_thre
     assert host.image_upload_config(bucket, SandboxSpec(image_url_ttl_s=None), "t1") is None
     config = host.image_upload_config(bucket, SandboxSpec(), "t1")
     assert config == ImageUploadConfig(
-        destination="s3://b/sandboxes/t1.actant-images/",
+        destination="s3://b/actant-images/t1/",
         public_endpoint_url="https://public.example",
         expires_s=6 * 3600,
+    )
+
+
+async def test_after_a_failure_images_not_yet_started_stay_inline_untried(
+    s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(host, "UPLOAD_CONCURRENCY", 1)
+    monkeypatch.setenv("FAKE_S5CMD_FAIL", "pipe")
+    images = [_inline(f"i{n}.png", PNG + bytes([n])) for n in range(3)]
+    kept, error = await host.upload_images(CallResponse(images=images), CONFIG)
+    assert kept.images == images and error and error.startswith("i0.png: upload")
+    assert len(s5cmd_log.read_text().splitlines()) == 1
+
+
+async def test_without_an_endpoint_uploads_and_presigns_go_to_aws(s5cmd_log: Path) -> None:
+    aws = ImageUploadConfig(destination="s3://b/p/", expires_s=60)
+    uploaded, error = await host.upload_images(CallResponse(images=[_inline()]), aws)
+    assert error is None and isinstance(uploaded.images[0].source, UrlSource)
+    assert all(
+        "--endpoint-url" not in json.loads(line)["argv"]
+        for line in s5cmd_log.read_text().splitlines()
     )
