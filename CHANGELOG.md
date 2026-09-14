@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.13.0
 
 - Images a service returns can reach the model as presigned URLs instead of bytes
   relayed through the worker. A host whose files reach a bucket (`disk_sync` on Modal,
