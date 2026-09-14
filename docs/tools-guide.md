@@ -364,12 +364,29 @@ JSON of an `actant.sandbox.StorageStatus` (read it with
 | `last_error` | Short reason the latest push failed; `None` once one succeeds |
 | `consecutive_failures` | Failed pushes since the last success |
 | `pending` | Completed calls not yet covered by a successful push |
+| `image_error` | Why an image in this response went as bytes instead of a URL, or `None` |
 
 Warn when `consecutive_failures` is non-zero. The final push on shutdown is
 bounded the same way, so shutdown finishes even when storage is unreachable;
 `Sandbox.sync` and `close` never wait without bound. A restore that fails or
 exceeds 30 minutes fails startup. Restored files take their objects' mtimes,
 so a push uploads only files changed since.
+
+Images a service returns reach the model as presigned URLs when the host can
+reach a bucket: `disk_sync` on Modal, or a `LocalSandboxProvider(images=ImageBucket(...))`.
+The host uploads each image at once (content-addressed, under
+`<key_prefix><thread>.actant-images/`, beside the thread's prefix so no push touches
+it), presigns it for `SandboxSpec.image_url_ttl_s` (default 6 h, at most 7 days; `None`
+always sends bytes), and returns `Image.source` as a `UrlSource(url, expires_at)`
+instead of an `InlineSource(data_b64)`. The model provider fetches the URL, so each
+request stays small however many images a run re-sends. A failed upload or presign
+never fails the call: that image goes inline and `StorageStatus.image_error` says why.
+Presigned URLs name `public_endpoint_url` (on `ModalSandboxProvider` or `ImageBucket`)
+when the provider cannot reach the upload endpoint, such as a local MinIO behind
+`cloudflared tunnel --url`; the tunnel must forward the public `Host` header, since the
+URL signs it. Code that calls a runner itself turns an image into a content block with
+`actant.tools.image_block(image)` (a URL source when present, else base64). A stored
+message keeps its URLs, so a thread resumed after they expire sends broken images.
 
 `SandboxSpec.seed` (a bucket key prefix ending in `/`) starts a new thread from a
 template. When the thread's prefix is empty, the sandbox pulls the seed while

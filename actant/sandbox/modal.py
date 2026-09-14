@@ -14,7 +14,9 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     remote files removed locally; a service host also pushes after its calls and every
     ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
     pushes once more. Restored files get their objects' mtimes, so a push
-    uploads only what changed. The tradeoff: s5cmd
+    uploads only what changed. Images a service returns are uploaded at once beside
+    the prefix and sent as presigned URLs (``SandboxSpec.image_url_ttl_s``), signed
+    for ``public_endpoint_url`` when set. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
     needs s5cmd (:func:`with_s5cmd`).
@@ -56,7 +58,15 @@ from urllib.parse import urlsplit
 
 import actant.sandbox.entry as entry
 import actant.sandbox.host as host
-from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec, Storage
+from actant.sandbox.base import (
+    Endpoint,
+    Entry,
+    ExecResult,
+    ImageBucket,
+    Sandbox,
+    SandboxSpec,
+    Storage,
+)
 from actant.sandbox.protocol import (
     EntryConfig,
     Header,
@@ -109,6 +119,9 @@ class ModalSandboxProvider:
     bucket: str
     key_prefix: str = "sandboxes/"
     endpoint_url: str | None = None
+    #: The host presigned image URLs name, when the model provider cannot reach
+    #: ``endpoint_url`` (a MinIO behind a tunnel); ``None`` is ``endpoint_url``.
+    public_endpoint_url: str | None = None
     secret_name: str | None = None
     #: Inline bucket credentials (same keys as ``secret_name``), sent with
     #: ``modal.Secret.from_dict`` so a test needs no persisted Modal secret.
@@ -264,8 +277,17 @@ class ModalSandboxProvider:
                 bind="0.0.0.0",
                 scrub=list(spec.scrub_env),
                 push=push,
+                images=host.image_upload_config(self.image_bucket(), spec, thread_id)
+                if disk_sync
+                else None,
             )
         return EntryConfig(restore=restore, host=served)
+
+    def image_bucket(self) -> ImageBucket:
+        """Where a ``disk_sync`` host uploads the images its services return."""
+        return ImageBucket(
+            self.bucket, self.key_prefix, self.endpoint_url, self.public_endpoint_url
+        )
 
     def _remote(self, thread_id: str) -> str:
         return f"s3://{self.bucket}/{self.key_prefix}{thread_id}/"

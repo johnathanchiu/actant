@@ -23,7 +23,7 @@ from actant.tools.finish import FinishTool
 from actant.tools.function import FunctionTool, FunctionToolInvocation, ToolArguments, tool
 from actant.tools.registry import ToolRegistry
 from actant.tools.supervise import SubagentSupervisor, supervision_tools
-from actant.tools.service import tool_schemas, tools
+from actant.tools.service import image_block, tool_schemas, tools
 from actant.tools.task import (
     InMemorySubagentRegistry,
     SubagentInvoker,
@@ -39,6 +39,7 @@ __all__ = [
     "FinishTool",
     "FunctionTool",
     "FunctionToolInvocation",
+    "image_block",
     "MetadataKey",
     "SubagentInvoker",
     "SubagentSpawner",

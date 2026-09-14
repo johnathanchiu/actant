@@ -18,6 +18,7 @@ from actant.sandbox.protocol import (
     EntryConfig,
     Header,
     HostConfig,
+    ImageUploadConfig,
     PushConfig,
     RestoreConfig,
     Route,
@@ -190,6 +191,12 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
             bind="0.0.0.0",
             scrub=["SERVICE_KEY", "AWS_SECRET_ACCESS_KEY"],
             push=PushConfig(argv=push, interval_s=30, timeout_s=120),
+            # Images upload beside the thread's prefix, never inside what the push mirrors.
+            images=ImageUploadConfig(
+                destination="s3://b/sandboxes/t1.actant-images/",
+                endpoint_url="https://r2.example",
+                expires_s=6 * 3600,
+            ),
         ),
     )
     assert kw["readiness_probe"] == _Probe(tcp=9000)

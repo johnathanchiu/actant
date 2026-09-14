@@ -288,6 +288,23 @@ def test_gemini_replays_tool_call_thought_signature() -> None:
     assert content.parts[0].thought_signature == b"sig"
 
 
+def test_gemini_sends_url_image_sources_as_file_data() -> None:
+    provider = GeminiProvider(
+        model_id="gemini-example", api_key="test", check_thinking_support=False
+    )
+    [part] = provider.content_blocks_to_parts(
+        [
+            {
+                "type": "image",
+                "source": {"type": "url", "url": "https://b.example/k/a.jpg?X-Amz-Signature=s"},
+            }
+        ]
+    )
+    assert part.file_data is not None
+    assert part.file_data.file_uri == "https://b.example/k/a.jpg?X-Amz-Signature=s"
+    assert part.file_data.mime_type == "image/jpeg"
+
+
 def test_astra_request_preserves_requested_reasoning_and_encrypted_state() -> None:
     provider = OpenAIProvider(model_id="gpt-6-astra", api_key="test", thinking_level="low")
     params = provider._request_params("System", [Message(role="user", content="hello")], [])
