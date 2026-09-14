@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from actant.runtime.completion import RunCompletion, RunCompletionHandler
+    from actant.runtime.gate import TurnGate, TurnStart
     from actant.runtime.temporal.types import TemporalRuntimeConfig
     from actant.runtime.temporal.worker import TemporalRuntimeWorker
     from actant.runtime.thread import ThreadHandle
@@ -31,6 +32,8 @@ __all__ = [
     "TemporalRuntimeConfig",
     "TemporalRuntimeWorker",
     "ThreadHandle",
+    "TurnGate",
+    "TurnStart",
 ]
 
 
@@ -43,6 +46,10 @@ def __getattr__(name: str) -> Any:
         from actant.runtime import completion
 
         return getattr(completion, name)
+    if name in {"TurnGate", "TurnStart"}:
+        from actant.runtime import gate
+
+        return getattr(gate, name)
     if name == "TemporalRuntimeConfig":
         from actant.runtime.temporal.types import TemporalRuntimeConfig
 

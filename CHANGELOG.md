@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `TemporalRuntimeWorker(turn_gate=...)`: a `TurnGate`, `async (TurnStart) -> str | None`,
+  consulted before every model call. A returned reason ends the run without calling
+  the model; the run finalizes `exhausted` with that `stop_reason`, which
+  `RunCompletion` and `on_complete` receive. An exception fails the run. Both types
+  import from `actant.runtime`.
+
 ## 0.13.0
 
 - Images a service returns can reach the model as presigned URLs instead of bytes

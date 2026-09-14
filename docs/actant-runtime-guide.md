@@ -295,6 +295,36 @@ Pass it to `TemporalRuntimeWorker`; unlike hooks, handler failure keeps the
 finalization activity incomplete and eligible for retry. Handlers must be
 idempotent.
 
+## Turn gate
+
+Hooks observe; they cannot stop a run. Tool admission decides one tool call at
+a time, and a denied call still leaves the agent taking turns. To stop a run
+before it spends a model call -- an organization is out of credit, a budget or
+rate limit is reached -- pass a `TurnGate` to `TemporalRuntimeWorker`:
+
+```python
+from actant.runtime import TemporalRuntimeWorker, TurnStart
+
+
+async def check_credit(turn: TurnStart) -> str | None:
+    if await billing.balance_for(turn.agent_id, turn.thread_id) <= 0:
+        return "credit balance exhausted"
+    return None
+
+
+worker = TemporalRuntimeWorker(stores=stores, agents=agents, turn_gate=check_credit)
+```
+
+The gate runs in the turn activity before every model call, after the run's
+inbound messages are persisted. `TurnStart` carries `agent_id`, `thread_id`,
+`run_id`, `turn_id`, and `turn_index`. Returning `None` lets the turn proceed.
+Returning a reason ends the run without calling the model: the run finalizes
+`exhausted` with the reason as `stop_reason`, and `RunCompletion.stop_reason`
+and `on_complete(reason=...)` receive it. The next message starts a new run,
+which the gate sees again. The gate is worker configuration and never enters
+workflow payloads. An exception it raises fails the turn, and the run finalizes
+`failed`.
+
 ## Production checklist
 
 - Use durable projection stores shared by all workers.

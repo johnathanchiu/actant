@@ -11,6 +11,7 @@ from actant.llm.messages import Message
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.lifecycle import AgentThreadHooks
 from actant.runtime.events.streaming import StreamListener
+from actant.runtime.gate import TurnGate
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.types.threads import AgentThread
 from actant.sandbox.base import ArtifactSink, Sandbox
@@ -33,6 +34,7 @@ class ActivityContext:
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
+        turn_gate: TurnGate | None = None,
         sandboxes: SandboxRegistry | None = None,
         artifact_sink: ArtifactSink | None = None,
     ) -> None:
@@ -42,6 +44,7 @@ class ActivityContext:
         self.listener_factory = listener_factory
         self.message_preprocessor = message_preprocessor
         self.run_completion_handler = run_completion_handler
+        self.turn_gate = turn_gate
         self.sandboxes = sandboxes
         self.artifact_sink = artifact_sink
 

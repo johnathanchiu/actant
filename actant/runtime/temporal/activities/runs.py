@@ -12,6 +12,7 @@ from actant.core import JSONObject, new_id
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import ToolCall as LLMToolCall
 from actant.runtime.completion import RunCompletion
+from actant.runtime.gate import TurnStart
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
     ActivityName,
@@ -83,6 +84,23 @@ class RunActivities(ActivityContext):
                 payload.agent_id, payload.thread_id, msg.content
             )
             await hooks.on_user_message(msg.content)
+
+        if self.turn_gate is not None:
+            reason = await self.turn_gate(
+                TurnStart(
+                    agent_id=payload.agent_id,
+                    thread_id=payload.thread_id,
+                    run_id=payload.run_id,
+                    turn_id=payload.turn_id,
+                    turn_index=payload.turn_index,
+                )
+            )
+            if reason is not None:
+                return TurnResult(
+                    turn_id=payload.turn_id,
+                    turn_index=payload.turn_index,
+                    stop_reason=reason,
+                )
 
         messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
         if self.message_preprocessor is not None:
