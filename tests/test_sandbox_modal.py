@@ -113,7 +113,11 @@ class _FakeModal:
 @pytest.fixture
 def provider() -> ModalSandboxProvider:
     return ModalSandboxProvider(
-        app_name="app", bucket="b", endpoint_url="https://r2.example", secret_name="r2"
+        app_name="app",
+        bucket="b",
+        endpoint_url="https://r2.example",
+        public_endpoint_url="https://r2.example",
+        secret_name="r2",
     )
 
 
@@ -195,7 +199,9 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
             images=ImageUploadConfig(
                 destination="s3://b/actant-images/t1/",
                 endpoint_url="https://r2.example",
+                public_endpoint_url="https://r2.example",
                 expires_s=6 * 3600,
+                timeout_s=10,
             ),
         ),
     )
@@ -321,6 +327,32 @@ async def test_inline_bucket_env(monkeypatch: pytest.MonkeyPatch) -> None:
     await provider.open(SandboxSpec(backend="modal"), agent_id="a", thread_id="t")
     assert fake.created[1]["secrets"] == []
     assert fake.created[1]["volumes"][MOUNT_PATH][2]["secret"] == ("dict", creds)
+
+
+async def test_disk_sync_services_need_a_public_endpoint_unless_urls_are_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeModal()
+    _use(monkeypatch, fake)
+    provider = ModalSandboxProvider(
+        app_name="app", bucket="b", endpoint_url="http://10.0.0.5:9000"
+    )
+    spec = SandboxSpec(
+        backend="modal", storage=Storage.DISK_SYNC, services={"t": "pkg:T"}, network=True
+    )
+    with pytest.raises(ValueError, match="public_endpoint_url"):
+        await provider.open(spec, agent_id="a", thread_id="t")
+    assert fake.created == ((), {})  # refused before any Modal call
+    bytes_only = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        services={"t": "pkg:T"},
+        network=True,
+        image_url_ttl_s=None,
+    )
+    await provider.open(bytes_only, agent_id="a", thread_id="t")
+    host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
+    assert host_config is not None and host_config.images is None
 
 
 def test_with_s5cmd_installs_the_pinned_binary() -> None:

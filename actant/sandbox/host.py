@@ -304,6 +304,7 @@ def image_upload_config(
         endpoint_url=bucket.endpoint_url,
         public_endpoint_url=bucket.public_endpoint_url,
         expires_s=spec.image_url_ttl_s,
+        timeout_s=spec.image_upload_timeout_s,
     )
 
 
@@ -318,14 +319,23 @@ async def upload_image(image: Image, config: ImageUploadConfig) -> tuple[Image, 
     data = base64.b64decode(image.source.data_b64)
     extension = mimetypes.guess_extension(image.media_type) or ""
     key = f"{config.destination}{hashlib.sha256(data).hexdigest()}{extension}"
+    # One budget for both commands: an unreachable bucket costs at most ``timeout_s``.
+    deadline = time.monotonic() + config.timeout_s
     upload = _s5cmd(config.endpoint_url, "pipe", "--content-type", image.media_type, key)
     error, _ = await run_bounded(upload, config.timeout_s, stdin=data)
     if error is not None:
         return image, f"{image.name}: upload {error}"
     expires_at = time.time() + config.expires_s
-    public = config.public_endpoint_url or config.endpoint_url
-    presign = _s5cmd(public, "presign", "--expire", f"{config.expires_s}s", key)
-    error, stdout = await run_bounded(presign, config.timeout_s, capture=True)
+    presign = _s5cmd(
+        config.public_endpoint_url, "presign", "--expire", f"{config.expires_s}s", key
+    )
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return (
+            image,
+            f"{image.name}: presign skipped: upload used the {config.timeout_s:g}s budget",
+        )
+    error, stdout = await run_bounded(presign, remaining, capture=True)
     url = stdout.decode(errors="replace").strip()
     if error is None and not url.startswith(("https://", "http://")):
         error = f"not a URL: {url[:200]!r}"

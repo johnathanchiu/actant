@@ -16,7 +16,7 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     pushes once more. Restored files get their objects' mtimes, so a push
     uploads only what changed. Images a service returns are uploaded at once under
     ``image_prefix`` and sent as presigned URLs (``SandboxSpec.image_url_ttl_s``), signed
-    for ``public_endpoint_url`` when set. The tradeoff: s5cmd
+    for ``public_endpoint_url``. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
     needs s5cmd (:func:`with_s5cmd`).
@@ -119,8 +119,9 @@ class ModalSandboxProvider:
     bucket: str
     key_prefix: str = "sandboxes/"
     endpoint_url: str | None = None
-    #: The host presigned image URLs name, when the model provider cannot reach
-    #: ``endpoint_url`` (a MinIO behind a tunnel); ``None`` is ``endpoint_url``.
+    #: The host presigned image URLs name, reachable by the model provider (for R2/S3 the
+    #: bucket endpoint itself; for a MinIO, its tunnel). Required for ``disk_sync`` unless
+    #: the spec's ``image_url_ttl_s`` is ``None``.
     public_endpoint_url: str | None = None
     #: Where a ``disk_sync`` host uploads returned images: ``<image_prefix><thread>/``.
     image_prefix: str = "actant-images/"
@@ -137,6 +138,8 @@ class ModalSandboxProvider:
 
     async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
         del agent_id
+        # Before any Modal call: a missing public endpoint fails here, not in a container.
+        config = self.entry_config(spec, thread_id)
         modal = importlib.import_module("modal")
         app = await modal.App.lookup.aio(self.app_name, create_if_missing=True, client=self.client)
         if self.bucket_env is not None:
@@ -164,7 +167,6 @@ class ModalSandboxProvider:
         command: list[str] = []
         probe = None
         if disk_sync or spec.services:
-            config = self.entry_config(spec, thread_id)
             command = ["python", "-m", entry.__name__, config.model_dump_json()]
             if disk_sync:
                 probe = modal.Probe.with_exec("test", "-f", entry.READY_FILE)
@@ -280,15 +282,20 @@ class ModalSandboxProvider:
                 scrub=list(spec.scrub_env),
                 push=push,
                 images=host.image_upload_config(self.image_bucket(), spec, thread_id)
-                if disk_sync
+                if disk_sync and spec.image_url_ttl_s is not None
                 else None,
             )
         return EntryConfig(restore=restore, host=served)
 
     def image_bucket(self) -> ImageBucket:
         """Where a ``disk_sync`` host uploads the images its services return."""
+        if self.public_endpoint_url is None:
+            raise ValueError(
+                "disk_sync sends images as presigned URLs: set "
+                "ModalSandboxProvider.public_endpoint_url, or SandboxSpec.image_url_ttl_s=None"
+            )
         return ImageBucket(
-            self.bucket, self.image_prefix, self.endpoint_url, self.public_endpoint_url
+            self.bucket, self.public_endpoint_url, self.image_prefix, self.endpoint_url
         )
 
     def _remote(self, thread_id: str) -> str:

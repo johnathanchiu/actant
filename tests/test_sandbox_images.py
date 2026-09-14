@@ -34,6 +34,8 @@ import json, os, sys
 args = sys.argv[1:]
 log = os.environ["FAKE_S5CMD_LOG"]
 command = next(a for a in args if a in ("pipe", "presign"))
+import time
+time.sleep(float(os.environ.get("FAKE_S5CMD_SLEEP", "0")))
 data = sys.stdin.buffer.read() if command == "pipe" else b""
 with open(log, "a") as out:
     out.write(json.dumps({{"argv": args, "stdin": len(data)}}) + "\\n")
@@ -195,6 +197,7 @@ def test_the_spec_bounds_the_url_lifetime_and_buckets_key_images_beside_the_thre
         destination="s3://b/actant-images/t1/",
         public_endpoint_url="https://public.example",
         expires_s=6 * 3600,
+        timeout_s=10,
     )
 
 
@@ -209,11 +212,39 @@ async def test_after_a_failure_images_not_yet_started_stay_inline_untried(
     assert len(s5cmd_log.read_text().splitlines()) == 1
 
 
-async def test_without_an_endpoint_uploads_and_presigns_go_to_aws(s5cmd_log: Path) -> None:
-    aws = ImageUploadConfig(destination="s3://b/p/", expires_s=60)
+async def test_without_an_upload_endpoint_uploads_go_to_aws(s5cmd_log: Path) -> None:
+    aws = ImageUploadConfig(
+        destination="s3://b/p/", public_endpoint_url="https://s3.amazonaws.com", expires_s=60
+    )
     uploaded, error = await host.upload_images(CallResponse(images=[_inline()]), aws)
     assert error is None and isinstance(uploaded.images[0].source, UrlSource)
-    assert all(
-        "--endpoint-url" not in json.loads(line)["argv"]
-        for line in s5cmd_log.read_text().splitlines()
+    pipe, presign = [json.loads(line)["argv"] for line in s5cmd_log.read_text().splitlines()]
+    assert pipe[0] == "pipe" and presign[:2] == ["--endpoint-url", "https://s3.amazonaws.com"]
+
+
+async def test_a_hung_bucket_costs_one_budget_per_image_then_bytes(
+    s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_S5CMD_SLEEP", "30")
+    started = time.monotonic()
+    budget = CONFIG.model_copy(update={"timeout_s": 0.5})
+    kept, error = await host.upload_images(CallResponse(images=[_inline()]), budget)
+    assert time.monotonic() - started < 5
+    assert (
+        isinstance(kept.images[0].source, InlineSource)
+        and error
+        and "timed out after 0.5s" in error
     )
+
+
+def test_a_bucket_needs_a_public_endpoint_and_the_spec_a_positive_upload_timeout() -> None:
+    with pytest.raises(TypeError):
+        ImageBucket("b")  # pyright: ignore[reportCallIssue]
+    with pytest.raises(ValueError, match="public_endpoint_url"):
+        ImageBucket("b", public_endpoint_url="127.0.0.1:9000")
+    with pytest.raises(ValueError, match="image_upload_timeout_s"):
+        SandboxSpec(image_upload_timeout_s=0)
+    config = host.image_upload_config(
+        ImageBucket("b", "https://p.example"), SandboxSpec(image_upload_timeout_s=3), "t"
+    )
+    assert config is not None and config.timeout_s == 3

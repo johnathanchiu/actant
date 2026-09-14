@@ -26,7 +26,7 @@ from actant.sandbox import ImageBucket, LocalSandbox, LocalSandboxProvider, Sand
 from actant.sandbox import SandboxRunner
 from actant.sandbox.protocol import InlineSource, UrlSource
 
-ENDPOINT = os.environ.get("ACTANT_TEST_S3_ENDPOINT")
+ENDPOINT = os.environ.get("ACTANT_TEST_S3_ENDPOINT", "")
 PUBLIC = os.environ.get("ACTANT_TEST_S3_PUBLIC_ENDPOINT")
 TESTS = str(Path(__file__).parent)
 
@@ -37,7 +37,6 @@ if not (os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCES
 
 
 def _s5(*args: str) -> subprocess.CompletedProcess[str]:
-    assert ENDPOINT
     return subprocess.run(
         ["s5cmd", "--endpoint-url", ENDPOINT, *args], capture_output=True, text=True, check=False
     )
@@ -77,7 +76,7 @@ async def _open(tmp_path: Path, images: ImageBucket) -> AsyncIterator[LocalSandb
 
 @pytest.fixture
 async def sandbox(tmp_path: Path, bucket: str) -> AsyncIterator[LocalSandbox]:
-    async for opened in _open(tmp_path, ImageBucket(bucket, endpoint_url=ENDPOINT)):
+    async for opened in _open(tmp_path, ImageBucket(bucket, ENDPOINT, endpoint_url=ENDPOINT)):
         yield opened
 
 
@@ -100,7 +99,7 @@ async def test_returned_images_arrive_as_urls_a_plain_get_fetches(
 
 
 async def test_an_unreachable_bucket_sends_bytes_and_says_why(tmp_path: Path, bucket: str) -> None:
-    missing = ImageBucket(f"{bucket}-missing", endpoint_url=ENDPOINT)
+    missing = ImageBucket(f"{bucket}-missing", ENDPOINT, endpoint_url=ENDPOINT)
     async for sandbox in _open(tmp_path, missing):
         response = await SandboxRunner("counter").call(
             "picture", {"size": 16}, key="t1", sandbox=sandbox
@@ -116,7 +115,7 @@ async def test_an_unreachable_bucket_sends_bytes_and_says_why(tmp_path: Path, bu
 async def test_urls_presigned_for_a_public_endpoint_fetch_through_it(
     tmp_path: Path, bucket: str
 ) -> None:
-    images = ImageBucket(bucket, endpoint_url=ENDPOINT, public_endpoint_url=PUBLIC)
+    images = ImageBucket(bucket, PUBLIC or "", endpoint_url=ENDPOINT)
     async for sandbox in _open(tmp_path, images):
         response = await SandboxRunner("counter").call(
             "picture", {"size": 32}, key="t1", sandbox=sandbox

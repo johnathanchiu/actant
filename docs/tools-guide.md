@@ -374,24 +374,60 @@ so a push uploads only files changed since.
 
 Images a service returns reach the model as presigned URLs when the host can
 reach a bucket: `disk_sync` on Modal, or a `LocalSandboxProvider(images=ImageBucket(...))`.
-The host uploads each image at once (content-addressed, under
-`actant-images/<thread>/` (`image_prefix` on `ModalSandboxProvider`, `prefix` on
-`ImageBucket`), apart from the thread's files so no push touches them; nothing deletes
-them, so give that prefix a lifecycle rule), presigns it for `SandboxSpec.image_url_ttl_s` (default 6 h, at most 7 days; `None`
-always sends bytes), and returns `Image.source` as a `UrlSource(url, expires_at)`
-instead of an `InlineSource(data_b64)`. The model provider fetches the URL, so each
-request stays small however many images a run re-sends. A failed upload or presign
-never fails the call: that image goes inline and `StorageStatus.image_error` says why.
-Presigned URLs name `public_endpoint_url` (on `ModalSandboxProvider` or `ImageBucket`)
-when the provider cannot reach the upload endpoint, such as a local MinIO behind
-`cloudflared tunnel --url`; the tunnel must forward the public `Host` header, since the
-URL signs it. Code that calls a runner itself turns an image into a content block with
+The host uploads each image at once, content-addressed under `actant-images/<thread>/`
+(`image_prefix` on `ModalSandboxProvider`, `prefix` on `ImageBucket`), apart from the
+thread's files so no push touches it. It presigns the object for
+`SandboxSpec.image_url_ttl_s` (default 6 h, at most 7 days) and returns `Image.source` as
+a `UrlSource(url, expires_at)` instead of an `InlineSource(data_b64)`. The model provider
+fetches the URL, so each request stays small however many images a run re-sends.
+`image_url_ttl_s=None` always sends bytes.
+
+URLs are signed for `public_endpoint_url`, which the model provider must reach, so it is
+required: `ImageBucket` cannot be built without it, and a `disk_sync` spec with services
+fails `ModalSandboxProvider.open` without it (unless `image_url_ttl_s=None`). For R2 or S3
+it is the bucket endpoint itself; for a MinIO it is a public tunnel. URLs signed with
+temporary credentials stop working when those do.
+
+A failed upload or presign never fails the call: that image goes inline and
+`StorageStatus.image_error` says why. Upload plus presign of one image is bounded by
+`SandboxSpec.image_upload_timeout_s` (default 10 s), so an unreachable bucket costs at
+most that per image before the bytes go instead; after one failure, images of the same
+response not yet started skip the upload.
+
+Nothing deletes uploaded images. Expire them with a lifecycle rule on the prefix, longer
+than `image_url_ttl_s` (a re-uploaded image resets its age):
+
+```bash
+mc ilm rule add --expire-days 8 --prefix actant-images/ local/my-bucket    # MinIO
+aws s3api put-bucket-lifecycle-configuration --bucket my-bucket --lifecycle-configuration \
+  '{"Rules": [{"ID": "actant-images", "Status": "Enabled",
+    "Filter": {"Prefix": "actant-images/"}, "Expiration": {"Days": 8}}]}'  # S3, R2
+```
+
+Local setup: run the local backend against a MinIO behind a tunnel, and give the tunnel's
+public URL as `public_endpoint_url`. Uploads go straight to MinIO; the tunnel forwards the
+public `Host` header, which the URL signs.
+
+```python
+# cloudflared tunnel --url http://127.0.0.1:9000   (or: ngrok http 9000)
+LocalSandboxProvider(
+    Path("/srv/agent-workspaces"),
+    images=ImageBucket(
+        "my-bucket",
+        public_endpoint_url="https://<name>.trycloudflare.com",
+        endpoint_url="http://127.0.0.1:9000",
+    ),
+)
+```
+
+The host process reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`
+(`us-east-1` for MinIO) from its environment and needs s5cmd on `PATH`.
+
+Code that calls a runner itself turns an image into a content block with
 `actant.tools.image_block(image)` (a URL source when present, else base64). A stored
 message keeps its URLs; on replay the LLM adapters replace an image whose URL has
 expired (or will within two minutes) with a text note, since a provider rejects the
-whole request when a fetch fails. URLs signed with temporary credentials stop working
-when those do. The presign endpoint must be reachable by the model provider: a private
-one uploads and presigns fine, and then the model request fails.
+whole request when a fetch fails.
 
 `SandboxSpec.seed` (a bucket key prefix ending in `/`) starts a new thread from a
 template. When the thread's prefix is empty, the sandbox pulls the seed while
