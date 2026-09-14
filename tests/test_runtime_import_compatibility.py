@@ -8,7 +8,10 @@ from actant.runtime import (
     TemporalRuntimeConfig,
     TemporalRuntimeWorker,
     ThreadHandle,
+    TurnGate,
+    TurnStart,
 )
+from actant.runtime import gate
 from actant.runtime.completion import RunCompletion as CanonicalCompletion
 from actant.runtime.completion import RunCompletionHandler as CanonicalCompletionHandler
 from actant.runtime.runtime import AgentRuntime as RuntimeModuleAgentRuntime
@@ -29,5 +32,6 @@ def test_public_runtime_imports_resolve_to_canonical_types() -> None:
     assert RunCompletion is CanonicalCompletion
     assert RunCompletionHandler is CanonicalCompletionHandler
     assert ThreadHandle is CanonicalThreadHandle
+    assert (TurnGate, TurnStart) == (gate.TurnGate, gate.TurnStart)
     assert FunctionTool is CanonicalFunctionTool
     assert tool is canonical_tool

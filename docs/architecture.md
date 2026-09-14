@@ -120,7 +120,9 @@ while True:
 
 `run_turn` is an activity because it loads projections, calls the model,
 streams provider output, and persists the resulting assistant message. The
-workflow sees only its durable `TurnResult`.
+workflow sees only its durable `TurnResult`. When the worker has a `TurnGate`,
+`run_turn` consults it before the model call; a refusal returns a `TurnResult`
+with a `stop_reason` and no model call, which ends the run as exhausted.
 
 ### Tool-group algorithm
 

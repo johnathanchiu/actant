@@ -203,9 +203,10 @@ class TurnResult:
     turn_id: str
     turn_index: int
     tool_calls: list[ToolCallSpec] = field(default_factory=list)
-    # Set by a ``completion="terminal"`` agent's turn that had no tool calls:
-    # ``reminded`` when the activity appended the reminder and the run should
-    # continue, ``stop_reason`` when it should end as exhausted.
+    # ``reminded``: a ``completion="terminal"`` agent answered without tool
+    # calls, the activity appended the reminder, and the run continues.
+    # ``stop_reason``: the run ends as exhausted -- that agent answered without
+    # tool calls twice, or the worker's turn gate refused the turn.
     reminded: bool = False
     stop_reason: str | None = None
 

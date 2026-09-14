@@ -12,6 +12,7 @@ from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.lifecycle import AgentThreadHooks, PublishingThreadHooks
 from actant.runtime.events.publisher import EventSink
 from actant.runtime.events.streaming import PublishingStreamListener, StreamListener
+from actant.runtime.gate import TurnGate
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.temporal.activities import (
     HookFactory,
@@ -59,6 +60,7 @@ class TemporalRuntimeWorker:
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
+        turn_gate: TurnGate | None = None,
         event_sink: EventSink | None = None,
         sandbox_providers: Mapping[str, SandboxProvider] | None = None,
         artifact_sink: ArtifactSink | None = None,
@@ -76,6 +78,7 @@ class TemporalRuntimeWorker:
             listener_factory=listener_factory,
             message_preprocessor=message_preprocessor,
             run_completion_handler=run_completion_handler,
+            turn_gate=turn_gate,
             # ``local`` is always available; products register the rest.
             sandboxes=SandboxRegistry(
                 {Backend.LOCAL: LocalSandboxProvider(), **(sandbox_providers or {})},

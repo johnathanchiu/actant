@@ -36,8 +36,9 @@ from actant.runtime.temporal.types import (
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.events.lifecycle import AgentThreadHooks
 from actant.runtime.completion import RunCompletion, RunCompletionHandler
+from actant.runtime.gate import TurnGate, TurnStart
 from actant.runtime.stores import InMemoryRuntimeStores
-from actant.runtime.types.threads import AgentThread
+from actant.runtime.types.threads import AgentThread, RunStatus
 from actant.tools.admission import (
     ToolCallView,
     ToolDecision,
@@ -111,6 +112,7 @@ async def _run(
     agent: AgentDefinition,
     hooks_factory: object | None = None,
     run_completion_handler: RunCompletionHandler | None = None,
+    turn_gate: TurnGate | None = None,
 ) -> None:
     """Spin up a WorkflowEnvironment + Worker and run ``test`` inside it."""
     stores = InMemoryRuntimeStores()
@@ -119,6 +121,7 @@ async def _run(
         agents={agent.id: agent},
         hooks_factory=hooks_factory,  # type: ignore[arg-type]
         run_completion_handler=run_completion_handler,
+        turn_gate=turn_gate,
     )
     task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
 
@@ -697,6 +700,115 @@ async def test_run_completion_handler_receives_persisted_boundary() -> None:
 
     setup: _RunSetup
     await _run(body, agent=agent, run_completion_handler=handle)
+
+
+# === turn gate ===
+
+
+async def _gated_run(
+    fake: FakeLLM, gate: TurnGate
+) -> tuple[RunCompletion, _RecordingHooks, _RunSetup]:
+    """Run one message through a gated worker; return its completion."""
+    completions: list[RunCompletion] = []
+    hooks = _RecordingHooks()
+    captured: list[_RunSetup] = []
+
+    async def handle(completion: RunCompletion) -> None:
+        completions.append(completion)
+
+    async def body(s: _RunSetup, client) -> None:  # type: ignore[no-untyped-def]
+        captured.append(s)
+        handle_workflow = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=5),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="hi")],
+        )
+        await _wait_for(lambda: len(completions) == 1)
+        await asyncio.wait_for(handle_workflow.result(), timeout=5.0)
+
+    await _run(
+        body,
+        agent=_agent(fake, tools=[_EchoTool()]),
+        hooks_factory=lambda _thread: hooks,
+        run_completion_handler=handle,
+        turn_gate=gate,
+    )
+    return completions[0], hooks, captured[0]
+
+
+@pytest.mark.asyncio
+async def test_turn_gate_refusal_ends_run_before_any_model_call() -> None:
+    seen: list[TurnStart] = []
+
+    async def gate(turn: TurnStart) -> str | None:
+        seen.append(turn)
+        return "credit balance exhausted"
+
+    fake = FakeLLM([FakeResponse(text="never")])
+    completion, hooks, s = await _gated_run(fake, gate)
+
+    assert fake.calls == []
+    assert [(t.agent_id, t.thread_id, t.run_id, t.turn_index) for t in seen] == [
+        (_AGENT, _THREAD, completion.run_id, 1)
+    ]
+    assert completion.outcome == "exhausted"
+    assert completion.stop_reason == "credit balance exhausted"
+    run = await s.stores.runs.get(completion.run_id)
+    assert run.status == RunStatus.EXHAUSTED
+    assert run.stop_reason == "credit balance exhausted"
+    assert run.turn_count == 0
+    assert ("complete", "credit balance exhausted") in hooks.events
+    assert not any(kind == "turn_start" for kind, _ in hooks.events)
+    # The user's message is kept even though no turn ran.
+    messages = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
+    assert [m.role for m in messages] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_turn_gate_is_consulted_once_per_turn() -> None:
+    seen: list[int] = []
+
+    async def gate(turn: TurnStart) -> str | None:
+        seen.append(turn.turn_index)
+        return None
+
+    fake = FakeLLM([FakeResponse(tool_calls=[_tool_call("echo")]), FakeResponse(text="done")])
+    completion, _, _ = await _gated_run(fake, gate)
+
+    assert completion.succeeded
+    assert completion.stop_reason is None
+    assert seen == [1, 2]
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_turn_gate_can_stop_a_run_between_turns() -> None:
+    async def gate(turn: TurnStart) -> str | None:
+        return "budget reached" if turn.turn_index == 2 else None
+
+    fake = FakeLLM([FakeResponse(tool_calls=[_tool_call("echo")]), FakeResponse(text="never")])
+    completion, _, s = await _gated_run(fake, gate)
+
+    assert len(fake.calls) == 1
+    assert completion.stop_reason == "budget reached"
+    run = await s.stores.runs.get(completion.run_id)
+    assert (run.status, run.turn_count) == (RunStatus.EXHAUSTED, 1)
+
+
+@pytest.mark.asyncio
+async def test_turn_gate_exception_fails_the_run() -> None:
+    async def gate(turn: TurnStart) -> str | None:
+        raise RuntimeError("billing service down")
+
+    fake = FakeLLM([FakeResponse(text="never")])
+    completion, _, s = await _gated_run(fake, gate)
+
+    assert fake.calls == []
+    assert completion.outcome == "failed"
+    assert (await s.stores.runs.get(completion.run_id)).status == RunStatus.FAILED
 
 
 # === delegation to another agent ===
