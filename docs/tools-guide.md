@@ -364,12 +364,73 @@ JSON of an `actant.sandbox.StorageStatus` (read it with
 | `last_error` | Short reason the latest push failed; `None` once one succeeds |
 | `consecutive_failures` | Failed pushes since the last success |
 | `pending` | Completed calls not yet covered by a successful push |
+| `image_error` | Why an image in this response went as bytes instead of a URL, or `None` |
 
 Warn when `consecutive_failures` is non-zero. The final push on shutdown is
 bounded the same way, so shutdown finishes even when storage is unreachable;
 `Sandbox.sync` and `close` never wait without bound. A restore that fails or
 exceeds 30 minutes fails startup. Restored files take their objects' mtimes,
 so a push uploads only files changed since.
+
+Images a service returns reach the model as presigned URLs when the host can
+reach a bucket: `disk_sync` on Modal, or a `LocalSandboxProvider(images=ImageBucket(...))`.
+The host uploads each image at once, content-addressed under `actant-images/<thread>/`
+(`image_prefix` on `ModalSandboxProvider`, `prefix` on `ImageBucket`), apart from the
+thread's files so no push touches it. It presigns the object for
+`SandboxSpec.image_url_ttl_s` (default 6 h, at most 7 days) and returns `Image.source` as
+a `UrlSource(url, expires_at)` instead of an `InlineSource(data_b64)`. The model provider
+fetches the URL, so each request stays small however many images a run re-sends.
+`image_url_ttl_s=None` always sends bytes.
+
+URLs are signed for `public_endpoint_url`, which the model provider must reach, so it is
+required: `ImageBucket` cannot be built without it, and a `disk_sync` spec with services
+fails `ModalSandboxProvider.open` without it (unless `image_url_ttl_s=None`). For R2 it is
+the bucket endpoint (`https://<account>.r2.cloudflarestorage.com`); for AWS S3 the bucket's
+regional endpoint (`https://s3.<region>.amazonaws.com`); for a MinIO a public tunnel. URLs signed with
+temporary credentials stop working when those do.
+
+A failed upload or presign never fails the call: that image goes inline and
+`StorageStatus.image_error` says why. Upload plus presign of one image is bounded by
+`SandboxSpec.image_upload_timeout_s` (default 10 s, counted from the image's upload start;
+at most 8 images upload at once), so an unreachable bucket costs about that per image
+before the bytes go instead; after an upload fails, images of the same response not yet
+started skip it.
+
+Nothing deletes uploaded images. Expire them with a lifecycle rule on the prefix, longer
+than `image_url_ttl_s` (a re-uploaded image resets its age):
+
+```bash
+mc ilm rule add --expire-days 8 --prefix actant-images/ local/my-bucket    # MinIO
+# S3; for R2 add --endpoint-url https://<account>.r2.cloudflarestorage.com
+aws s3api put-bucket-lifecycle-configuration --bucket my-bucket --lifecycle-configuration \
+  '{"Rules": [{"ID": "actant-images", "Status": "Enabled",
+    "Filter": {"Prefix": "actant-images/"}, "Expiration": {"Days": 8}}]}'
+```
+
+Local setup: run the local backend against a MinIO behind a tunnel, and give the tunnel's
+public URL as `public_endpoint_url`. Uploads go straight to MinIO; the tunnel forwards the
+public `Host` header, which the URL signs.
+
+```python
+# cloudflared tunnel --url http://127.0.0.1:9000   (or: ngrok http 9000)
+LocalSandboxProvider(
+    Path("/srv/agent-workspaces"),
+    images=ImageBucket(
+        "my-bucket",
+        public_endpoint_url="https://<name>.trycloudflare.com",
+        endpoint_url="http://127.0.0.1:9000",
+    ),
+)
+```
+
+The host process reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`
+(`us-east-1` for MinIO) from its environment and needs s5cmd on `PATH`.
+
+Code that calls a runner itself turns an image into a content block with
+`actant.tools.image_block(image)` (a URL source when present, else base64). A stored
+message keeps its URLs; on replay the LLM adapters replace an image whose URL has
+expired (or will within two minutes) with a text note, since a provider rejects the
+whole request when a fetch fails.
 
 `SandboxSpec.seed` (a bucket key prefix ending in `/`) starts a new thread from a
 template. When the thread's prefix is empty, the sandbox pulls the seed while

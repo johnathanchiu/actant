@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlsplit
 
 from google import genai  # pyright: ignore[reportAttributeAccessIssue]
 from google.genai import types
@@ -176,6 +178,12 @@ class GeminiProvider:
                                 data=base64.b64decode(cast(str, source["data"])),
                             )
                         )
+                    )
+                elif isinstance(source, Mapping) and source.get("type") == "url":
+                    url = str(source["url"])
+                    mime_type = mimetypes.guess_type(urlsplit(url).path)[0] or "image/png"
+                    parts.append(
+                        types.Part(file_data=types.FileData(file_uri=url, mime_type=mime_type))
                     )
         return parts
 

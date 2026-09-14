@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import json
 from types import SimpleNamespace
 
@@ -288,6 +290,23 @@ def test_gemini_replays_tool_call_thought_signature() -> None:
     assert content.parts[0].thought_signature == b"sig"
 
 
+def test_gemini_sends_url_image_sources_as_file_data() -> None:
+    provider = GeminiProvider(
+        model_id="gemini-example", api_key="test", check_thinking_support=False
+    )
+    [part] = provider.content_blocks_to_parts(
+        [
+            {
+                "type": "image",
+                "source": {"type": "url", "url": "https://b.example/k/a.jpg?X-Amz-Signature=s"},
+            }
+        ]
+    )
+    assert part.file_data is not None
+    assert part.file_data.file_uri == "https://b.example/k/a.jpg?X-Amz-Signature=s"
+    assert part.file_data.mime_type == "image/jpeg"
+
+
 def test_astra_request_preserves_requested_reasoning_and_encrypted_state() -> None:
     provider = OpenAIProvider(model_id="gpt-6-astra", api_key="test", thinking_level="low")
     params = provider._request_params("System", [Message(role="user", content="hello")], [])
@@ -348,3 +367,23 @@ async def test_openai_usage_callback_retains_cache_details(
     assert message.input_tokens == 5040
     assert received == [("resp-test", "gpt-6-astra", usage, "completed")]
     await provider.client.close()
+
+
+def test_replayed_url_images_drop_expires_at_and_expired_ones_become_a_note() -> None:
+    from actant.llm.providers._shared import EXPIRED_IMAGE, sanitize_tool_messages
+
+    live = {
+        "type": "image",
+        "source": {"type": "url", "url": "https://l", "expires_at": time.time() + 3600},
+    }
+    dead = {
+        "type": "image",
+        "source": {"type": "url", "url": "https://d", "expires_at": time.time() + 30},
+    }
+    stored = Message(role="tool", tool_call_id="t", content=[live, dead])
+    [sent] = sanitize_tool_messages([stored])
+    assert sent.content == [
+        {"type": "image", "source": {"type": "url", "url": "https://l"}},
+        {"type": "text", "text": EXPIRED_IMAGE},
+    ]
+    assert "expires_at" in live["source"]  # pyright: ignore[reportOperatorIssue] -- the stored message is untouched

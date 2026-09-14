@@ -40,6 +40,11 @@ calls and every ``interval_s`` while calls have completed since the last success
 one; never two at once. Each is killed (its process group) after ``timeout_s``. A
 host that pushes adds a :class:`~actant.sandbox.protocol.StorageStatus` to every
 call response (``CallResponse.storage``).
+
+Image uploads (``HostConfig.images``) never fail a call either. Each returned image
+is uploaded under a key named by its content hash and presigned, so the response
+carries a URL instead of the bytes; an image whose upload or presign fails goes
+inline, and ``StorageStatus.image_error`` says why.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ import asyncio
 import base64
 import contextlib
 import functools
+import hashlib
 import hmac
 import importlib
 import inspect
@@ -68,16 +74,19 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
-from actant.sandbox.base import Endpoint
+from actant.sandbox.base import Endpoint, ImageBucket, SandboxSpec
 from actant.sandbox.protocol import (
     CallRequest,
     CallResponse,
     Header,
     HostConfig,
     Image,
+    ImageUploadConfig,
+    InlineSource,
     PushConfig,
     Route,
     StorageStatus,
+    UrlSource,
 )
 
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
@@ -91,6 +100,8 @@ MAX_IDLE_PER_HOST = 32
 #: The instance lifecycle; never callable.
 LIFECYCLE = frozenset({"open", "close"})
 MAX_BODY = 256 * 1024 * 1024
+#: Images a host uploads at once for one response.
+UPLOAD_CONCURRENCY = 8
 _IMAGE_MAGIC = {
     b"\x89PNG": "image/png",
     b"\xff\xd8\xff": "image/jpeg",
@@ -206,9 +217,8 @@ def encode_output(output: object) -> CallResponse:
                     text += f"\n(dropped {name}: not an image file)"
                     continue
                 data = Path(name).read_bytes()
-            images.append(
-                Image(name=name, media_type=media_type, data_b64=base64.b64encode(data).decode())
-            )
+            source = InlineSource(data_b64=base64.b64encode(data).decode())
+            images.append(Image(name=name, media_type=media_type, source=source))
         return CallResponse(text=text, images=images)
     try:
         return CallResponse(text=json.dumps(output, default=str))
@@ -250,6 +260,122 @@ async def _maybe_await(value: object) -> object:
 async def open_instance(cls: type, init: Mapping[str, object]) -> object:
     opener = getattr(cls, "open", None)
     return await _maybe_await(opener(**init)) if opener is not None else cls(**init)
+
+
+async def run_bounded(
+    argv: list[str], timeout: float, *, stdin: bytes | None = None, capture: bool = False
+) -> tuple[str | None, bytes]:
+    """Run ``argv`` (its process group killed after ``timeout``); its short failure reason
+    (``None`` when it exited 0) and, with ``capture``, its stdout."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
+            # A push lists every file it uploads: not worth holding.
+            stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # a timeout kills s5cmd and anything it started
+        )
+    except OSError as error:
+        return f"could not start: {error}"[:500], b""
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout)
+    except (TimeoutError, asyncio.CancelledError) as stopped:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        await process.wait()
+        if isinstance(stopped, asyncio.CancelledError):
+            raise
+        return f"timed out after {timeout:g}s", b""
+    if process.returncode:
+        tail = stderr.decode(errors="replace").strip()[-500:]
+        return f"exited {process.returncode}: {tail}", stdout or b""
+    return None, stdout or b""
+
+
+def image_upload_config(
+    bucket: ImageBucket, spec: SandboxSpec, thread_id: str
+) -> ImageUploadConfig | None:
+    """The host's image uploads for ``thread_id``; ``None`` when the spec sends bytes."""
+    if spec.image_url_ttl_s is None:
+        return None
+    return ImageUploadConfig(
+        destination=bucket.destination(thread_id),
+        endpoint_url=bucket.endpoint_url,
+        public_endpoint_url=bucket.public_endpoint_url,
+        expires_s=spec.image_url_ttl_s,
+        timeout_s=spec.image_upload_timeout_s,
+    )
+
+
+def _s5cmd(endpoint_url: str | None, *args: str) -> list[str]:
+    return ["s5cmd", *(["--endpoint-url", endpoint_url] if endpoint_url else []), *args]
+
+
+async def upload_image(image: Image, config: ImageUploadConfig) -> tuple[Image, str | None]:
+    """``image`` with a presigned URL source, or unchanged with the reason it could not be."""
+    if not isinstance(image.source, InlineSource):
+        return image, None
+    data = base64.b64decode(image.source.data_b64)
+    extension = mimetypes.guess_extension(image.media_type) or ""
+    key = f"{config.destination}{hashlib.sha256(data).hexdigest()}{extension}"
+    # One budget for both commands: an unreachable bucket costs at most ``timeout_s``.
+    deadline = time.monotonic() + config.timeout_s
+    upload = _s5cmd(config.endpoint_url, "pipe", "--content-type", image.media_type, key)
+    error, _ = await run_bounded(upload, config.timeout_s, stdin=data)
+    if error is not None:
+        return image, f"{image.name}: upload {error}"
+    expires_at = time.time() + config.expires_s
+    presign = _s5cmd(
+        config.public_endpoint_url, "presign", "--expire", f"{config.expires_s}s", key
+    )
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return (
+            image,
+            f"{image.name}: presign skipped: upload used the {config.timeout_s:g}s budget",
+        )
+    error, stdout = await run_bounded(presign, remaining, capture=True)
+    url = stdout.decode(errors="replace").strip()
+    if error is None and not url.startswith(("https://", "http://")):
+        error = f"not a URL: {url[:200]!r}"
+    if error is not None:
+        return image, f"{image.name}: presign {error}"
+    return image.model_copy(update={"source": UrlSource(url=url, expires_at=expires_at)}), None
+
+
+async def upload_images(
+    response: CallResponse, config: ImageUploadConfig
+) -> tuple[CallResponse, str | None]:
+    """``response`` with each image uploaded and presigned where possible, and the reason
+    the first that could not be stayed inline. Never raises.
+
+    At most :data:`UPLOAD_CONCURRENCY` upload at once. After an upload fails, the images not yet
+    started stay inline without trying: a bucket that refused one would cost every other
+    image its own timeout."""
+    if not response.images:
+        return response, None
+    gate = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+    failed: list[str] = []
+    errors: list[str] = []
+
+    async def one(image: Image) -> Image:
+        async with gate:
+            if failed:
+                return image
+            try:
+                uploaded, error = await upload_image(image, config)
+            except Exception as exc:  # noqa: BLE001 -- an upload failure never fails the call
+                uploaded, error = image, f"{image.name}: {type(exc).__name__}: {exc}"[:500]
+            if error is not None:
+                errors.append(error)
+                # A presign that ran out of budget says nothing about the bucket.
+                if error.startswith(f"{image.name}: upload "):
+                    failed.append(error)
+            return uploaded
+
+    images = await asyncio.gather(*(one(image) for image in response.images))
+    return response.model_copy(update={"images": images}), errors[0] if errors else None
 
 
 _idle: dict[tuple[str, str], list[tuple[HTTPConnection, float]]] = {}
@@ -336,11 +462,13 @@ class Host:
         *,
         token: str | None = None,
         push: PushConfig | None = None,
+        images: ImageUploadConfig | None = None,
     ) -> None:
         self.services = dict(services)
         self.methods = {name: frozenset(service_methods(cls)) for name, cls in services.items()}
         self.token = token
         self.push = push
+        self.images = images
         # Futures, not instances: two parallel first calls share one ``open``.
         self.instances: dict[tuple[str, str], asyncio.Future[object]] = {}
         self._push_due = asyncio.Event()
@@ -383,20 +511,26 @@ class Host:
             payload = await call_method(instance, request.method, request.args)
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
             payload = failure(error)
+        image_error = None
+        if self.images:
+            payload, image_error = await upload_images(payload, self.images)
         if self.push:
             self._pending = True
             self._push_due.set()
-            payload = payload.model_copy(update={"storage": self.storage_status()})
+        if self.push or self.images:
+            status = self.storage_status(image_error=image_error)
+            payload = payload.model_copy(update={"storage": status})
         return HTTPStatus.OK, payload
 
-    def storage_status(self) -> StorageStatus:
-        """The push status added to call responses."""
+    def storage_status(self, *, image_error: str | None = None) -> StorageStatus:
+        """The push status added to call responses, with this response's image error."""
         return StorageStatus(
             last_attempt_at=self._last_attempt,
             last_success_at=self._last_success,
             last_error=self._last_error,
             consecutive_failures=self._failures,
             pending=self._pending,
+            image_error=image_error,
         )
 
     async def pusher(self) -> None:
@@ -429,28 +563,7 @@ class Host:
     @staticmethod
     async def _run_push(push: PushConfig) -> str | None:
         """The push's short failure reason, or ``None`` when it exited 0."""
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *push.argv,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,  # a timeout kills s5cmd and anything it started
-            )
-        except OSError as error:
-            return f"could not start: {error}"[:500]
-        try:
-            _, stderr = await asyncio.wait_for(process.communicate(), push.timeout_s)
-        except (TimeoutError, asyncio.CancelledError) as stopped:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            await process.wait()
-            if isinstance(stopped, asyncio.CancelledError):
-                raise
-            return f"timed out after {push.timeout_s:g}s"
-        if process.returncode:
-            tail = stderr.decode(errors="replace").strip()[-500:]
-            return f"exited {process.returncode}: {tail}"
-        return None
+        return (await run_bounded(push.argv, push.timeout_s))[0]
 
     def reject(
         self, verb: str, path: str, headers: Mapping[str, str]
@@ -603,6 +716,7 @@ def main(config: HostConfig, services: Mapping[str, type] | None = None) -> int:
     global _scrub
     _scrub = frozenset(config.scrub)
     services = load_services(config) if services is None else services
-    host = Host(services, token=os.environ.pop(TOKEN_ENV, None), push=config.push)
+    token = os.environ.pop(TOKEN_ENV, None)
+    host = Host(services, token=token, push=config.push, images=config.images)
     asyncio.run(serve(host, config.bind, config.port))
     return 0

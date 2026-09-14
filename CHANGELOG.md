@@ -6,6 +6,23 @@ affect users.
 
 ## Unreleased
 
+- Images a service returns can reach the model as presigned URLs instead of bytes
+  relayed through the worker. A host whose files reach a bucket (`disk_sync` on Modal,
+  or `LocalSandboxProvider(images=ImageBucket(...))`) uploads each image at once under
+  `actant-images/<thread>/` and presigns it for `SandboxSpec.image_url_ttl_s` (default 6 h;
+  `None` sends bytes). `public_endpoint_url` (required on `ImageBucket`, and on
+  `ModalSandboxProvider` for a `disk_sync` spec with services unless `image_url_ttl_s=None`)
+  names the host URLs are signed for, which the model provider must reach (a tunnel for
+  MinIO). `SandboxSpec.image_upload_timeout_s` (default 10 s) bounds upload plus presign
+  per image. A failed upload keeps the bytes and sets
+  `StorageStatus.image_error`. `actant.tools.image_block(image)` builds the content block.
+  Gemini accepts URL image sources. On replay the adapters replace an expired URL image
+  with a text note.
+- **Breaking:** `Image.data_b64` is now `Image.source`, an `InlineSource(data_b64)` or
+  `UrlSource(url, expires_at)` (`ImageSourceKind`). `HostConfig.images`
+  (`ImageUploadConfig`). `CallResponse.storage` is also present from a host that uploads
+  images.
+
 ## 0.12.0
 
 - `SandboxSpec.seed` (`disk_sync`): a key prefix that starts a new thread. When the

@@ -9,9 +9,11 @@ message fails validation at the boundary instead of deep inside a handler.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
+
+from actant.sandbox.base import MAX_PRESIGN_S
 
 
 class Route(StrEnum):
@@ -40,10 +42,33 @@ class CallRequest(_Message):
     args: dict[str, Any] = Field(default_factory=dict)
 
 
+class ImageSourceKind(StrEnum):
+    #: The bytes, base64-encoded in the response.
+    INLINE = "inline"
+    #: A presigned URL the model provider fetches from the bucket.
+    URL = "url"
+
+
+class InlineSource(_Message):
+    kind: Literal[ImageSourceKind.INLINE] = ImageSourceKind.INLINE
+    data_b64: str
+
+
+class UrlSource(_Message):
+    kind: Literal[ImageSourceKind.URL] = ImageSourceKind.URL
+    url: str
+    #: Unix time the URL stops working.
+    expires_at: float
+
+
 class Image(_Message):
+    """One image a service method returned. ``name`` is its sandbox-relative path, or
+    ``image-<n>`` for bytes. A host with :class:`ImageUploadConfig` sends a
+    :class:`UrlSource`; without one, or when an upload fails, the bytes go inline."""
+
     name: str
     media_type: str
-    data_b64: str
+    source: Annotated[InlineSource | UrlSource, Field(discriminator="kind")]
 
 
 class StorageStatus(_Message):
@@ -61,13 +86,16 @@ class StorageStatus(_Message):
     consecutive_failures: int = 0
     #: Calls completed that no successful push has covered.
     pending: bool = False
+    #: Why the first image in this response that went inline instead of as a URL did;
+    #: ``None`` when every image uploaded (or there were none).
+    image_error: str | None = None
 
 
 class CallResponse(_Message):
     text: str = ""
     images: list[Image] = Field(default_factory=list)
     error: str | None = None
-    #: Only from a host that pushes storage; absent on the wire otherwise.
+    #: Only from a host that pushes storage or uploads images; absent on the wire otherwise.
     storage: StorageStatus | None = None
 
     def to_json(self) -> bytes:
@@ -84,6 +112,28 @@ class PushConfig(_Message):
     timeout_s: PositiveFloat = 300.0
 
 
+class ImageUploadConfig(_Message):
+    """Upload each returned image (content-addressed, under ``destination``) with s5cmd
+    against ``endpoint_url``, then presign it against ``public_endpoint_url``.
+
+    The two endpoints differ when the bucket is reached one way from the sandbox and
+    another from the model provider (a local MinIO behind a public tunnel). A presigned
+    URL signs its host, so the public endpoint must forward requests with that host.
+    Bucket keys come from the host's environment (``AWS_ACCESS_KEY_ID`` and friends).
+    """
+
+    #: ``s3://bucket/prefix/``.
+    destination: str = Field(pattern=r"^s3://[^/]+/(.*/)?$")
+    #: Where uploads go; ``None`` is AWS S3.
+    endpoint_url: str | None = None
+    #: The host presigned URLs name. A model provider fetches them, so it must reach it.
+    public_endpoint_url: str = Field(pattern=r"^https?://[^/\s]+$|^https?://[^/\s]+/")
+    expires_s: int = Field(gt=0, le=MAX_PRESIGN_S)
+    #: Upload plus presign, per image; past it the commands are killed and the image
+    #: goes inline.
+    timeout_s: PositiveFloat = Field(default=10.0, allow_inf_nan=False)
+
+
 class HostConfig(_Message):
     #: Service name to ``"pkg.mod:Class"``.
     services: dict[str, str] = Field(min_length=1)
@@ -93,6 +143,7 @@ class HostConfig(_Message):
     #: Names :func:`actant.sandbox.host.script_env` removes.
     scrub: list[str] = Field(default_factory=list)
     push: PushConfig | None = None
+    images: ImageUploadConfig | None = None
 
 
 class StampConfig(_Message):

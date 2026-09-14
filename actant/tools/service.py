@@ -4,7 +4,8 @@ Each public method becomes one tool: the schema comes from its signature without
 ``self``, the description from its docstring. :func:`tools` runs the methods
 through any :class:`~actant.sandbox.service.Runner`; every runner encodes results
 the same way, so switching between them changes where the code runs and nothing
-the model sees. Images become the base64 image content blocks the LLM adapters accept.
+the model sees. Images become the image content blocks the LLM adapters accept
+(:func:`image_block`): a URL where the host presigned one, else base64 bytes.
 """
 
 from __future__ import annotations
@@ -15,9 +16,24 @@ from pydantic import ValidationError
 
 from actant.core import JSONObject
 import actant.sandbox.host as host
-from actant.sandbox.protocol import CallResponse
+from actant.sandbox.protocol import CallResponse, Image, InlineSource
 from actant.sandbox.service import LocalRunner, Runner
 from actant.tools.base import BaseToolInvocation, CallContext, MetadataKey, ToolResult, ToolSchema
+
+
+def image_block(image: Image) -> dict[str, object]:
+    """An image as the content block the LLM adapters take: a ``url`` source when the host
+    presigned one (with its ``expires_at``, which the adapters strip, and use to replace
+    an expired image with a note on replay), else ``base64`` bytes."""
+    if isinstance(image.source, InlineSource):
+        source: dict[str, object] = {
+            "type": "base64",
+            "media_type": image.media_type,
+            "data": image.source.data_b64,
+        }
+    else:
+        source = {"type": "url", "url": image.source.url, "expires_at": image.source.expires_at}
+    return {"type": "image", "source": source}
 
 
 def to_tool_result(response: CallResponse) -> ToolResult:
@@ -43,16 +59,7 @@ def _result(response: CallResponse) -> ToolResult:
     blocks: list[dict[str, object]] = [{"type": "text", "text": text}] if text else []
     for image in response.images:
         blocks.append({"type": "text", "text": f"Image {image.name}:"})
-        blocks.append(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": image.media_type,
-                    "data": image.data_b64,
-                },
-            }
-        )
+        blocks.append(image_block(image))
     return ToolResult(output=text, content_blocks=blocks)
 
 

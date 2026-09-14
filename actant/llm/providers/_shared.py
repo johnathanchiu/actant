@@ -8,6 +8,7 @@ Single-provider helpers live in their owning provider module:
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 
@@ -15,6 +16,9 @@ from actant.llm.messages import Message, ToolCall
 
 ToolSchema = dict[str, object]
 ContentBlock = dict[str, object]
+#: A URL image expiring within this long is replaced, so the provider's fetch never races it.
+EXPIRY_MARGIN_S = 120.0
+EXPIRED_IMAGE = "[image expired: its URL is no longer valid]"
 
 
 def env_api_key(name: str, explicit: str | None = None) -> str:
@@ -79,14 +83,40 @@ def split_tool_content(
     return "\n".join(text_parts) if text_parts else "OK", image_parts
 
 
+def live_image_urls(content: list[ContentBlock], now: float) -> list[ContentBlock]:
+    """``content`` with each URL image source's ``expires_at`` removed (no provider accepts
+    it), and an image expiring before ``now + EXPIRY_MARGIN_S`` replaced by a text note: a
+    provider rejects the whole request when it cannot fetch one."""
+    live: list[ContentBlock] = []
+    for block in content:
+        source = block.get("source") if isinstance(block, dict) else None
+        if not isinstance(source, Mapping) or block.get("type") != "image":
+            live.append(block)
+            continue
+        expires_at = source.get("expires_at")
+        if source.get("type") != "url" or expires_at is None:
+            live.append(block)
+        elif isinstance(expires_at, int | float) and expires_at > now + EXPIRY_MARGIN_S:
+            kept = {key: value for key, value in source.items() if key != "expires_at"}
+            live.append({**block, "source": kept})
+        else:
+            live.append({"type": "text", "text": EXPIRED_IMAGE})
+    return live
+
+
 def sanitize_tool_messages(
     messages: Sequence[Message | dict[str, object]],
 ) -> list[Message]:
+    """Messages every adapter can send: tool calls and results paired by id, and URL
+    images that would expire before the request lands replaced (:func:`live_image_urls`)."""
     sanitized: list[Message] = []
     pending_ids: list[str] = []
+    now = time.time()
 
     for raw_message in messages:
         message = Message.from_raw(raw_message)
+        if isinstance(message.content, list):
+            message.content = live_image_urls(message.content, now)
         if message.role == "assistant" and message.tool_calls is not None:
             normalized_tool_calls: list[ToolCall] = []
             for raw_tool_call in message.tool_calls:
