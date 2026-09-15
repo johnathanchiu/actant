@@ -68,8 +68,7 @@ class ActivityContext:
                 "a tool needs a sandbox but the worker registered no sandbox providers",
                 non_retryable=True,
             )
-        thread = await self.stores.threads.get_or_create(agent.id, thread_id)
-        return await self.sandboxes.for_thread(agent.sandbox, thread)
+        return await self.sandboxes.for_thread(agent.sandbox, agent.id, thread_id)
 
     def _hooks(self, thread: AgentThread) -> AgentThreadHooks:
         if self.hooks_factory is None:
