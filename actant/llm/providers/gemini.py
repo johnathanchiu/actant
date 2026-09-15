@@ -94,6 +94,8 @@ ToolSchema = dict[str, object]
 class GeminiProvider:
     """LLMClient implementation for Gemini generate_content."""
 
+    supports_allowed_tools = False
+
     def __init__(
         self,
         model_id: str,

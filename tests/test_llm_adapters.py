@@ -362,7 +362,7 @@ async def test_openai_usage_callback_retains_cache_details(
 
     provider = OpenAIProvider(model_id="gpt-6-astra", api_key="test")
     monkeypatch.setattr(provider.client.responses, "stream", lambda **kw: Stream())
-    message, total = await provider._stream({}, Listener())
+    message, total = await provider._stream_attempt({}, Listener())
     assert total == 6130
     assert message.input_tokens == 5040
     assert received == [("resp-test", "gpt-6-astra", usage, "completed")]

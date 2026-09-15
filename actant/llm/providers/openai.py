@@ -9,7 +9,9 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol, cast
 
+import httpx
 import openai
+from openai.types.responses import Response
 from openai.types.responses.response_create_params import (
     ResponseCreateParamsBase,
 )
@@ -76,7 +78,17 @@ def content_to_openai_user_parts(
 
 
 class OpenAIProvider:
-    """LLMClient implementation for OpenAI's Responses API."""
+    """LLMClient implementation for OpenAI's Responses API.
+
+    ``idle_s`` bounds opening a stream and silences while a message or tool call is
+    streaming; ``reasoning_idle_s`` bounds silences outside an open output item, where
+    a reasoning model legitimately emits nothing; ``turn_s`` bounds the whole call,
+    including retries. Only transient failures retry: timeouts, connection errors,
+    408/409/429/5xx, server or rate-limit error codes, and a stream that closes
+    before a terminal event.
+    """
+
+    supports_allowed_tools = True
 
     def __init__(
         self,
@@ -87,16 +99,23 @@ class OpenAIProvider:
         client: openai.AsyncOpenAI | None = None,
         rate_limiter: RateLimiter | None = None,
         idle_s: float = 60.0,
+        reasoning_idle_s: float = 180.0,
         turn_s: float = 240.0,
         attempts: int = 3,
     ) -> None:
         self.model_id = model_id
         self.thinking_level = thinking_level
-        self.client = client or openai.AsyncOpenAI(api_key=env_api_key("OPENAI_API_KEY", api_key))
+        # This provider owns retries; SDK retries would stack under each attempt.
+        self.client = (
+            client.with_options(max_retries=0)
+            if client is not None
+            else openai.AsyncOpenAI(api_key=env_api_key("OPENAI_API_KEY", api_key), max_retries=0)
+        )
         self._rate_limiter = rate_limiter
-        if idle_s <= 0 or turn_s <= 0 or attempts < 1:
-            raise ValueError("idle_s, turn_s and attempts must be positive")
-        self.idle_s, self.turn_s, self.attempts = idle_s, turn_s, attempts
+        if idle_s <= 0 or reasoning_idle_s <= 0 or turn_s <= 0 or attempts < 1:
+            raise ValueError("idle_s, reasoning_idle_s, turn_s and attempts must be positive")
+        self.idle_s, self.reasoning_idle_s = idle_s, reasoning_idle_s
+        self.turn_s, self.attempts = turn_s, attempts
 
     def _is_reasoning_model(self) -> bool:
         return any(self.model_id.startswith(prefix) for prefix in REASONING_MODELS)
@@ -247,40 +266,18 @@ class OpenAIProvider:
                 "mode": "required",
                 "tools": [{"type": "function", "name": name} for name in allowed_tools],
             }
-        if self._rate_limiter is None:
-            message, _ = await self._stream(params, listener)
-            return message
         estimated = self._estimate_tokens(messages, params)
-        async with self._rate_limiter.reserve(estimated) as reservation:
-            message, actual = await self._stream(params, listener)
-            reservation.record_actual(actual)
-            return message
-
-    async def _stream(
-        self,
-        params: RequestParams,
-        listener: "StreamListener | None",
-    ) -> tuple[Message, int]:
         for attempt in range(self.attempts):
+            if attempt and listener is not None:
+                await listener.on_stream_reset()
             try:
-                return await self._stream_attempt(params, listener)
-            except (
-                TimeoutError,
-                openai.APIConnectionError,
-                openai.APIError,
-                RuntimeError,
-            ) as error:
-                if isinstance(error, openai.APIStatusError):
-                    retryable = error.status_code in (408, 409, 429) or error.status_code >= 500
-                else:
-                    retryable = not isinstance(error, RuntimeError) or isinstance(
-                        error, StreamInterrupted
-                    )
-                if not retryable or attempt + 1 == self.attempts:
+                return await self._reserved_attempt(params, listener, estimated)
+            except Exception as error:
+                if not _is_transient(error) or attempt + 1 == self.attempts:
                     raise
                 logger.warning(
                     "model attempt failed: %s; retry %d/%d",
-                    type(error).__name__,
+                    error,
                     attempt + 1,
                     self.attempts,
                 )
@@ -291,6 +288,27 @@ class OpenAIProvider:
                     max(0, retry_after or 0) + random.uniform(0, min(30, 2**attempt))
                 )
         raise AssertionError("unreachable")
+
+    async def _reserved_attempt(
+        self,
+        params: RequestParams,
+        listener: "StreamListener | None",
+        estimated: int,
+    ) -> Message:
+        # Every attempt is a request the server counts, so each one takes its
+        # own reservation. A failed attempt keeps its estimate unless the
+        # server reported what it actually consumed.
+        if self._rate_limiter is None:
+            return (await self._stream_attempt(params, listener))[0]
+        async with self._rate_limiter.reserve(estimated) as reservation:
+            try:
+                message, actual = await self._stream_attempt(params, listener)
+            except StreamInterrupted as error:
+                if error.tokens is not None:
+                    reservation.record_actual(error.tokens)
+                raise
+            reservation.record_actual(actual)
+            return message
 
     async def _stream_attempt(
         self,
@@ -303,15 +321,34 @@ class OpenAIProvider:
         try:
             events = stream.__aiter__()
             whitespace = 0
+            emitting = False
             while True:
+                # Idle bounds follow the Responses streaming contract: while a
+                # message or function_call item is open the model is emitting
+                # tokens, so a silence longer than ``idle_s`` is a dead stream.
+                # Outside an open output item the server is queued or reasoning,
+                # which emits no events until a summary or item arrives, so the
+                # longer ``reasoning_idle_s`` applies.
+                gap = self.idle_s if emitting else self.reasoning_idle_s
                 try:
-                    event = await asyncio.wait_for(anext(events), self.idle_s)
+                    event = await asyncio.wait_for(anext(events), gap)
                 except StopAsyncIteration:
                     break
                 if listener is not None and listener.cancel_requested():
                     raise StreamCancelled
-                if event.type == "response.function_call_arguments.delta":
-                    delta = getattr(event, "delta", "") or ""
+                if event.type == "response.output_item.added":
+                    emitting = event.item.type in ("message", "function_call")
+                elif event.type == "response.output_item.done":
+                    emitting = False
+                elif event.type == "error":
+                    raise StreamInterrupted(
+                        f"stream error {event.code}: {event.message}",
+                        retryable=event.code in _TRANSIENT_CODES,
+                    )
+                elif event.type == "response.failed" or event.type == "response.incomplete":
+                    raise _unfinished(event.response)
+                elif event.type == "response.function_call_arguments.delta":
+                    delta = event.delta or ""
                     whitespace = (
                         whitespace + len(delta)
                         if not delta.strip()
@@ -319,7 +356,8 @@ class OpenAIProvider:
                     )
                     if whitespace >= 300:
                         raise StreamInterrupted(
-                            "tool arguments contain 300 consecutive whitespace characters"
+                            "tool arguments contain 300 consecutive whitespace characters",
+                            retryable=True,
                         )
                 if listener is None:
                     continue
@@ -327,9 +365,11 @@ class OpenAIProvider:
             try:
                 response = await asyncio.wait_for(stream.get_final_response(), self.idle_s)
             except RuntimeError as error:
-                raise StreamInterrupted("stream closed without response.completed") from error
+                raise StreamInterrupted(
+                    "stream closed without response.completed", retryable=True
+                ) from error
             if response.status != "completed":
-                raise StreamInterrupted(f"response ended with status {response.status}")
+                raise _unfinished(response)
         finally:
             await manager.__aexit__(None, None, None)
 
@@ -390,7 +430,53 @@ class OpenAIProvider:
 
 
 class StreamInterrupted(RuntimeError):
-    """A response cannot be committed because its stream did not complete."""
+    """A response cannot be committed because its stream did not complete.
+
+    ``retryable`` says whether another attempt can succeed; ``tokens`` is what the
+    attempt consumed when the server reported usage.
+    """
+
+    def __init__(self, message: str, *, retryable: bool, tokens: int | None = None) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.tokens = tokens
+
+
+# Response and stream error codes worth another attempt; the rest describe the request.
+_TRANSIENT_CODES = frozenset({"server_error", "rate_limit_exceeded"})
+
+
+def _unfinished(response: Response) -> StreamInterrupted:
+    """A failed, incomplete, or cancelled response. Only a failure with a transient
+    error code retries: ``incomplete`` (max_output_tokens, content_filter) and
+    ``cancelled`` would end the same way again."""
+    error = response.error
+    reason = response.incomplete_details.reason if response.incomplete_details else None
+    detail = error.code if error is not None else reason
+    usage = response.usage
+    return StreamInterrupted(
+        f"response ended with status {response.status}" + (f" ({detail})" if detail else ""),
+        retryable=response.status == "failed"
+        and error is not None
+        and error.code in _TRANSIENT_CODES,
+        tokens=usage.total_tokens if usage is not None else None,
+    )
+
+
+def _is_transient(error: Exception) -> bool:
+    if isinstance(error, StreamInterrupted):
+        return error.retryable
+    if isinstance(error, openai.APIStatusError):
+        return error.status_code in (408, 409, 429) or error.status_code >= 500
+    if isinstance(error, (TimeoutError, openai.APIConnectionError, httpx.TransportError)):
+        return True
+    if isinstance(error, openai.APIError):
+        # The SDK raises a bare APIError for an SSE payload carrying an ``error`` object.
+        body = error.body
+        return isinstance(body, Mapping) and (
+            body.get("code") in _TRANSIENT_CODES or body.get("type") in _TRANSIENT_CODES
+        )
+    return False
 
 
 def _extract_reasoning_item(item: object) -> ToolSchema | None:

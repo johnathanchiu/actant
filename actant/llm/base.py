@@ -13,6 +13,9 @@ if TYPE_CHECKING:
 
 class LLMClient(Protocol):
     model_id: str
+    #: Whether ``complete`` can restrict a turn to ``allowed_tools`` natively while
+    #: sending the full tool list. ``AgentDefinition.final_tools`` requires it.
+    supports_allowed_tools: bool
 
     async def complete(
         self,

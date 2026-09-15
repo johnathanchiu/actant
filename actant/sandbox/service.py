@@ -43,6 +43,9 @@ from actant.sandbox.base import Endpoint, Sandbox
 from actant.sandbox.protocol import CallRequest, CallResponse, Route
 
 DEFAULT_CALL_TIMEOUT_S = 600.0
+#: Concurrent connections one runner holds to service hosts. A call past the cap waits
+#: for a free connection inside its own deadline.
+MAX_HOST_CONNECTIONS = 64
 
 
 class Runner(Protocol):
@@ -104,7 +107,7 @@ class RemoteRunner:
         self.init = dict(init or {})
         self.timeout = timeout
         self._client = httpx.AsyncClient(
-            trust_env=False, limits=httpx.Limits(max_connections=None)
+            trust_env=False, limits=httpx.Limits(max_connections=MAX_HOST_CONNECTIONS)
         )
 
     async def close(self) -> None:
@@ -150,7 +153,7 @@ class SandboxRunner:
         self.init = dict(init or {})
         self.timeout = timeout
         self._client = httpx.AsyncClient(
-            trust_env=False, limits=httpx.Limits(max_connections=None)
+            trust_env=False, limits=httpx.Limits(max_connections=MAX_HOST_CONNECTIONS)
         )
 
     async def close(self) -> None:

@@ -48,6 +48,10 @@ ToolSchema = dict[str, object]
 class AnthropicProvider:
     """LLMClient implementation for Anthropic Messages API."""
 
+    # tool_choice cannot name a subset of tools, and forcing any tool is
+    # incompatible with extended thinking.
+    supports_allowed_tools = False
+
     def __init__(
         self,
         model_id: str,

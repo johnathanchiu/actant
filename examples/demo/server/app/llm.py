@@ -17,6 +17,7 @@ class DemoLLM:
     """Deterministic local model for exercising the complete demo without API keys."""
 
     model_id = "demo/deterministic"
+    supports_allowed_tools = False
 
     async def complete(
         self,

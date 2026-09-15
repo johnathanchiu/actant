@@ -36,6 +36,11 @@ class StreamListener:
         """Report provider usage once available; consumers deduplicate by response_id."""
         pass
 
+    async def on_stream_reset(self) -> None:
+        """Discard every delta since the call began: a failed attempt is being retried
+        and its partial text, thinking, and tool calls will not be committed."""
+        pass
+
     def cancel_requested(self) -> bool:
         return False
 
@@ -92,3 +97,6 @@ class PublishingStreamListener(StreamListener):
             "model_usage",
             {"response_id": response_id, "model": model, "usage": usage, "status": status},
         )
+
+    async def on_stream_reset(self) -> None:
+        await self._emit("stream_reset", {})
