@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import pytest
@@ -551,6 +551,27 @@ async def test_mixed_allow_and_wait_group_continues_only_after_resolution() -> N
 
 
 # === exhaustion ===
+
+
+async def test_final_tools_are_applied_on_the_last_run_turn() -> None:
+    fake = FakeLLM([FakeResponse(tool_calls=[_tool_call("echo")]) for _ in range(2)])
+    agent = replace(_agent(fake, tools=[_EchoTool()]), final_tools=("echo",))
+
+    async def body(s: _RunSetup, client) -> None:
+        handle = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=2),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="work")],
+        )
+        await handle.result()
+        assert fake.allowed_tools == [(), ("echo",)]
+        assert "Last turn" in str(fake.calls[-1][1][-1].content)
+        assert fake.calls[0][2] == fake.calls[1][2]
+
+    await _run(body, agent=agent)
 
 
 @pytest.mark.asyncio

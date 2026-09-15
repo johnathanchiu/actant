@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from actant.llm.messages import Message
-from actant.llm.providers.openai import OpenAIProvider
+from actant.llm.providers.openai import OpenAIProvider, StreamInterrupted
 
 
 async def test_idle_attempt_retries_without_committing_partial_answer(monkeypatch):
@@ -39,6 +39,48 @@ async def test_idle_attempt_retries_without_committing_partial_answer(monkeypatc
     answer = await provider.complete("system", [], [])
     assert answer.role == "assistant"
     assert closed == [True, False]
+    await provider.client.close()
+
+
+async def test_turn_budget_includes_retry_backoff(monkeypatch):
+    provider = OpenAIProvider("gpt-test", api_key="test", turn_s=0.02, attempts=3)
+    attempt = AsyncMock(side_effect=StreamInterrupted("incomplete"))
+    monkeypatch.setattr(provider, "_stream_attempt", attempt)
+    monkeypatch.setattr("actant.llm.providers.openai.random.uniform", lambda *args: 10)
+    with pytest.raises(TimeoutError):
+        await provider.complete("system", [], [])
+    assert attempt.await_count == 1
+    await provider.client.close()
+
+
+@pytest.mark.parametrize("status", ["incomplete", "failed", "cancelled"])
+async def test_noncompleted_response_is_never_returned(monkeypatch, status):
+    provider = OpenAIProvider("gpt-test", api_key="test", attempts=1)
+    stream = AsyncMock()
+    stream.__aiter__.return_value = []
+    stream.get_final_response.return_value = SimpleNamespace(status=status)
+    manager = AsyncMock()
+    manager.__aenter__.return_value = stream
+    monkeypatch.setattr(provider.client.responses, "stream", lambda **kw: manager)
+    with pytest.raises(StreamInterrupted, match=status):
+        await provider.complete("system", [], [])
+    manager.__aexit__.assert_awaited_once()
+    await provider.client.close()
+
+
+async def test_whitespace_loop_closes_stream(monkeypatch):
+    provider = OpenAIProvider("gpt-test", api_key="test", attempts=1)
+    stream = AsyncMock()
+    stream.__aiter__.return_value = [
+        SimpleNamespace(type="response.function_call_arguments.delta", delta=" " * 150),
+        SimpleNamespace(type="response.function_call_arguments.delta", delta=" " * 150),
+    ]
+    manager = AsyncMock()
+    manager.__aenter__.return_value = stream
+    monkeypatch.setattr(provider.client.responses, "stream", lambda **kw: manager)
+    with pytest.raises(StreamInterrupted, match="whitespace"):
+        await provider.complete("system", [], [])
+    manager.__aexit__.assert_awaited_once()
     await provider.client.close()
 
 

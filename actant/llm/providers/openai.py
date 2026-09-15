@@ -227,6 +227,19 @@ class OpenAIProvider:
         *,
         allowed_tools: tuple[str, ...] = (),
     ) -> Message:
+        # One budget includes every retry, backoff, and rate-limiter wait.
+        # An outer activity deadline must not silently multiply by attempts.
+        async with asyncio.timeout(self.turn_s):
+            return await self._complete(system, messages, tools, listener, allowed_tools)
+
+    async def _complete(
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: list[dict],
+        listener: "StreamListener | None",
+        allowed_tools: tuple[str, ...],
+    ) -> Message:
         params = self._request_params(system, messages, tools)
         if allowed_tools:
             params["tool_choice"] = {
@@ -270,8 +283,7 @@ class OpenAIProvider:
     ) -> tuple[Message, int]:
         for attempt in range(self.attempts):
             try:
-                async with asyncio.timeout(self.turn_s):
-                    return await self._stream_attempt(params, listener)
+                return await self._stream_attempt(params, listener)
             except (
                 TimeoutError,
                 openai.APIConnectionError,

@@ -4,9 +4,10 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "actant"
-version = "0.6.0"
+version = "0.14.0"
 source = { editable = "../../../" }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "sqlalchemy" },
     { name = "temporalio" },
@@ -30,6 +31,8 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'providers'", specifier = ">=0.40" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "google-genai", marker = "extra == 'providers'", specifier = ">=1.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.5.5,<2" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.60" },
     { name = "openai", marker = "extra == 'providers'", specifier = ">=1.60" },
     { name = "openai", marker = "extra == 'qwen'", specifier = ">=1.60" },
@@ -43,7 +46,10 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.8" },
 ]
-provides-extras = ["anthropic", "gemini", "openai", "qwen", "providers", "dev"]
+provides-extras = ["anthropic", "gemini", "openai", "qwen", "modal", "providers", "dev"]
+
+[package.metadata.requires-dev]
+docs = [{ name = "mkdocs-material", specifier = ">=9.6" }]
 
 [[package]]
 name = "actant-demo-server"

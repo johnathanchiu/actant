@@ -28,12 +28,15 @@ runner directly; :func:`actant.tools.tools` exposes a service to a model through
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from http import HTTPStatus
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import ValidationError
-import httpx
+
+if TYPE_CHECKING:
+    import httpx
 
 import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint, Sandbox
@@ -93,6 +96,8 @@ class RemoteRunner:
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT_S,
     ) -> None:
+        import httpx
+
         self.endpoint = endpoint
         self.service = service
         self.key = key
@@ -104,6 +109,12 @@ class RemoteRunner:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def __aenter__(self) -> RemoteRunner:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
     async def call(
         self,
@@ -133,9 +144,23 @@ class SandboxRunner:
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT_S,
     ) -> None:
+        import httpx
+
         self.service = service
         self.init = dict(init or {})
         self.timeout = timeout
+        self._client = httpx.AsyncClient(
+            trust_env=False, limits=httpx.Limits(max_connections=None)
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def __aenter__(self) -> SandboxRunner:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
     async def call(
         self,
@@ -151,11 +176,11 @@ class SandboxRunner:
         if key is None:
             return CallResponse(error="SandboxRunner.call needs a key")
         body = _body(self.service, key, self.init, method, args)
-        status, response = await _send(endpoint, body, self.timeout)
+        status, response = await _send(endpoint, body, self.timeout, self._client)
         if status == HTTPStatus.UNAUTHORIZED:  # rejected before running: safe to retry
             endpoint = await sandbox.endpoint(refresh=True)
             assert endpoint is not None
-            _, response = await _send(endpoint, body, self.timeout)
+            _, response = await _send(endpoint, body, self.timeout, self._client)
         return response
 
 
@@ -186,16 +211,19 @@ def _body(
 async def _send(
     endpoint: Endpoint, body: bytes, timeout: float, client: httpx.AsyncClient | None = None
 ) -> tuple[int | None, CallResponse]:
+    import httpx
+
     if client is None:
         async with httpx.AsyncClient(trust_env=False) as owned:
             return await _send(endpoint, body, timeout, owned)
     try:
-        response = await client.post(
-            endpoint.url.rstrip("/") + Route.CALL,
-            content=body,
-            headers={"Content-Type": "application/json", **endpoint.headers},
-            timeout=timeout,
-        )
+        async with asyncio.timeout(timeout):
+            response = await client.post(
+                endpoint.url.rstrip("/") + Route.CALL,
+                content=body,
+                headers={"Content-Type": "application/json", **endpoint.headers},
+                timeout=timeout,
+            )
         status, data = response.status_code, response.content
     except (OSError, httpx.HTTPError) as error:
         return None, CallResponse(
