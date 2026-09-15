@@ -59,11 +59,11 @@ message and usage record; before a retry the listener receives `on_stream_reset(
 (published as `stream_reset`), and consumers drop the deltas they have shown.
 
 Set `AgentDefinition.final_tools=("edit", "finish")` to constrain the last turn
-of each run. The full tool schema is retained, with a native restriction (OpenAI
-`allowed_tools`, Gemini `allowed_function_names`) and a short final-turn note. The
+of each run. The full tool schema is retained, with a native OpenAI
+`allowed_tools` restriction and a short final-turn note. The
 names must be registered and allowed, and the client must declare
 `supports_allowed_tools = True`; otherwise the definition raises `ValueError`.
-Anthropic and Qwen cannot honour it while thinking.
+Only OpenAI supports it today.
 See [OpenAI tool choice](https://developers.openai.com/api/docs/guides/function-calling#tool-choice).
 
 ## Start Temporal locally

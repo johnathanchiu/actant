@@ -9,8 +9,7 @@ affect users.
 - **Breaking:** `LLMClient` implementations must declare `supports_allowed_tools: bool`.
   `AgentDefinition` validates `final_tools` when it is constructed: unregistered or
   disallowed names, or a client without support, raise `ValueError` instead of failing
-  on the last turn. Gemini now honours `allowed_tools` through
-  `allowed_function_names`; Anthropic and Qwen declare no support.
+  on the last turn. Only OpenAI declares support.
 - **Breaking:** `StreamListener.on_stream_reset()` is called before a retried attempt,
   and `PublishingStreamListener` publishes it as `stream_reset`. Live consumers must
   discard the deltas they have shown for the call.
