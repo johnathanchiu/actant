@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.16.0
 
 - **Breaking:** `LLMClient` implementations must declare `supports_allowed_tools: bool`.
   `AgentDefinition` validates `final_tools` when it is constructed: unregistered or
