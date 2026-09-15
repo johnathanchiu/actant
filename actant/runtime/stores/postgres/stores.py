@@ -71,8 +71,27 @@ class SQLAlchemyThreadStore:
                 model.parent_thread_id = thread.parent_thread_id
                 model.parent_turn_id = thread.parent_turn_id
                 model.parent_tool_call_id = thread.parent_tool_call_id
-                model.sandbox_id = thread.sandbox_id
                 model.updated_at = datetime.now(UTC)
+
+    async def claim_sandbox(
+        self, agent_id: str, thread_id: str, *, expected: str | None, sandbox_id: str | None
+    ) -> str | None:
+        where = (
+            ActantThreadModel.agent_id == agent_id,
+            ActantThreadModel.thread_id == thread_id,
+        )
+        async with self.session_factory() as session:
+            async with session.begin():
+                # The row lock makes a racing claim re-check ``expected`` after this commits.
+                claimed = await session.execute(
+                    update(ActantThreadModel)
+                    .where(*where, ActantThreadModel.sandbox_id.is_not_distinct_from(expected))
+                    .values(sandbox_id=sandbox_id, updated_at=datetime.now(UTC))
+                )
+                if cast(CursorResult[object], claimed).rowcount == 1:
+                    return sandbox_id
+                row = await session.execute(select(ActantThreadModel.sandbox_id).where(*where))
+                return row.scalar_one()
 
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]:
         async with self.session_factory() as session:

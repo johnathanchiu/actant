@@ -4,6 +4,18 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `SandboxRegistry.for_thread(spec, agent_id, thread_id)` takes ids instead of an
+  `AgentThread` and re-reads the persisted sandbox id. Concurrent calls for one thread
+  share one attach or open, calls for different threads no longer wait on a
+  process-wide lock, and a handle verified within `VERIFIED_FOR_S` (5 s) is served
+  without asking the backend.
+- `ThreadStore.claim_sandbox(agent_id, thread_id, *, expected, sandbox_id)` is a
+  compare-and-set on the thread's sandbox id, so two workers opening a sandbox for one
+  thread keep one. `ThreadStore.update` no longer writes `sandbox_id`; custom stores
+  must implement `claim_sandbox` and leave the id alone in `update`.
+
 ## 0.14.0
 
 - `TemporalRuntimeWorker(turn_gate=...)`: a `TurnGate`, `async (TurnStart) -> str | None`,
