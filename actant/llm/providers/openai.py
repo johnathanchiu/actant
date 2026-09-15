@@ -251,30 +251,10 @@ class OpenAIProvider:
             message, _ = await self._stream(params, listener)
             return message
         estimated = self._estimate_tokens(messages, params)
-        try:
-            async with self._rate_limiter.reserve(estimated) as reservation:
-                message, actual = await self._stream(params, listener)
-                reservation.record_actual(actual)
-                return message
-        except openai.RateLimitError as exc:
-            # The bucket's estimate was off (most often: a reasoning
-            # model's hidden thinking tokens). Honor the server's
-            # retry-after exactly once before re-reserving and trying
-            # again. If we miss twice in a row the budget is
-            # mis-configured and we re-raise so Actant's job retry can
-            # take over (or fail loudly).
-            wait = _parse_retry_after(exc) or 5.0
-            logger.warning(
-                "actant.openai.rate_limit_miss model=%s wait_secs=%.2f error=%s",
-                self.model_id,
-                wait,
-                exc,
-            )
-            await asyncio.sleep(wait + 0.5)
-            async with self._rate_limiter.reserve(estimated) as reservation:
-                message, actual = await self._stream(params, listener)
-                reservation.record_actual(actual)
-                return message
+        async with self._rate_limiter.reserve(estimated) as reservation:
+            message, actual = await self._stream(params, listener)
+            reservation.record_actual(actual)
+            return message
 
     async def _stream(
         self,
@@ -304,7 +284,12 @@ class OpenAIProvider:
                     attempt + 1,
                     self.attempts,
                 )
-                await asyncio.sleep(random.uniform(0, min(30, 2**attempt)))
+                retry_after = (
+                    _parse_retry_after(error) if isinstance(error, openai.RateLimitError) else None
+                )
+                await asyncio.sleep(
+                    max(0, retry_after or 0) + random.uniform(0, min(30, 2**attempt))
+                )
         raise AssertionError("unreachable")
 
     async def _stream_attempt(

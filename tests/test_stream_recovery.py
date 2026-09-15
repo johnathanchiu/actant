@@ -3,9 +3,25 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import httpx
+import openai
 
 from actant.llm.messages import Message
 from actant.llm.providers.openai import OpenAIProvider, StreamInterrupted
+from actant.llm.rate_limit import RateLimitConfig, RateLimiter
+
+
+async def test_rate_limiter_does_not_multiply_retry_attempts(monkeypatch):
+    limiter = RateLimiter(RateLimitConfig(tokens_per_minute=100000, requests_per_minute=100))
+    provider = OpenAIProvider("gpt-test", api_key="test", attempts=2, rate_limiter=limiter)
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.test"))
+    attempt = AsyncMock(side_effect=openai.RateLimitError("limited", response=response, body=None))
+    monkeypatch.setattr(provider, "_stream_attempt", attempt)
+    monkeypatch.setattr("actant.llm.providers.openai.random.uniform", lambda *args: 0)
+    with pytest.raises(openai.RateLimitError):
+        await provider.complete("system", [], [])
+    assert attempt.await_count == 2
+    await provider.client.close()
 
 
 async def test_idle_attempt_retries_without_committing_partial_answer(monkeypatch):

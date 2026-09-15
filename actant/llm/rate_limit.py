@@ -6,7 +6,7 @@ after a 429.
 
 Estimates aren't always right (especially for reasoning models that
 spend tokens internally). On a miss the provider catches
-``RateLimitError`` once, sleeps the retry-after, and retries. The
+``RateLimitError``, sleeps the retry-after, and retries within its call budget. The
 limiter is provider-agnostic — wire it in from the application
 layer and pass a single shared instance per ``(provider, model)``
 pair to every caller for that model.
