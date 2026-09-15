@@ -28,12 +28,12 @@ runner directly; :func:`actant.tools.tools` exposes a service to a model through
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from http import HTTPStatus
 from typing import Protocol
 
 from pydantic import ValidationError
+import httpx
 
 import actant.sandbox.host as host
 from actant.sandbox.base import Endpoint, Sandbox
@@ -98,6 +98,12 @@ class RemoteRunner:
         self.key = key
         self.init = dict(init or {})
         self.timeout = timeout
+        self._client = httpx.AsyncClient(
+            trust_env=False, limits=httpx.Limits(max_connections=None)
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     async def call(
         self,
@@ -108,15 +114,8 @@ class RemoteRunner:
         sandbox: Sandbox | None = None,
     ) -> CallResponse:
         del key, sandbox
-        return await call_host(
-            self.endpoint,
-            self.service,
-            method,
-            args,
-            key=self.key,
-            init=self.init,
-            timeout=self.timeout,
-        )
+        body = _body(self.service, self.key, self.init, method, args)
+        return (await _send(self.endpoint, body, self.timeout, self._client))[1]
 
 
 class SandboxRunner:
@@ -185,11 +184,20 @@ def _body(
 
 
 async def _send(
-    endpoint: Endpoint, body: bytes, timeout: float
+    endpoint: Endpoint, body: bytes, timeout: float, client: httpx.AsyncClient | None = None
 ) -> tuple[int | None, CallResponse]:
+    if client is None:
+        async with httpx.AsyncClient(trust_env=False) as owned:
+            return await _send(endpoint, body, timeout, owned)
     try:
-        status, data = await asyncio.to_thread(host.post, endpoint, Route.CALL, body, timeout)
-    except OSError as error:
+        response = await client.post(
+            endpoint.url.rstrip("/") + Route.CALL,
+            content=body,
+            headers={"Content-Type": "application/json", **endpoint.headers},
+            timeout=timeout,
+        )
+        status, data = response.status_code, response.content
+    except (OSError, httpx.HTTPError) as error:
         return None, CallResponse(
             error=f"service host call to {endpoint.url} failed and may have run: {error}"
         )

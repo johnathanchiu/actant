@@ -122,7 +122,11 @@ class QwenProvider:
         messages: Sequence[Message],
         tools: list[dict],
         listener: "StreamListener | None" = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
     ) -> Message:
+        if allowed_tools:
+            raise NotImplementedError("allowed_tools is not implemented for Qwen")
         text = ""
         thought = ""
         tool_call_state: dict[int, dict[str, str]] = {}

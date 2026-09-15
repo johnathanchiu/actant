@@ -60,12 +60,34 @@ class AgentDefinition:
     #: it; a text-only turn gets one reminder, a second ends the run as
     #: exhausted. Right for task agents, which otherwise end by silence.
     completion: Literal["reply", "terminal"] = "reply"
+    final_tools: tuple[str, ...] = ()
 
     async def complete(
         self,
         messages: Sequence[Message],
         listener: "StreamListener | None" = None,
+        *,
+        final_turn: bool = False,
     ) -> Message:
+        if final_turn and self.final_tools:
+            if any(
+                name not in self.tools or (self.tool_allowlist and name not in self.tool_allowlist)
+                for name in self.final_tools
+            ):
+                raise ValueError("final_tools must be registered and allowed tools")
+            return await self.llm.complete(
+                self.persona,
+                [
+                    *messages,
+                    Message(
+                        role="user",
+                        content=f"Last turn: use {', '.join(self.final_tools)} to finish your remaining changes.",
+                    ),
+                ],
+                self.tools.schemas_for(self.tool_allowlist),
+                listener,
+                allowed_tools=self.final_tools,
+            )
         return await self.llm.complete(
             self.persona,
             list(messages),

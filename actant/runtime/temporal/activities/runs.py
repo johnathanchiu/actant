@@ -116,7 +116,11 @@ class RunActivities(ActivityContext):
 
         await hooks.on_turn_start(payload.turn_index, payload.turn_id)
         try:
-            assistant = await agent.complete(context.messages, self._listener(thread))
+            assistant = await agent.complete(
+                context.messages,
+                self._listener(thread),
+                final_turn=run.turn_count + 1 >= run.max_turns,
+            )
         except StreamCancelled as exc:
             raise ApplicationError("turn cancelled", non_retryable=True) from exc
 

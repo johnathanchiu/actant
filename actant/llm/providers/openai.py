@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol, cast
@@ -85,11 +86,17 @@ class OpenAIProvider:
         thinking_level: str = "med",
         client: openai.AsyncOpenAI | None = None,
         rate_limiter: RateLimiter | None = None,
+        idle_s: float = 60.0,
+        turn_s: float = 240.0,
+        attempts: int = 3,
     ) -> None:
         self.model_id = model_id
         self.thinking_level = thinking_level
         self.client = client or openai.AsyncOpenAI(api_key=env_api_key("OPENAI_API_KEY", api_key))
         self._rate_limiter = rate_limiter
+        if idle_s <= 0 or turn_s <= 0 or attempts < 1:
+            raise ValueError("idle_s, turn_s and attempts must be positive")
+        self.idle_s, self.turn_s, self.attempts = idle_s, turn_s, attempts
 
     def _is_reasoning_model(self) -> bool:
         return any(self.model_id.startswith(prefix) for prefix in REASONING_MODELS)
@@ -217,8 +224,16 @@ class OpenAIProvider:
         messages: Sequence[Message],
         tools: list[dict],
         listener: "StreamListener | None" = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
     ) -> Message:
         params = self._request_params(system, messages, tools)
+        if allowed_tools:
+            params["tool_choice"] = {
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "function", "name": name} for name in allowed_tools],
+            }
         if self._rate_limiter is None:
             message, _ = await self._stream(params, listener)
             return message
@@ -253,15 +268,73 @@ class OpenAIProvider:
         params: RequestParams,
         listener: "StreamListener | None",
     ) -> tuple[Message, int]:
+        for attempt in range(self.attempts):
+            try:
+                async with asyncio.timeout(self.turn_s):
+                    return await self._stream_attempt(params, listener)
+            except (
+                TimeoutError,
+                openai.APIConnectionError,
+                openai.APIError,
+                RuntimeError,
+            ) as error:
+                if isinstance(error, openai.APIStatusError):
+                    retryable = error.status_code in (408, 409, 429) or error.status_code >= 500
+                else:
+                    retryable = not isinstance(error, RuntimeError) or isinstance(
+                        error, StreamInterrupted
+                    )
+                if not retryable or attempt + 1 == self.attempts:
+                    raise
+                logger.warning(
+                    "model attempt failed: %s; retry %d/%d",
+                    type(error).__name__,
+                    attempt + 1,
+                    self.attempts,
+                )
+                await asyncio.sleep(random.uniform(0, min(30, 2**attempt)))
+        raise AssertionError("unreachable")
+
+    async def _stream_attempt(
+        self,
+        params: RequestParams,
+        listener: "StreamListener | None",
+    ) -> tuple[Message, int]:
         tool_stream_state = _OpenAIToolStreamState()
-        async with self.client.responses.stream(**params) as stream:
-            async for event in stream:
+        manager = self.client.responses.stream(**params)
+        stream = await asyncio.wait_for(manager.__aenter__(), self.idle_s)
+        try:
+            events = stream.__aiter__()
+            whitespace = 0
+            while True:
+                try:
+                    event = await asyncio.wait_for(anext(events), self.idle_s)
+                except StopAsyncIteration:
+                    break
                 if listener is not None and listener.cancel_requested():
                     raise StreamCancelled
+                if event.type == "response.function_call_arguments.delta":
+                    delta = getattr(event, "delta", "") or ""
+                    whitespace = (
+                        whitespace + len(delta)
+                        if not delta.strip()
+                        else len(delta) - len(delta.rstrip())
+                    )
+                    if whitespace >= 300:
+                        raise StreamInterrupted(
+                            "tool arguments contain 300 consecutive whitespace characters"
+                        )
                 if listener is None:
                     continue
                 await _forward_stream_event(event, listener, tool_stream_state)
-            response = await stream.get_final_response()
+            try:
+                response = await asyncio.wait_for(stream.get_final_response(), self.idle_s)
+            except RuntimeError as error:
+                raise StreamInterrupted("stream closed without response.completed") from error
+            if response.status != "completed":
+                raise StreamInterrupted(f"response ended with status {response.status}")
+        finally:
+            await manager.__aexit__(None, None, None)
 
         text = ""
         thought = ""
@@ -317,6 +390,10 @@ class OpenAIProvider:
             input_estimate *= 2
         output_ceiling = int(params.get("max_output_tokens") or 2048)
         return input_estimate + output_ceiling
+
+
+class StreamInterrupted(RuntimeError):
+    """A response cannot be committed because its stream did not complete."""
 
 
 def _extract_reasoning_item(item: object) -> ToolSchema | None:

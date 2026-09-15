@@ -190,13 +190,20 @@ async def test_sync_methods_run_in_threads_over_kept_alive_connections(
     assert [r.output for r in await blocked] == ["blocked"] * 5
     assert time.monotonic() - started < 2
 
-    # Sequential calls reuse one pooled connection.
-    slot = ("http", endpoint.url.removeprefix("http://"))
-    host._idle.pop(slot, None)  # pyright: ignore[reportPrivateUsage]
-    await _call(runner, "length", text="a")
-    ((first, _),) = host._idle[slot]  # pyright: ignore[reportPrivateUsage]
-    await _call(runner, "length", text="b")
-    assert [c for c, _ in host._idle[slot]] == [first]  # pyright: ignore[reportPrivateUsage]
+    assert (await _call(runner, "length", text="a")).output == "1"
+    assert (await _call(runner, "length", text="bb")).output == "2"
+
+
+async def test_one_hundred_async_calls_do_not_queue_on_the_default_thread_pool(
+    sandbox: LocalSandbox,
+) -> None:
+    endpoint = await sandbox.endpoint()
+    assert endpoint is not None
+    runner = RemoteRunner(endpoint, "counter", key="hundred")
+    started = time.monotonic()
+    replies = await asyncio.gather(*(_call(runner, "wait", seconds=0.5) for _ in range(100)))
+    assert all(reply.error is None for reply in replies)
+    assert time.monotonic() - started < 1.8
 
 
 async def test_a_connection_lost_after_the_request_is_sent_is_an_error_not_a_retry(
