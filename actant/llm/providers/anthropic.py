@@ -208,7 +208,13 @@ class AnthropicProvider:
         messages: Sequence[Message],
         tools: list[dict],
         listener: "StreamListener | None" = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
     ) -> Message:
+        if allowed_tools:
+            raise NotImplementedError(
+                "Anthropic does not support allowed_tools with a stable full tool list"
+            )
         params = self._request_params(system, messages, tools)
         if self._rate_limiter is None:
             message, _ = await self._stream(params, listener)

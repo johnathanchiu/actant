@@ -53,10 +53,15 @@ def convert_image_source(source: Mapping[str, object]) -> ContentBlock | None:
     if source.get("type") == "base64":
         return {
             "type": "input_image",
+            "detail": source.get("detail", "high"),
             "image_url": f"data:{source['media_type']};base64,{source['data']}",
         }
     if source.get("type") == "url":
-        return {"type": "input_image", "image_url": source["url"]}
+        return {
+            "type": "input_image",
+            "image_url": source["url"],
+            "detail": source.get("detail", "high"),
+        }
     return None
 
 

@@ -20,4 +20,6 @@ class LLMClient(Protocol):
         messages: Sequence[Message],
         tools: list[dict],
         listener: "StreamListener | None" = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
     ) -> Message: ...

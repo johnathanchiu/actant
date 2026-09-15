@@ -30,6 +30,7 @@ class FakeLLM:
         self._responses = list(responses)
         self.model_id = model_id
         self.calls: list[tuple[str, list[Message], list[dict]]] = []
+        self.allowed_tools: list[tuple[str, ...]] = []
 
     async def complete(
         self,
@@ -37,11 +38,19 @@ class FakeLLM:
         messages: Sequence[Message],
         tools: list[dict],
         listener: "StreamListener | None" = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
     ) -> Message:
         self.calls.append((system, list(messages), tools))
+        self.allowed_tools.append(allowed_tools)
         if not self._responses:
             raise RuntimeError("FakeLLM has no queued responses")
         response = self._responses.pop(0)
+        if allowed_tools and (
+            not response.tool_calls
+            or any(call.function.name not in allowed_tools for call in response.tool_calls)
+        ):
+            raise ValueError("FakeResponse must call only allowed_tools on a constrained turn")
 
         if listener is not None:
             for chunk in response.thinking_chunks or []:

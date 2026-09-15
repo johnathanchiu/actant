@@ -42,6 +42,23 @@ pip install "actant[openai]"  # choose only the provider extras you need
 Actant does not select a “latest” model. Pass a model ID from application
 configuration to the corresponding provider adapter.
 
+### Bounded model calls and final turns
+
+`OpenAIProvider(idle_s=60, turn_s=240, attempts=3)` bounds a whole completion,
+including retries, backoff, and rate-limiter waits, to `turn_s` seconds. Opening
+the stream and waiting for its next event each have an `idle_s` deadline.
+Transient connection errors, 429/5xx responses, incomplete streams, and tool
+argument whitespace loops are retried within that same budget. Only a completed
+attempt produces the canonical assistant message and usage record; live stream
+notifications remain provisional and may include an abandoned attempt.
+
+Set `AgentDefinition.final_tools=("edit", "finish")` to constrain the last turn
+of each run. These names must be registered and allowed. The full tool schema is
+retained, with an OpenAI `allowed_tools` restriction and a short final-turn note.
+Other real providers currently reject this option explicitly. Custom `LLMClient`
+implementations must accept the keyword-only `allowed_tools: tuple[str, ...] = ()`.
+See [OpenAI tool choice](https://developers.openai.com/api/docs/guides/function-calling#tool-choice).
+
 ## Start Temporal locally
 
 The installed CLI can manage a Docker-backed Temporal server for development:

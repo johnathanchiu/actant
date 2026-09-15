@@ -327,7 +327,16 @@ reach yourself, and `call_host(endpoint, service, method, args, key=...)`
 makes one call (with `await sandbox.endpoint()`). Every runner returns the same
 `CallResponse` (`text`, `images`, `error`, `storage`); `tools()` turns it into a
 `ToolResult`. From orchestration code, call a runner directly:
-`await SandboxRunner("pipeline").call("stage", {}, key=thread_id, sandbox=sandbox)`.
+```python
+async with SandboxRunner("pipeline") as runner:
+    result = await runner.call("stage", {}, key=thread_id, sandbox=sandbox)
+```
+
+`RemoteRunner` and `SandboxRunner` reuse asynchronous HTTP connection pools;
+use an async context manager, or call `await runner.close()` when their owning
+worker or stage ends. HTTP calls have a total deadline, not only a socket-idle
+timeout. A transport failure reports that the call may have executed and is
+never automatically retried; only a rejected sandbox credential is refreshed.
 
 A sandbox serves several named services from one host (`python -m
 actant.sandbox.entry '{"host": {"services": {"name": "pkg.mod:Class"}}}'`, an
