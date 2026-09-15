@@ -64,8 +64,12 @@ class AgentRuntime:
         agent_id: str,
         thread_id: str,
         content: str | list[dict[str, object]],
+        *,
+        parent_thread_id: str | None = None,
     ) -> str:
-        return await self._client.send_message(agent_id, thread_id, content)
+        return await self._client.send_message(
+            agent_id, thread_id, content, parent_thread_id=parent_thread_id
+        )
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
         await self._client.cancel_thread(agent_id, thread_id)

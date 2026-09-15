@@ -4,6 +4,22 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.15.0
+
+- **Breaking:** custom `LLMClient.complete` implementations must accept keyword-only
+  `allowed_tools: tuple[str, ...] = ()`. `AgentDefinition.final_tools` constrains the
+  last run turn while retaining the complete tool schema. OpenAI supports the
+  restriction; other real providers explicitly reject a nonempty restriction.
+- OpenAI calls have a 60-second stream idle deadline and a 240-second total budget,
+  including retries and rate-limiter waits. Transient failures, incomplete streams,
+  and tool-argument whitespace loops retry within that budget. Only completed
+  attempts become canonical messages. OpenAI images default to high detail.
+- Service host calls use pooled asynchronous HTTP with total deadlines rather than
+  occupying worker threads. `RemoteRunner` and `SandboxRunner` support async context
+  managers and `close()` for explicit connection-pool cleanup.
+- `AgentRuntime.send_message(parent_thread_id=...)` now forwards child lineage to
+  the Temporal client, matching its existing lower-level API.
+
 ## 0.14.0
 
 - `TemporalRuntimeWorker(turn_gate=...)`: a `TurnGate`, `async (TurnStart) -> str | None`,

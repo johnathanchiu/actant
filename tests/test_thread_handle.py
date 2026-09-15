@@ -12,6 +12,7 @@ import pytest
 from actant.runtime.runtime import AgentRuntime
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.thread import ThreadHandle, ThreadRuntime
+from actant.runtime.temporal.client import TemporalRuntimeClient
 
 
 def _handle() -> tuple[ThreadHandle, Mock, InMemoryRuntimeStores]:
@@ -75,3 +76,21 @@ def test_runtime_thread_handle_accepts_uuid() -> None:
     handle = runtime.thread("assistant", thread_id)
 
     assert handle.thread_id == str(thread_id)
+
+
+@pytest.mark.parametrize("parent_thread_id", [None, "parent-thread"])
+async def test_runtime_forwards_parent_lineage(
+    monkeypatch: pytest.MonkeyPatch, parent_thread_id: str | None
+) -> None:
+    send = AsyncMock(return_value="child-workflow")
+    monkeypatch.setattr(TemporalRuntimeClient, "send_message", send)
+    runtime = AgentRuntime(stores=InMemoryRuntimeStores(), agents={})
+
+    result = await runtime.send_message(
+        "child-agent", "child-thread", "work", parent_thread_id=parent_thread_id
+    )
+
+    assert result == "child-workflow"
+    send.assert_awaited_once_with(
+        "child-agent", "child-thread", "work", parent_thread_id=parent_thread_id
+    )
