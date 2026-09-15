@@ -15,6 +15,7 @@ from actant.runtime.gate import TurnGate
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.types.threads import AgentThread
 from actant.sandbox.base import ArtifactSink, Sandbox
+from actant.sandbox.presign import MAX_IMAGE_AGE_S, ImageSigner
 from actant.sandbox.registry import SandboxRegistry
 
 HookFactory = Callable[[AgentThread], AgentThreadHooks]
@@ -37,6 +38,8 @@ class ActivityContext:
         turn_gate: TurnGate | None = None,
         sandboxes: SandboxRegistry | None = None,
         artifact_sink: ArtifactSink | None = None,
+        image_signer: ImageSigner | None = None,
+        image_max_age_s: float = MAX_IMAGE_AGE_S,
     ) -> None:
         self.stores = stores
         self.agents = agents
@@ -47,6 +50,8 @@ class ActivityContext:
         self.turn_gate = turn_gate
         self.sandboxes = sandboxes
         self.artifact_sink = artifact_sink
+        self.image_signer = image_signer
+        self.image_max_age_s = image_max_age_s
 
     def _require_agent(self, agent_id: str) -> AgentDefinition:
         agent = self.agents.get(agent_id)

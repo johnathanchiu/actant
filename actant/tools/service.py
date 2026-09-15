@@ -23,8 +23,8 @@ from actant.tools.base import BaseToolInvocation, CallContext, MetadataKey, Tool
 
 def image_block(image: Image) -> dict[str, object]:
     """An image as the content block the LLM adapters take: a ``url`` source when the host
-    presigned one (with its ``expires_at``, which the adapters strip, and use to replace
-    an expired image with a note on replay), else ``base64`` bytes."""
+    presigned one (with its ``expires_at`` and bucket ``key``, which the adapters strip; the
+    worker signs an expired URL again from its key, else the adapters send a note), else ``base64`` bytes."""
     if isinstance(image.source, InlineSource):
         source: dict[str, object] = {
             "type": "base64",
@@ -33,6 +33,8 @@ def image_block(image: Image) -> dict[str, object]:
         }
     else:
         source = {"type": "url", "url": image.source.url, "expires_at": image.source.expires_at}
+        if image.source.key is not None:
+            source["key"] = image.source.key
     return {"type": "image", "source": source}
 
 

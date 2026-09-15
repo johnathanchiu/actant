@@ -25,6 +25,7 @@ from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.types.threads import AgentThread
 from actant.sandbox.base import ArtifactSink, Backend, SandboxProvider
 from actant.sandbox.local import LocalSandboxProvider
+from actant.sandbox.presign import MAX_IMAGE_AGE_S, ImageSigner
 from actant.sandbox.registry import SandboxRegistry
 
 
@@ -64,6 +65,8 @@ class TemporalRuntimeWorker:
         event_sink: EventSink | None = None,
         sandbox_providers: Mapping[str, SandboxProvider] | None = None,
         artifact_sink: ArtifactSink | None = None,
+        image_signer: ImageSigner | None = None,
+        image_max_age_s: float = MAX_IMAGE_AGE_S,
     ) -> None:
         self.config = config or TemporalRuntimeConfig()
         sink = event_sink or getattr(stores, "publisher", None)
@@ -85,6 +88,8 @@ class TemporalRuntimeWorker:
                 stores.threads,
             ),
             artifact_sink=artifact_sink,
+            image_signer=image_signer,
+            image_max_age_s=image_max_age_s,
         )
 
     async def run(self) -> None:

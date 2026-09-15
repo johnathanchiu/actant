@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `TemporalRuntimeWorker(image_signer=...)` signs expired sandbox image URLs again before
+  each turn, from `UrlSource.key` (set by the host). `actant.sandbox.presign.sigv4_signer`
+  builds one with no dependencies, identical per hour so the prompt cache holds. Images
+  without a key or older than `image_max_age_s` (7 days) still become a note.
+
 ## 0.14.0
 
 - `TemporalRuntimeWorker(turn_gate=...)`: a `TurnGate`, `async (TurnStart) -> str | None`,

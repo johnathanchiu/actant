@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import cast
 
 from temporalio import activity
@@ -24,6 +25,7 @@ from actant.runtime.temporal.types import (
     TurnResult,
 )
 from actant.runtime.types.context import TurnContext
+from actant.sandbox.presign import sign_expired_images
 from actant.runtime.types.threads import RunStatus, ThreadStatus
 from actant.tools.base import MetadataKey
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
@@ -103,6 +105,15 @@ class RunActivities(ActivityContext):
                 )
 
         messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
+        spec = agent.sandbox
+        if self.image_signer is not None and spec is not None and spec.image_url_ttl_s is not None:
+            messages = sign_expired_images(
+                messages,
+                self.image_signer,
+                spec.image_url_ttl_s,
+                now=time.time(),
+                max_age_s=self.image_max_age_s,
+            )
         if self.message_preprocessor is not None:
             messages = await self.message_preprocessor(messages)
         context = TurnContext(

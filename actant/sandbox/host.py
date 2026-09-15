@@ -319,6 +319,7 @@ async def upload_image(image: Image, config: ImageUploadConfig) -> tuple[Image, 
     data = base64.b64decode(image.source.data_b64)
     extension = mimetypes.guess_extension(image.media_type) or ""
     key = f"{config.destination}{hashlib.sha256(data).hexdigest()}{extension}"
+    object_key = key.removeprefix("s3://").partition("/")[2]
     # One budget for both commands: an unreachable bucket costs at most ``timeout_s``.
     deadline = time.monotonic() + config.timeout_s
     upload = _s5cmd(config.endpoint_url, "pipe", "--content-type", image.media_type, key)
@@ -341,7 +342,9 @@ async def upload_image(image: Image, config: ImageUploadConfig) -> tuple[Image, 
         error = f"not a URL: {url[:200]!r}"
     if error is not None:
         return image, f"{image.name}: presign {error}"
-    return image.model_copy(update={"source": UrlSource(url=url, expires_at=expires_at)}), None
+    return image.model_copy(
+        update={"source": UrlSource(url=url, expires_at=expires_at, key=object_key)}
+    ), None
 
 
 async def upload_images(

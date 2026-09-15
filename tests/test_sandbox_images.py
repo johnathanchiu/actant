@@ -112,6 +112,7 @@ async def test_an_upload_is_content_addressed_and_presigned_for_the_public_endpo
     assert isinstance(image.source, UrlSource)
     assert image.source.url.startswith("https://public.example/b/actant-images/t1/")
     assert image.source.url.split("?")[0].endswith(".png")
+    assert image.source.url.split("?")[0].endswith("/b/" + str(image.source.key))
     assert before + 3600 <= image.source.expires_at <= time.time() + 3600
     pipe, presign = [json.loads(line) for line in s5cmd_log.read_text().splitlines()]
     assert pipe["argv"][:2] == ["--endpoint-url", "http://minio:9000"]
@@ -169,6 +170,7 @@ async def test_a_host_that_uploads_reports_image_errors_on_storage_status(
         "type": "url",
         "url": response.images[0].source.url,
         "expires_at": response.images[0].source.expires_at,
+        "key": response.images[0].source.key,
     }
 
     monkeypatch.setenv("FAKE_S5CMD_FAIL", "pipe")

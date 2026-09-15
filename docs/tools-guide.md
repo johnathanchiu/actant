@@ -428,9 +428,13 @@ The host process reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REG
 
 Code that calls a runner itself turns an image into a content block with
 `actant.tools.image_block(image)` (a URL source when present, else base64). A stored
-message keeps its URLs; on replay the LLM adapters replace an image whose URL has
-expired (or will within two minutes) with a text note, since a provider rejects the
-whole request when a fetch fails.
+message keeps its URLs and bucket `key`. A worker given
+`TemporalRuntimeWorker(image_signer=sigv4_signer(bucket, public_endpoint_url, access_key,
+secret_key, region))` (`actant.sandbox.presign`) signs an expired URL again before each
+turn; the URL is identical for an hour, so the prompt cache holds. Otherwise, or with no
+key, or when the image is older than `image_max_age_s` (default 7 days), the LLM adapters
+replace an image whose URL has expired (or will within two minutes) with a text note,
+since a provider rejects the whole request when a fetch fails.
 
 `SandboxSpec.seed` (a bucket key prefix ending in `/`) starts a new thread from a
 template. When the thread's prefix is empty, the sandbox pulls the seed while
