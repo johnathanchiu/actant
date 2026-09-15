@@ -4,6 +4,25 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- **Breaking:** `LLMClient` implementations must declare `supports_allowed_tools: bool`.
+  `AgentDefinition` validates `final_tools` when it is constructed: unregistered or
+  disallowed names, or a client without support, raise `ValueError` instead of failing
+  on the last turn. Gemini now honours `allowed_tools` through
+  `allowed_function_names`; Anthropic and Qwen declare no support.
+- **Breaking:** `StreamListener.on_stream_reset()` is called before a retried attempt,
+  and `PublishingStreamListener` publishes it as `stream_reset`. Live consumers must
+  discard the deltas they have shown for the call.
+- OpenAI retries only transient failures. `incomplete` responses, failures with
+  non-transient codes, and stream `error` events with non-transient codes raise at
+  once. The SDK's own retries are disabled (a caller-supplied client is wrapped with
+  `with_options(max_retries=0)`), each attempt re-reserves the rate limiter and records
+  a failed attempt's reported usage, and silences outside an open output item get
+  `reasoning_idle_s` (180 s) instead of `idle_s`. `StreamInterrupted` now carries
+  `retryable` and `tokens`.
+- `RemoteRunner` and `SandboxRunner` cap their pools at `MAX_HOST_CONNECTIONS` (64).
+
 ## 0.15.0
 
 - **Breaking:** custom `LLMClient.complete` implementations must accept keyword-only

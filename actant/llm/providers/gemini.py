@@ -94,6 +94,9 @@ ToolSchema = dict[str, object]
 class GeminiProvider:
     """LLMClient implementation for Gemini generate_content."""
 
+    # FunctionCallingConfig(mode=ANY, allowed_function_names=...).
+    supports_allowed_tools = True
+
     def __init__(
         self,
         model_id: str,
@@ -261,9 +264,21 @@ class GeminiProvider:
     def _build_contents(self, messages: Sequence[Message]) -> list[types.Content]:
         return [self.convert_message(message) for message in sanitize_tool_messages(messages)]
 
-    def _build_config(self, system: str, tools: list[dict]) -> types.GenerateContentConfig:
+    def _build_config(
+        self, system: str, tools: list[dict], allowed_tools: tuple[str, ...] = ()
+    ) -> types.GenerateContentConfig:
         tool_declarations = self.convert_tools(tools)
         return types.GenerateContentConfig(
+            tool_config=(
+                types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode=types.FunctionCallingConfigMode.ANY,
+                        allowed_function_names=list(allowed_tools),
+                    )
+                )
+                if allowed_tools
+                else None
+            ),
             system_instruction=system,
             tools=(
                 [types.Tool(function_declarations=tool_declarations)]
@@ -283,8 +298,6 @@ class GeminiProvider:
         *,
         allowed_tools: tuple[str, ...] = (),
     ) -> Message:
-        if allowed_tools:
-            raise NotImplementedError("allowed_tools is not implemented for Gemini")
         text = ""
         thought = ""
         tool_calls: list[ToolCall] = []
@@ -292,7 +305,7 @@ class GeminiProvider:
         stream = await self.client.aio.models.generate_content_stream(
             model=self.model_id,
             contents=self._build_contents(messages),
-            config=self._build_config(system, tools),
+            config=self._build_config(system, tools, allowed_tools),
         )
         async for chunk in stream:
             if listener is not None and listener.cancel_requested():

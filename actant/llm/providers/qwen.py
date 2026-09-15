@@ -31,6 +31,9 @@ RequestParams = CompletionCreateParamsBase
 class QwenProvider:
     """LLMClient implementation for Qwen non-streaming chat completions."""
 
+    # Thinking mode accepts only tool_choice "auto" or "none".
+    supports_allowed_tools = False
+
     def __init__(
         self,
         model_id: str,

@@ -44,19 +44,26 @@ configuration to the corresponding provider adapter.
 
 ### Bounded model calls and final turns
 
-`OpenAIProvider(idle_s=60, turn_s=240, attempts=3)` bounds a whole completion,
-including retries, backoff, and rate-limiter waits, to `turn_s` seconds. Opening
-the stream and waiting for its next event each have an `idle_s` deadline.
-Transient connection errors, 429/5xx responses, incomplete streams, and tool
-argument whitespace loops are retried within that same budget. Only a completed
-attempt produces the canonical assistant message and usage record; live stream
-notifications remain provisional and may include an abandoned attempt.
+`OpenAIProvider(idle_s=60, reasoning_idle_s=180, turn_s=240, attempts=3)` bounds a
+whole completion, including retries, backoff, and rate-limiter waits, to `turn_s`
+seconds. Opening the stream, and any silence while a message or tool call is
+streaming, has an `idle_s` deadline. A reasoning model emits no events while it
+thinks, so silence outside an open output item has the longer `reasoning_idle_s`
+deadline. Only transient failures retry within the budget: timeouts, connection
+errors, 408/409/429/5xx, `server_error` or `rate_limit_exceeded` failures, a stream
+that closes before its terminal event, and tool-argument whitespace loops. An
+`incomplete` response (max output tokens, content filter) or any other failure
+raises at once. The SDK's own retries are disabled, and each attempt takes its own
+rate-limiter reservation. Only a completed attempt produces the canonical assistant
+message and usage record; before a retry the listener receives `on_stream_reset()`
+(published as `stream_reset`), and consumers drop the deltas they have shown.
 
 Set `AgentDefinition.final_tools=("edit", "finish")` to constrain the last turn
-of each run. These names must be registered and allowed. The full tool schema is
-retained, with an OpenAI `allowed_tools` restriction and a short final-turn note.
-Other real providers currently reject this option explicitly. Custom `LLMClient`
-implementations must accept the keyword-only `allowed_tools: tuple[str, ...] = ()`.
+of each run. The full tool schema is retained, with a native restriction (OpenAI
+`allowed_tools`, Gemini `allowed_function_names`) and a short final-turn note. The
+names must be registered and allowed, and the client must declare
+`supports_allowed_tools = True`; otherwise the definition raises `ValueError`.
+Anthropic and Qwen cannot honour it while thinking.
 See [OpenAI tool choice](https://developers.openai.com/api/docs/guides/function-calling#tool-choice).
 
 ## Start Temporal locally

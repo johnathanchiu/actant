@@ -22,6 +22,8 @@ class FakeResponse:
 
 
 class FakeLLM:
+    supports_allowed_tools = True
+
     def __init__(
         self,
         responses: list[FakeResponse],
