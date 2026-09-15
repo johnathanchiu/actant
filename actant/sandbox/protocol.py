@@ -59,6 +59,9 @@ class UrlSource(_Message):
     url: str
     #: Unix time the URL stops working.
     expires_at: float
+    #: The object's bucket key, so the worker can sign an expired URL again
+    #: (:mod:`actant.sandbox.presign`). ``None`` from a host that did not record it.
+    key: str | None = None
 
 
 class Image(_Message):

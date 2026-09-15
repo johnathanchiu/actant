@@ -84,8 +84,8 @@ def split_tool_content(
 
 
 def live_image_urls(content: list[ContentBlock], now: float) -> list[ContentBlock]:
-    """``content`` with each URL image source's ``expires_at`` removed (no provider accepts
-    it), and an image expiring before ``now + EXPIRY_MARGIN_S`` replaced by a text note: a
+    """``content`` with each URL image source's ``expires_at`` and ``key`` removed (no provider
+    accepts them), and an image expiring before ``now + EXPIRY_MARGIN_S`` replaced by a text note: a
     provider rejects the whole request when it cannot fetch one."""
     live: list[ContentBlock] = []
     for block in content:
@@ -97,7 +97,7 @@ def live_image_urls(content: list[ContentBlock], now: float) -> list[ContentBloc
         if source.get("type") != "url" or expires_at is None:
             live.append(block)
         elif isinstance(expires_at, int | float) and expires_at > now + EXPIRY_MARGIN_S:
-            kept = {key: value for key, value in source.items() if key != "expires_at"}
+            kept = {k: v for k, v in source.items() if k not in {"expires_at", "key"}}
             live.append({**block, "source": kept})
         else:
             live.append({"type": "text", "text": EXPIRED_IMAGE})
