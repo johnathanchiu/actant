@@ -9,7 +9,8 @@ you are trying to change or debug the runtime, start here.
 
 ## The shortest accurate model
 
-Actant runs one long-lived Temporal workflow for each `(agent_id, thread_id)`.
+Actant uses one logical Temporal workflow ID for each `(agent_id, thread_id)`.
+Executions close when idle; later messages reopen the same logical thread.
 The workflow is the durable coordinator. Activities perform all work that can
 touch the outside world.
 
@@ -47,8 +48,8 @@ The central invariant is:
    - `tools.py`: admission, execution, resolution, and group finalization.
    - `threads.py`: thread-level cancellation repair.
    - `context.py`: dependencies shared by worker-bound activities.
-3. `actant/runtime/temporal/client.py` and `worker.py`
-   - Client operations and worker registration.
+3. `actant/runtime/runtime.py`
+   - `AgentRuntime`: commands, queries, and worker polling.
 4. `actant/runtime/temporal/types.py`
    - Serializable payloads crossing workflow/activity boundaries.
 5. `actant/runtime/interfaces/stores.py`
@@ -61,13 +62,12 @@ The central invariant is:
    - Optional live event and model-stream observers.
 
 The public entry point is `actant/runtime/runtime.py`. It deliberately contains
-almost no orchestration: `AgentRuntime` delegates commands to its Temporal
-client.
+command and worker wiring; durable orchestration stays in the workflow.
 
 ## Agent thread, run, turn, and group
 
 ```text
-agent thread (one long-lived workflow)
+agent thread (stable workflow ID; executions close when idle)
 └── agent run (one end-to-end activation)
     ├── agent turn 1 (one model invocation)
     │   └── tool group
@@ -115,6 +115,8 @@ while True:
             break
 
     finalize_run()
+    if not inbox:
+        break
     rotate_temporal_history_if_needed()
 ```
 
@@ -259,22 +261,16 @@ non-critical notifications. Hooks should not duplicate canonical message
 writes. A reconnecting consumer loads stores first and then resumes live event
 consumption.
 
-## Client and worker
+## One runtime
 
-`AgentRuntime` is a client facade. It can live in an API process and sends
-commands to Temporal:
+`AgentRuntime` owns submission, observation, and `run_worker()`. API and execution processes
+use the same class with different dependencies. Temporal is the only executor.
+An injected client carries namespace, interceptors, TLS, and authentication; Actant does not
+open a hidden second connection. Execution resolves agent definitions asynchronously.
 
-- `send_message`
-- `resolve_tool_call`
-- `cancel_thread`
-- `get_state`
-
-`TemporalRuntimeWorker` hosts the registered workflow and activity
-implementations. It must have the same agent definitions, stores, factories,
-Temporal namespace, and task queue expected by the client configuration.
-
-They may run in one process for development, but they represent separate
-deployment roles.
+Activity groups compose an `ActivityContext`; none inherits other groups. Media resolution
+runs before model requests, outside workflow orchestration. Existing stores and SQL models
+remain the canonical transcript and projection interface.
 
 ## Subagents
 

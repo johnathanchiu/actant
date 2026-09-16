@@ -57,7 +57,7 @@ Plus a related framework fix:
 
 ```python
 from actant.agents import AgentDefinition
-from actant.runtime import AgentRuntime, RunCompletion, TemporalRuntimeWorker
+from actant.runtime import AgentRuntime, RunCompletion
 from actant.runtime.coordinator import (
     SubThreadLink,
     SubThreadRegistry,
@@ -69,7 +69,7 @@ from actant.tools.task import TaskTool
 
 
 class MyCoordinator:
-    def __init__(self, stores, llm):
+    def __init__(self, client, stores, llm):
         self.stores = stores
         self.publisher = InMemoryEventPublisher()
         self.registry = SubThreadRegistry()
@@ -102,14 +102,15 @@ class MyCoordinator:
 
         # Wire AgentRuntime with the registry-aware factories.
         self.runtime = AgentRuntime(
+            client=client,
             stores=stores,
-            agents={
-                self.main_agent.id: self.main_agent,
-                self.researcher_agent.id: self.researcher_agent,
-            },
+            resolve_agent=self.resolve_agent,
             hooks_factory=publishing_hooks_factory(self.publisher, registry=self.registry),
             listener_factory=publishing_listener_factory(self.publisher, registry=self.registry),
         )
+
+    async def resolve_agent(self, agent_id: str, thread_id: str) -> AgentDefinition:
+        return {"main": self.main_agent, "researcher": self.researcher_agent}[agent_id]
 
     # TaskTool's SubagentSpawner Protocol. Returns the sub-thread's id,
     # which becomes the parent's tool result: the parent is not waiting on
@@ -139,7 +140,7 @@ class MyCoordinator:
         )
         return sub_thread_id
 
-    # Passed to TemporalRuntimeWorker(run_completion_handler=...).
+    # Passed to AgentRuntime(run_completion_handler=...).
     # This runs inside the retryable finalize_run activity, after the
     # child's thread/run/message projections have committed.
     async def handle_run_completion(self, completion: RunCompletion):
@@ -177,10 +178,10 @@ class MyCoordinator:
             json.dumps(envelope),
         )
 
-    # Worker wiring is separate from AgentRuntime's client role.
-    # worker = TemporalRuntimeWorker(
+    # The same runtime submits work and hosts activities.
+    # runtime = AgentRuntime(
     #     stores=self.stores,
-    #     agents={...},
+    #     client=client, resolve_agent=resolve_agent,
     #     run_completion_handler=self.handle_run_completion,
     # )
 
@@ -248,8 +249,9 @@ Counter-example. If you're building this:
 
 ```python
 runtime = AgentRuntime(
+    client=client,
     stores=InMemoryRuntimeStores(),
-    agents={"bot": my_agent},
+    resolve_agent=resolve_agent,
 )
 thread_id = uuid.uuid4().hex
 await runtime.send_message("bot", thread_id, "hello")

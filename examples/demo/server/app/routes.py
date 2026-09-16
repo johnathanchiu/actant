@@ -45,8 +45,7 @@ def get_coordinator(request: Request) -> DemoCoordinator:
 @router.get("/agent")
 async def get_agent(request: Request) -> dict[str, Any]:
     coord = get_coordinator(request)
-    # Find the main agent in the registered set.
-    main = coord.runtime.agents[AGENT_ID]
+    main = coord.main_agent
     return {
         "id": main.id,
         "name": main.name,

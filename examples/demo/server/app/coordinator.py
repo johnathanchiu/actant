@@ -19,6 +19,7 @@ NO subclassing of any actant base class. Pure composition.
 from __future__ import annotations
 
 import asyncio
+from temporalio.client import Client
 import json
 import os
 import uuid
@@ -29,7 +30,8 @@ from typing import Any
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from actant.core import JSONObject
-from actant.runtime import AgentRuntime, TemporalRuntimeConfig, TemporalRuntimeWorker
+from actant.agents import AgentDefinition
+from actant.runtime import AgentRuntime, TemporalRuntimeConfig
 from actant.runtime.completion import RunCompletion
 from actant.runtime.coordinator import (
     SubThreadLink,
@@ -99,7 +101,7 @@ class DemoCoordinator:
         self,
         stores: _DemoStores,
         runtime: AgentRuntime,
-        worker: TemporalRuntimeWorker,
+        main_agent: AgentDefinition,
         worker_task: asyncio.Task[None],
         engine: object,
         model_id: str,
@@ -108,7 +110,7 @@ class DemoCoordinator:
     ) -> None:
         self.stores = stores
         self.runtime = runtime
-        self.worker = worker
+        self.main_agent = main_agent
         self.worker_task = worker_task
         self.engine = engine
         self.model_id = model_id
@@ -529,29 +531,29 @@ async def build_coordinator() -> DemoCoordinator:
 
     temporal_address = os.getenv("ACTANT_TEMPORAL_ADDRESS", "localhost:27233")
     temporal_config = TemporalRuntimeConfig(address=temporal_address)
+    client = await Client.connect(temporal_address, namespace=temporal_config.namespace)
+
+    async def resolve_agent(agent_id: str, thread_id: str) -> AgentDefinition:
+        await coordinator_ref[0]._link_ancestry(thread_id)
+        return agents[agent_id]
+
     runtime = AgentRuntime(
+        client=client,
         stores=stores,
-        agents=agents,
-        hooks_factory=hooks_factory,
-        listener_factory=listener_factory,
-        temporal=temporal_config,
-    )
-    worker = TemporalRuntimeWorker(
-        stores=stores,
-        agents=agents,
         config=temporal_config,
+        resolve_agent=resolve_agent,
         hooks_factory=hooks_factory,
         listener_factory=listener_factory,
         run_completion_handler=lambda completion: coordinator_ref[0].handle_run_completion(
             completion
         ),
     )
-    worker_task = asyncio.create_task(worker.run(), name="actant-demo-worker")
+    worker_task = asyncio.create_task(runtime.run_worker(), name="actant-demo-worker")
 
     coordinator = DemoCoordinator(
         stores=stores,
         runtime=runtime,
-        worker=worker,
+        main_agent=agents[AGENT_ID],
         worker_task=worker_task,
         engine=engine,
         model_id=model_id,

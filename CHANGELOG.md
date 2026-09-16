@@ -4,6 +4,19 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Consolidate command submission and worker polling into `AgentRuntime`, with injected
+  Temporal client and asynchronous agent resolution. Remove the separate client/worker classes.
+- Compose internal activity groups and resolve per-agent run budgets on execution workers.
+- Persist uploaded sandbox images as durable asset references and resolve media before model
+  requests. Storage adapters own SDK signing and URL reuse; no DB schema changes.
+- Scope default events to their activity identities and isolate observational callback failures.
+- Repair failed tool-group transcripts after Temporal-level activity failures without retrying
+  uncertain external side effects.
+- Remove unused session-store abstractions while retaining DB serializers and public models.
+- See `docs/migration-core.md` for breaking Python/image-protocol changes and downstream steps.
+
 ## 0.16.0
 
 - **Breaking:** `LLMClient` implementations must declare `supports_allowed_tools: bool`.

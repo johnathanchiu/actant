@@ -82,7 +82,7 @@ send_message
     -> admit tool activities
     -> execute or durably await resolution
     -> finalize tool results
-    -> next turn or park thread
+    -> next turn or close idle execution
 ```
 
 The workflow contains only serializable orchestration state. Model calls,
