@@ -57,7 +57,7 @@ class ToolActivities:
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
-        hooks = self.context._hooks(thread, run_id=record.run_id, turn_id=record.turn_id)
+        hooks = self.context.hooks(thread, run_id=record.run_id, turn_id=record.turn_id)
         tool = agent.tools.get(record.name)
         if tool is None:
             return await self._deny(record, hooks, f"Tool {record.name} not found")
@@ -180,7 +180,7 @@ class ToolActivities:
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
-        await self.context._hooks(
+        await self.context.hooks(
             thread, run_id=record.run_id, turn_id=record.turn_id
         ).on_tool_result(record.id, result, record.turn_id)
         return _outcome(record.id, result)
@@ -192,7 +192,7 @@ class ToolActivities:
         that declared they need it, so a plain tool never waits on one."""
         sandbox = None
         if getattr(tool, "needs_sandbox", False):
-            sandbox = await self.context._sandbox_for(agent, record.thread_id)
+            sandbox = await self.context.sandbox_for(agent, record.thread_id)
         thread = await self.context.stores.threads.get(record.agent_id, record.thread_id)
         return CallContext(
             agent_id=record.agent_id,
@@ -233,7 +233,7 @@ class ToolActivities:
             return failed
         sandbox = ctx.sandbox
         if sandbox is None:
-            sandbox = await self.context._sandbox_for(agent, record.thread_id)
+            sandbox = await self.context.sandbox_for(agent, record.thread_id)
         refs: list[dict[str, object]] = []
         for path in paths:
             try:
@@ -296,7 +296,7 @@ class ToolActivities:
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
-        await self.context._hooks(
+        await self.context.hooks(
             thread, run_id=record.run_id, turn_id=record.turn_id
         ).on_tool_resolved(record.id, result, record.turn_id)
         return _outcome(record.id, result)

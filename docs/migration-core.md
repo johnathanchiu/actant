@@ -178,3 +178,30 @@ pending work is an explicit product decision, not an automatic migration step.
 Historical DB rows remain. A rollback must retain readers that understand newly written
 asset references; reverting binaries solely because the schema is unchanged is insufficient.
 This draft PR does not authorize merge, release, deployment, or production data changes.
+
+
+### Coordinated release procedure
+
+Runtime unification, activity composition, and durable media stay in one candidate PR.
+Validate consumers against the exact candidate commit before changing published pins.
+
+1. Complete Ume and Spaceform migrations in isolated worktrees. Arrange a quiet window
+   with owners of concurrent Spaceform runtime work before integration and cutover.
+2. Run failure drills and one Tea room parity comparison against today's pinned build,
+   using the same input and settings. Compare completion, artifacts, model-visible images,
+   usage/billing records, and event delivery. Record both revisions and results. This is a
+   release gate, not a completed validation claim.
+3. Verify the deployed drain mechanism. Ume PR #21 addresses graceful worker shutdown
+   and remains deferred; it is separate from full workflow draining. This procedure does
+   not require that particular PR, but it does require a verified way to finish old work.
+4. After release approval, deploy readers that accept legacy and asset-reference images
+   while keeping old workers/writers. Pause all scene and agent submission entry points.
+5. Let old workflows finish on old workers. Budget for 15–30 minute scenes, and inspect
+   queued work, child workflows, activities, and approval waits. An elapsed grace period
+   is not proof of a drain. Resolve approval waits deliberately; do not auto-cancel them.
+6. Confirm no old active executions remain on affected task queues. Deploy candidate
+   workers and writers together with compatible Ume/Spaceform packages, run a smoke scene,
+   then reopen submissions. Do not mix old histories with the new start-run result shape.
+7. If rollback is required, pause submissions again. Keep asset-compatible readers and
+   separately drain candidate executions before switching workers. Schema compatibility
+   alone does not establish workflow or image compatibility.

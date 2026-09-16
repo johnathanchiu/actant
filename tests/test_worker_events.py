@@ -20,8 +20,8 @@ async def test_worker_publishes_events_without_custom_factories() -> None:
     worker = AgentRuntime(client=cast(Client, Mock()), stores=stores)
     thread = AgentThread(id="thread-id", agent_id="assistant")
 
-    hooks = worker._context._hooks(thread)
-    listener = worker._context._listener(thread)
+    hooks = worker._context.hooks(thread)
+    listener = worker._context.listener(thread)
 
     assert isinstance(hooks, PublishingThreadHooks)
     assert isinstance(listener, PublishingStreamListener)
@@ -58,5 +58,5 @@ async def test_observer_factory_failure_is_observational() -> None:
         stores=InMemoryRuntimeStores(), hooks_factory=broken, listener_factory=broken
     )
     thread = AgentThread(id="t", agent_id="a")
-    await context._hooks(thread).on_turn_start(1, "turn")
-    await context._listener(thread).on_text_delta("hello")
+    await context.hooks(thread).on_turn_start(1, "turn")
+    await context.listener(thread).on_text_delta("hello")

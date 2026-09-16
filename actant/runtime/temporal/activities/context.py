@@ -74,7 +74,7 @@ class ActivityContext:
             raise ApplicationError("resolver returned a different agent id", non_retryable=True)
         return agent
 
-    async def _sandbox_for(self, agent: AgentDefinition, thread_id: str) -> Sandbox:
+    async def sandbox_for(self, agent: AgentDefinition, thread_id: str) -> Sandbox:
         """The thread's sandbox, opened on first use. Refused, not retried, when
         the agent declares no spec or the worker registered no providers."""
         if agent.sandbox is None:
@@ -90,7 +90,7 @@ class ActivityContext:
             )
         return await self.sandboxes.for_thread(agent.sandbox, agent.id, thread_id)
 
-    def _hooks(
+    def hooks(
         self, thread: AgentThread, *, run_id: str | None = None, turn_id: str | None = None
     ) -> AgentThreadHooks:
         if self.hooks_factory is not None:
@@ -105,7 +105,7 @@ class ActivityContext:
             thread.id, publisher=ScopedEventSink(self.event_sink, thread.agent_id, run_id, turn_id)
         )
 
-    def _listener(
+    def listener(
         self, thread: AgentThread, *, run_id: str | None = None, turn_id: str | None = None
     ) -> StreamListener:
         if self.listener_factory is not None:

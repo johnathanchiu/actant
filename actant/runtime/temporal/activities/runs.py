@@ -99,7 +99,7 @@ class RunActivities:
             payload.agent_id, payload.thread_id
         )
         run = await self.context.stores.runs.get(payload.run_id)
-        hooks = self.context._hooks(thread, run_id=payload.run_id, turn_id=payload.turn_id)
+        hooks = self.context.hooks(thread, run_id=payload.run_id, turn_id=payload.turn_id)
 
         for msg in payload.new_messages:
             await self.context.stores.messages.append_user(
@@ -152,7 +152,7 @@ class RunActivities:
         try:
             assistant = await agent.complete(
                 context.messages,
-                self.context._listener(thread, run_id=payload.run_id, turn_id=payload.turn_id),
+                self.context.listener(thread, run_id=payload.run_id, turn_id=payload.turn_id),
                 final_turn=run.turn_count + 1 >= run.max_turns,
             )
         except StreamCancelled as exc:
@@ -289,7 +289,7 @@ class RunActivities:
                     artifacts=tuple(artifacts),
                 )
             )
-        await self.context._hooks(thread, run_id=payload.run_id).on_complete(
+        await self.context.hooks(thread, run_id=payload.run_id).on_complete(
             success=payload.outcome == RunOutcome.COMPLETED.value,
             reason=payload.stop_reason or payload.outcome,
             message="",
