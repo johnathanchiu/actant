@@ -164,3 +164,36 @@ async def test_killed_worker_repairs_one_result_without_repeating_side_effect(
                     if process.returncode is None:
                         process.kill()
                     await process.wait()
+
+
+async def test_terminal_tool_transition_is_atomic(stores: SQLAlchemyRuntimeStores) -> None:
+    """Competing repair/completion workers must agree on one immutable outcome."""
+    await stores.tool_calls.save(
+        ToolCallRecord(
+            id="race",
+            group_id="g",
+            run_id="r",
+            agent_id="a",
+            thread_id="t",
+            turn_id="turn",
+            turn_index=1,
+            name="slow",
+            args={},
+            status=ToolCallStatus.RUNNING,
+        )
+    )
+    candidates = [ToolCallStatus.COMPLETED, ToolCallStatus.FAILED] * 6
+    won = await asyncio.gather(
+        *[
+            stores.tool_calls.update_status("race", status, result={"winner": i})
+            for i, status in enumerate(candidates)
+        ]
+    )
+    assert sum(won) == 1
+    winner = won.index(True)
+    record = await stores.tool_calls.get("race")
+    assert record.status is candidates[winner]
+    assert record.result == {"winner": winner}
+    # Even a delayed admission cannot reopen the terminal call.
+    assert not await stores.tool_calls.update_status("race", ToolCallStatus.WAITING)
+    assert (await stores.tool_calls.get("race")).result == {"winner": winner}

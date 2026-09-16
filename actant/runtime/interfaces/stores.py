@@ -129,7 +129,9 @@ class ToolCallStore(Protocol):
         result: object = None,
         prompt: str | None = None,
         wait_request: JSONObject | None = None,
-    ) -> None: ...
+    ) -> bool:
+        """Atomically update a nonterminal call; terminal outcomes are immutable."""
+        ...
 
     async def finish_waiting(
         self,

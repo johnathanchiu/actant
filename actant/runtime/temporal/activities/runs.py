@@ -247,6 +247,9 @@ class RunActivities:
                         ToolCallStatus.COMPLETED if cancelled else ToolCallStatus.FAILED,
                         result=result,
                     )
+                # A surviving timed-out activity may have won the terminal transition.
+                record = await self.context.stores.tool_calls.get(record.id)
+                result = record.result
                 # Idempotent store operation also repairs a turn persisted before its
                 # activity died, and a tool group whose finalization failed.
                 await self.context.stores.messages.append_tool_result(

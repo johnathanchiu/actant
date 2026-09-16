@@ -100,3 +100,96 @@ async def test_temporal_activity_failure_drains_siblings_and_repairs_transcript(
             await runtime.send_message("a", "t", "continue")
             await asyncio.wait_for(env.client.get_workflow_handle(workflow_id).result(), 30)
             assert (await runtime.thread("a", "t").messages())[-1].content == "recovered"
+
+
+async def test_late_tool_completion_preserves_repaired_result() -> None:
+    """A timed-out worker can survive and finish after another worker repairs its run."""
+    from actant.llm.messages import Message
+    from actant.runtime.events.lifecycle import AgentThreadHooks
+    from actant.runtime.temporal.types import FinalizeRunInput
+    from actant.tools.base import ToolResult
+    from actant.tools.calls import ToolCallRecord
+
+    started, release = asyncio.Event(), asyncio.Event()
+    effects: list[str] = []
+    events: list[ToolResult] = []
+
+    class Hooks(AgentThreadHooks):
+        async def on_tool_result(
+            self, tool_call_id: str, result: ToolResult, turn_id: str | None = None
+        ) -> None:
+            events.append(result)
+
+    @tool
+    async def slow() -> str:
+        effects.append("once")
+        started.set()
+        await release.wait()
+        return "late success"
+
+    agent = AgentDefinition(
+        id="a", name="a", persona="", llm=FakeLLM([]), tools=ToolRegistry([slow])
+    )
+    stores = InMemoryRuntimeStores()
+    activities = TemporalRuntimeActivities(
+        ActivityContext(
+            stores=stores,
+            resolve_agent=static_agents({"a": agent}),
+            hooks_factory=lambda _: Hooks(),
+        )
+    )
+    await stores.threads.get_or_create("a", "t")
+    await stores.runs.create("a", "t", run_id="r", max_turns=1)
+    record = ToolCallRecord(
+        id="c",
+        group_id="g",
+        run_id="r",
+        agent_id="a",
+        thread_id="t",
+        turn_id="turn",
+        turn_index=1,
+        name="slow",
+        args={},
+        status=ToolCallStatus.RUNNING,
+    )
+    await stores.messages.append_assistant_with_tool_calls(
+        "a",
+        "t",
+        "turn",
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="c", function=ToolCallFunction(name="slow", arguments="{}"))],
+        ),
+        [record],
+    )
+    task = asyncio.create_task(
+        activities.tools.execute_tool(
+            ExecuteInput(agent_id="a", thread_id="t", run_id="r", tool_call_id="c")
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        await activities.runs.finalize_run(
+            FinalizeRunInput(
+                agent_id="a",
+                thread_id="t",
+                run_id="r",
+                outcome="failed",
+                turn_count=1,
+                stop_reason="heartbeat timeout",
+            )
+        )
+        repaired = (await stores.tool_calls.get("c")).result
+        release.set()
+        outcome = await asyncio.wait_for(task, 2)
+        assert outcome.status == "failed"
+        assert (await stores.tool_calls.get("c")).status is ToolCallStatus.FAILED
+        assert (await stores.tool_calls.get("c")).result == repaired
+        results = [m for m in await stores.messages.list_for_thread("a", "t") if m.role == "tool"]
+        assert len(results) == 1 and "heartbeat timeout" in str(results[0].content)
+        assert events == []
+        assert effects == ["once"]
+    finally:
+        release.set()
+        await task

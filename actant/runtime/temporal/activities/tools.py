@@ -90,12 +90,13 @@ class ToolActivities:
             request = decision.wait_request
             request_data = request.to_dict() if request is not None else None
             prompt = decision.reason or invocation.get_description()
-            await self.context.stores.tool_calls.update_status(
+            if not await self.context.stores.tool_calls.update_status(
                 record.id,
                 ToolCallStatus.WAITING,
                 prompt=prompt,
                 wait_request=request_data,
-            )
+            ):
+                return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.DENY.value)
             await hooks.on_tool_waiting(
                 record.id, prompt, record.turn_id, wait_request=request_data
             )
@@ -106,7 +107,10 @@ class ToolActivities:
                 wait_request=request_data,
             )
 
-        await self.context.stores.tool_calls.update_status(record.id, ToolCallStatus.RUNNING)
+        if not await self.context.stores.tool_calls.update_status(
+            record.id, ToolCallStatus.RUNNING
+        ):
+            return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.DENY.value)
         return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.EXECUTE.value)
 
     async def _deny(
@@ -114,10 +118,10 @@ class ToolActivities:
     ) -> AdmitOutcome:
         result = ToolResult.fail(reason)
         result.tool_call_id = record.id
-        await self.context.stores.tool_calls.update_status(
+        if await self.context.stores.tool_calls.update_status(
             record.id, ToolCallStatus.BLOCKED, result=result.to_dict()
-        )
-        await hooks.on_tool_result(record.id, result, record.turn_id)
+        ):
+            await hooks.on_tool_result(record.id, result, record.turn_id)
         return AdmitOutcome(
             tool_call_id=record.id,
             decision=AdmitDecision.DENY.value,
@@ -150,6 +154,12 @@ class ToolActivities:
     async def _execute_tool(self, payload: ExecuteInput) -> ExecuteOutcome:
         agent = await self.context.agent(payload.agent_id, payload.thread_id)
         record = await self.context.stores.tool_calls.get(payload.tool_call_id)
+        if record.status in {
+            ToolCallStatus.COMPLETED,
+            ToolCallStatus.BLOCKED,
+            ToolCallStatus.FAILED,
+        }:
+            return _outcome_from_record(record)
         tool = agent.tools.get(record.name)
         if tool is None:
             return await self._execute_failed(record.id, f"Tool {record.name} not found")
@@ -174,9 +184,10 @@ class ToolActivities:
 
         result.tool_call_id = record.id
         status = ToolCallStatus.COMPLETED if result.error is None else ToolCallStatus.FAILED
-        await self.context.stores.tool_calls.update_status(
+        if not await self.context.stores.tool_calls.update_status(
             record.id, status, result=result.to_dict()
-        )
+        ):
+            return _outcome_from_record(await self.context.stores.tool_calls.get(record.id))
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
@@ -255,9 +266,10 @@ class ToolActivities:
         result = ToolResult.fail(reason)
         result.tool_call_id = tool_call_id
         try:
-            await self.context.stores.tool_calls.update_status(
+            if not await self.context.stores.tool_calls.update_status(
                 tool_call_id, ToolCallStatus.FAILED, result=result.to_dict()
-            )
+            ):
+                return _outcome_from_record(await self.context.stores.tool_calls.get(tool_call_id))
         except Exception:  # noqa: BLE001 -- preserve structured boundary
             pass
         return ExecuteOutcome(tool_call_id=tool_call_id, status=ExecuteStatus.FAILED.value)

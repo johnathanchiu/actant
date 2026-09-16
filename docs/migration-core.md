@@ -157,6 +157,12 @@ persisted parent links, as the demo does, rather than depend on the spawning pro
 `InMemorySessionStore` and the unused `SessionStore` interface are removed. Use runtime
 stores. `message_to_parts` and `parts_to_messages` remain, along with existing Postgres models.
 
+Custom `ToolCallStore` adapters must make `update_status` an atomic conditional write: return
+`True` when updating a nonterminal call, `False` when the call is already completed, blocked,
+or failed, and preserve that terminal status and result. Missing IDs still raise `KeyError`.
+The built-in stores implement this without a schema change. This fences late writes from
+workers that survive a Temporal timeout; it does not undo external tool side effects.
+
 ## Downstream checklist
 
 - Ume gateway: remove private nested-client assignment and empty `agents` mapping.
