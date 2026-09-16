@@ -42,8 +42,8 @@ host that pushes adds a :class:`~actant.sandbox.protocol.StorageStatus` to every
 call response (``CallResponse.storage``).
 
 Image uploads (``HostConfig.images``) never fail a call either. Each returned image
-is uploaded under a key named by its content hash and presigned, so the response
-carries a URL instead of the bytes; an image whose upload or presign fails goes
+is uploaded under a key named by its content hash, so the response
+carries a durable reference; an image whose upload fails goes
 inline, and ``StorageStatus.image_error`` says why.
 """
 
@@ -82,11 +82,11 @@ from actant.sandbox.protocol import (
     HostConfig,
     Image,
     ImageUploadConfig,
+    AssetSource,
     InlineSource,
     PushConfig,
     Route,
     StorageStatus,
-    UrlSource,
 )
 
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
@@ -297,13 +297,11 @@ def image_upload_config(
     bucket: ImageBucket, spec: SandboxSpec, thread_id: str
 ) -> ImageUploadConfig | None:
     """The host's image uploads for ``thread_id``; ``None`` when the spec sends bytes."""
-    if spec.image_url_ttl_s is None:
+    if not spec.upload_images:
         return None
     return ImageUploadConfig(
         destination=bucket.destination(thread_id),
         endpoint_url=bucket.endpoint_url,
-        public_endpoint_url=bucket.public_endpoint_url,
-        expires_s=spec.image_url_ttl_s,
         timeout_s=spec.image_upload_timeout_s,
     )
 
@@ -313,41 +311,23 @@ def _s5cmd(endpoint_url: str | None, *args: str) -> list[str]:
 
 
 async def upload_image(image: Image, config: ImageUploadConfig) -> tuple[Image, str | None]:
-    """``image`` with a presigned URL source, or unchanged with the reason it could not be."""
+    """``image`` with a durable asset source, or unchanged with the reason it could not be."""
     if not isinstance(image.source, InlineSource):
         return image, None
     data = base64.b64decode(image.source.data_b64)
     extension = mimetypes.guess_extension(image.media_type) or ""
     key = f"{config.destination}{hashlib.sha256(data).hexdigest()}{extension}"
-    # One budget for both commands: an unreachable bucket costs at most ``timeout_s``.
-    deadline = time.monotonic() + config.timeout_s
     upload = _s5cmd(config.endpoint_url, "pipe", "--content-type", image.media_type, key)
     error, _ = await run_bounded(upload, config.timeout_s, stdin=data)
     if error is not None:
         return image, f"{image.name}: upload {error}"
-    expires_at = time.time() + config.expires_s
-    presign = _s5cmd(
-        config.public_endpoint_url, "presign", "--expire", f"{config.expires_s}s", key
-    )
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        return (
-            image,
-            f"{image.name}: presign skipped: upload used the {config.timeout_s:g}s budget",
-        )
-    error, stdout = await run_bounded(presign, remaining, capture=True)
-    url = stdout.decode(errors="replace").strip()
-    if error is None and not url.startswith(("https://", "http://")):
-        error = f"not a URL: {url[:200]!r}"
-    if error is not None:
-        return image, f"{image.name}: presign {error}"
-    return image.model_copy(update={"source": UrlSource(url=url, expires_at=expires_at)}), None
+    return image.model_copy(update={"source": AssetSource(storage_key=key)}), None
 
 
 async def upload_images(
     response: CallResponse, config: ImageUploadConfig
 ) -> tuple[CallResponse, str | None]:
-    """``response`` with each image uploaded and presigned where possible, and the reason
+    """``response`` with each image uploaded to durable storage where possible, and the reason
     the first that could not be stayed inline. Never raises.
 
     At most :data:`UPLOAD_CONCURRENCY` upload at once. After an upload fails, the images not yet
@@ -369,7 +349,6 @@ async def upload_images(
                 uploaded, error = image, f"{image.name}: {type(exc).__name__}: {exc}"[:500]
             if error is not None:
                 errors.append(error)
-                # A presign that ran out of budget says nothing about the bucket.
                 if error.startswith(f"{image.name}: upload "):
                     failed.append(error)
             return uploaded

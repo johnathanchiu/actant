@@ -11,6 +11,9 @@ the pure-Temporal runtime end-to-end.
 
 from __future__ import annotations
 
+from actant.runtime.temporal.activities.context import ActivityContext
+from runtime_fixtures import static_agents
+
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
@@ -26,7 +29,7 @@ from actant.core import JSONObject, new_id
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime.temporal.activities import TemporalRuntimeActivities
-from actant.runtime.temporal.client import TemporalRuntimeClient
+from actant.runtime import AgentRuntime
 from actant.runtime.temporal.types import (
     DeferredToolResolution,
     InboundMessage,
@@ -117,11 +120,13 @@ async def _run(
     """Spin up a WorkflowEnvironment + Worker and run ``test`` inside it."""
     stores = InMemoryRuntimeStores()
     activities = TemporalRuntimeActivities(
-        stores=stores,
-        agents={agent.id: agent},
-        hooks_factory=hooks_factory,  # type: ignore[arg-type]
-        run_completion_handler=run_completion_handler,
-        turn_gate=turn_gate,
+        ActivityContext(
+            stores=stores,
+            resolve_agent=static_agents({agent.id: agent}),
+            hooks_factory=hooks_factory,  # type: ignore[arg-type]
+            run_completion_handler=run_completion_handler,
+            turn_gate=turn_gate,
+        )
     )
     task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
 
@@ -853,7 +858,9 @@ async def test_a_message_racing_the_ending_is_not_lost() -> None:
     """
     agent = _agent(FakeLLM([FakeResponse(text="one"), FakeResponse(text="two")]))
     stores = InMemoryRuntimeStores()
-    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({agent.id: agent}))
+    )
     task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
 
     async with await WorkflowEnvironment.start_local() as env:
@@ -863,9 +870,9 @@ async def test_a_message_racing_the_ending_is_not_lost() -> None:
             workflows=[AgentThreadWorkflow],
             activities=activities.all,
         ):
-            runtime = TemporalRuntimeClient(
+            runtime = AgentRuntime(
+                client=env.client,
                 stores=stores,
-                agents={agent.id: agent},
                 config=TemporalRuntimeConfig(
                     task_queue=task_queue,
                     address=env.client.service_client.config.target_host,

@@ -116,7 +116,6 @@ def provider() -> ModalSandboxProvider:
         app_name="app",
         bucket="b",
         endpoint_url="https://r2.example",
-        public_endpoint_url="https://r2.example",
         secret_name="r2",
     )
 
@@ -199,8 +198,6 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
             images=ImageUploadConfig(
                 destination="s3://b/actant-images/t1/",
                 endpoint_url="https://r2.example",
-                public_endpoint_url="https://r2.example",
-                expires_s=6 * 3600,
                 timeout_s=10,
             ),
         ),
@@ -329,7 +326,7 @@ async def test_inline_bucket_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fake.created[1]["volumes"][MOUNT_PATH][2]["secret"] == ("dict", creds)
 
 
-async def test_disk_sync_services_need_a_public_endpoint_unless_urls_are_off(
+async def test_disk_sync_uploads_references_without_public_signing_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = _FakeModal()
@@ -340,15 +337,16 @@ async def test_disk_sync_services_need_a_public_endpoint_unless_urls_are_off(
     spec = SandboxSpec(
         backend="modal", storage=Storage.DISK_SYNC, services={"t": "pkg:T"}, network=True
     )
-    with pytest.raises(ValueError, match="public_endpoint_url"):
-        await provider.open(spec, agent_id="a", thread_id="t")
-    assert fake.created == ((), {})  # refused before any Modal call
+    await provider.open(spec, agent_id="a", thread_id="t")
+    config = EntryConfig.model_validate_json(fake.created[0][3]).host
+    assert config is not None and config.images is not None
+    assert config.images.destination == "s3://b/actant-images/t/"
     bytes_only = SandboxSpec(
         backend="modal",
         storage=Storage.DISK_SYNC,
         services={"t": "pkg:T"},
         network=True,
-        image_url_ttl_s=None,
+        upload_images=False,
     )
     await provider.open(bytes_only, agent_id="a", thread_id="t")
     host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
@@ -363,7 +361,6 @@ async def test_disk_sync_services_need_a_public_endpoint_unless_urls_are_off(
         app_name="app",
         bucket="b",
         endpoint_url="http://10.0.0.5:9000",
-        public_endpoint_url="https://tunnel.example",
     )
     timed = SandboxSpec(
         backend="modal",
@@ -376,7 +373,7 @@ async def test_disk_sync_services_need_a_public_endpoint_unless_urls_are_off(
     host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
     assert host_config is not None and host_config.images is not None
     assert host_config.images.timeout_s == 2.5
-    assert host_config.images.public_endpoint_url == "https://tunnel.example"
+    assert host_config.images.endpoint_url == "http://10.0.0.5:9000"
 
 
 def test_with_s5cmd_installs_the_pinned_binary() -> None:

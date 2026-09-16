@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from typing import cast
+from temporalio.client import Client
+from unittest.mock import Mock
+
 import pytest
 
 from actant.runtime.exceptions import ToolCallNotFoundError, ToolCallNotWaitingError
 from actant.runtime.stores import InMemoryRuntimeStores
-from actant.runtime.temporal.client import TemporalRuntimeClient
+from actant.runtime import AgentRuntime
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 
@@ -23,8 +27,8 @@ def _record(*, status: ToolCallStatus) -> ToolCallRecord:
     )
 
 
-def _client(stores: InMemoryRuntimeStores) -> TemporalRuntimeClient:
-    return TemporalRuntimeClient(stores=stores, agents={})
+def _client(stores: InMemoryRuntimeStores) -> AgentRuntime:
+    return AgentRuntime(client=cast(Client, Mock()), stores=stores)
 
 
 @pytest.mark.asyncio

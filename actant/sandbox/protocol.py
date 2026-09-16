@@ -13,8 +13,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
 
-from actant.sandbox.base import MAX_PRESIGN_S
-
 
 class Route(StrEnum):
     #: ``POST`` a :class:`CallRequest`; the reply is a :class:`CallResponse`.
@@ -47,6 +45,7 @@ class ImageSourceKind(StrEnum):
     INLINE = "inline"
     #: A presigned URL the model provider fetches from the bucket.
     URL = "url"
+    ASSET = "asset"
 
 
 class InlineSource(_Message):
@@ -61,14 +60,19 @@ class UrlSource(_Message):
     expires_at: float
 
 
+class AssetSource(_Message):
+    kind: Literal[ImageSourceKind.ASSET] = ImageSourceKind.ASSET
+    storage_key: str
+
+
 class Image(_Message):
     """One image a service method returned. ``name`` is its sandbox-relative path, or
     ``image-<n>`` for bytes. A host with :class:`ImageUploadConfig` sends a
-    :class:`UrlSource`; without one, or when an upload fails, the bytes go inline."""
+    :class:`AssetSource`; without one, or when an upload fails, the bytes go inline."""
 
     name: str
     media_type: str
-    source: Annotated[InlineSource | UrlSource, Field(discriminator="kind")]
+    source: Annotated[InlineSource | UrlSource | AssetSource, Field(discriminator="kind")]
 
 
 class StorageStatus(_Message):
@@ -113,24 +117,11 @@ class PushConfig(_Message):
 
 
 class ImageUploadConfig(_Message):
-    """Upload each returned image (content-addressed, under ``destination``) with s5cmd
-    against ``endpoint_url``, then presign it against ``public_endpoint_url``.
+    """Upload bytes under a durable S3 reference. Signing belongs to the reader."""
 
-    The two endpoints differ when the bucket is reached one way from the sandbox and
-    another from the model provider (a local MinIO behind a public tunnel). A presigned
-    URL signs its host, so the public endpoint must forward requests with that host.
-    Bucket keys come from the host's environment (``AWS_ACCESS_KEY_ID`` and friends).
-    """
-
-    #: ``s3://bucket/prefix/``.
     destination: str = Field(pattern=r"^s3://[^/]+/(.*/)?$")
-    #: Where uploads go; ``None`` is AWS S3.
     endpoint_url: str | None = None
-    #: The host presigned URLs name. A model provider fetches them, so it must reach it.
-    public_endpoint_url: str = Field(pattern=r"^https?://[^/\s]+$|^https?://[^/\s]+/")
-    expires_s: int = Field(gt=0, le=MAX_PRESIGN_S)
-    #: Upload plus presign, per image; past it the commands are killed and the image
-    #: goes inline.
+    # A failed or timed-out upload falls back to inline bytes.
     timeout_s: PositiveFloat = Field(default=10.0, allow_inf_nan=False)
 
 

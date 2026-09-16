@@ -15,6 +15,9 @@ result. The new contract makes that impossible.
 
 from __future__ import annotations
 
+from actant.runtime.temporal.activities.context import ActivityContext
+from runtime_fixtures import static_agents
+
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
@@ -104,7 +107,9 @@ async def _run(
     agent: AgentDefinition,
 ) -> None:
     stores = InMemoryRuntimeStores()
-    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({agent.id: agent}))
+    )
     task_queue = f"test-infallible-{uuid.uuid4().hex[:8]}"
 
     async with await WorkflowEnvironment.start_local() as env:

@@ -11,6 +11,9 @@ handle it can supervise instead of stopping until the subagent is done.
 
 from __future__ import annotations
 
+from actant.runtime.temporal.activities.context import ActivityContext
+from runtime_fixtures import static_agents
+
 from dataclasses import dataclass, field
 
 import pytest
@@ -239,7 +242,7 @@ async def test_the_runtime_hands_a_tool_its_call_context() -> None:
     )
     stores = InMemoryRuntimeStores()
     await stores.threads.get_or_create("demo", "thread_from_the_record")
-    activities = ToolActivities(stores=stores, agents={})
+    activities = ToolActivities(ActivityContext(stores=stores, resolve_agent=static_agents({})))
     agent = cast(Any, None)  # no sandbox is requested, so the agent is never consulted
 
     ctx = await activities._call_context(agent, tool, cast(ToolCallRecord, record))
@@ -268,13 +271,23 @@ async def test_the_parent_passed_at_thread_start_reaches_the_call_context() -> N
     from actant.runtime.temporal.types import StartRunInput
 
     stores = InMemoryRuntimeStores()
-    await RunActivities(stores=stores, agents={}).start_run(
+    from actant.llm.providers.fake import FakeLLM
+    from actant.tools import ToolRegistry
+
+    agent = AgentDefinition(
+        id="demo", name="Demo", persona="", llm=FakeLLM([]), tools=ToolRegistry([])
+    )
+    await RunActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({"demo": agent}))
+    ).start_run(
         StartRunInput(
             agent_id="demo", thread_id="child", run_id="r1", max_turns=5, parent_thread_id="root"
         )
     )
     record = _FakeCall(id="tc-9", thread_id="child")
-    ctx = await ToolActivities(stores=stores, agents={})._call_context(
+    ctx = await ToolActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({}))
+    )._call_context(
         cast(AgentDefinition, object()),
         TaskTool(spawner=_CapturingSpawner()),
         cast(ToolCallRecord, record),

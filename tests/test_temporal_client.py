@@ -1,12 +1,18 @@
-"""TemporalRuntimeClient integration tests."""
+"""AgentRuntime integration tests."""
 
 from __future__ import annotations
+
+from actant.runtime.temporal.activities.context import ActivityContext
+from runtime_fixtures import static_agents
 
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from typing import cast
+from unittest.mock import Mock
+from temporalio.client import Client
 import pytest
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
@@ -16,7 +22,7 @@ from actant.core import JSONObject, new_id
 from actant.llm.messages import ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime.temporal.activities import TemporalRuntimeActivities
-from actant.runtime.temporal.client import TemporalRuntimeClient
+from actant.runtime import AgentRuntime
 from actant.runtime.temporal.types import TemporalRuntimeConfig
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.stores import InMemoryRuntimeStores
@@ -79,7 +85,7 @@ async def _wait_for(
 class _RunSetup:
     env: WorkflowEnvironment
     stores: InMemoryRuntimeStores
-    runtime: TemporalRuntimeClient
+    runtime: AgentRuntime
     task_queue: str
 
 
@@ -90,7 +96,9 @@ async def _run(
 ) -> None:
     stores = InMemoryRuntimeStores()
     task_queue = f"test-client-{uuid.uuid4().hex[:8]}"
-    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({agent.id: agent}))
+    )
 
     async with await WorkflowEnvironment.start_local() as env:
         async with Worker(
@@ -99,9 +107,9 @@ async def _run(
             workflows=[AgentThreadWorkflow],
             activities=activities.all,
         ):
-            runtime = TemporalRuntimeClient(
+            runtime = AgentRuntime(
+                client=env.client,
                 stores=stores,
-                agents={agent.id: agent},
                 config=TemporalRuntimeConfig(
                     address=env.client.service_client.config.target_host,
                     namespace=env.client.namespace,
@@ -336,12 +344,14 @@ async def test_resolution_is_durable_while_no_worker_is_running() -> None:
     )
     stores = InMemoryRuntimeStores()
     task_queue = f"test-restart-{uuid.uuid4().hex[:8]}"
-    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({agent.id: agent}))
+    )
 
     async with await WorkflowEnvironment.start_local() as env:
-        runtime = TemporalRuntimeClient(
+        runtime = AgentRuntime(
+            client=env.client,
             stores=stores,
-            agents={agent.id: agent},
             config=TemporalRuntimeConfig(
                 address=env.client.service_client.config.target_host,
                 namespace=env.client.namespace,
@@ -429,12 +439,14 @@ async def test_continue_as_new_preserves_thread_state_between_agent_runs() -> No
     )
     stores = InMemoryRuntimeStores()
     task_queue = f"test-continue-{uuid.uuid4().hex[:8]}"
-    activities = TemporalRuntimeActivities(stores=stores, agents={agent.id: agent})
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({agent.id: agent}))
+    )
 
     async with await WorkflowEnvironment.start_local() as env:
-        runtime = TemporalRuntimeClient(
+        runtime = AgentRuntime(
+            client=env.client,
             stores=stores,
-            agents={agent.id: agent},
             config=TemporalRuntimeConfig(
                 address=env.client.service_client.config.target_host,
                 namespace=env.client.namespace,
@@ -495,9 +507,9 @@ async def test_state_for_a_thread_that_does_not_exist_is_an_error() -> None:
     answer, permanently.
     """
     stores = InMemoryRuntimeStores()
-    client = TemporalRuntimeClient(
+    client = AgentRuntime(
+        client=cast(Client, Mock()),
         stores=stores,
-        agents={},
         config=TemporalRuntimeConfig(task_queue="unused"),
     )
 

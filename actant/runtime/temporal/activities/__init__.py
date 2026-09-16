@@ -1,43 +1,44 @@
-"""Worker-bound Temporal activity groups."""
-
-from __future__ import annotations
+"""Compose activity groups without an inherited runtime or forwarding facade."""
 
 from collections.abc import Callable
-
 from actant.runtime.temporal.activities.context import (
+    ActivityContext,
     HookFactory,
     ListenerFactory,
     MessagePreprocessor,
 )
 from actant.runtime.temporal.activities.runs import RunActivities
-from actant.runtime.temporal.activities.threads import ThreadActivities
 from actant.runtime.temporal.activities.tools import ToolActivities
+from actant.runtime.temporal.activities.threads import ThreadActivities
 
 
-class TemporalRuntimeActivities(RunActivities, ToolActivities, ThreadActivities):
-    """Complete activity set hosted by an Actant worker."""
+class TemporalRuntimeActivities:
+    def __init__(self, context: ActivityContext) -> None:
+        self.runs = RunActivities(context)
+        self.tools = ToolActivities(context)
+        self.threads = ThreadActivities(context)
 
     @property
     def all(self) -> list[Callable[..., object]]:
-        """Activity callables for Temporal worker registration."""
         return [
-            self.start_run,
-            self.run_turn,
-            self.admit_tool,
-            self.execute_tool,
-            self.resolve_tool,
-            self.finalize_tool_group,
-            self.finalize_run,
-            self.apply_thread_cancellation,
+            self.runs.start_run,
+            self.runs.run_turn,
+            self.tools.admit_tool,
+            self.tools.execute_tool,
+            self.tools.resolve_tool,
+            self.tools.finalize_tool_group,
+            self.runs.finalize_run,
+            self.threads.apply_thread_cancellation,
         ]
 
 
 __all__ = [
+    "TemporalRuntimeActivities",
+    "RunActivities",
+    "ToolActivities",
+    "ThreadActivities",
+    "ActivityContext",
     "HookFactory",
     "ListenerFactory",
     "MessagePreprocessor",
-    "RunActivities",
-    "TemporalRuntimeActivities",
-    "ThreadActivities",
-    "ToolActivities",
 ]

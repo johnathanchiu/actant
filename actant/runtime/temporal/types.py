@@ -23,7 +23,7 @@ class TemporalRuntimeConfig:
     namespace: str = "default"
     task_queue: str = "actant-runtime"
     workflow_id_prefix: str = "actant-thread"
-    max_turns_per_run: int = 25
+    max_turns_per_run: int | None = None
     # Soft threshold for triggering continue_as_new at the run boundary.
     # Replay walks every event so very long histories slow workflow tasks
     # down. 5_000 is a starting point; tune via load test.
@@ -129,7 +129,7 @@ class InboundMessage:
 class ThreadInput:
     agent_id: str
     thread_id: str
-    max_turns_per_run: int = 25
+    max_turns_per_run: int | None = None
     #: Set when this thread is a subagent of another; recorded on the thread
     #: row so its tools see ``CallContext.parent_thread_id``.
     parent_thread_id: str | None = None
@@ -153,8 +153,15 @@ class StartRunInput:
     agent_id: str
     thread_id: str
     run_id: str
-    max_turns: int
+    max_turns: int | None
     parent_thread_id: str | None = None
+
+
+@dataclass(frozen=True)
+class StartedRun:
+    turn_count: int
+    max_turns: int
+    error: str | None = None
 
 
 @dataclass(frozen=True)

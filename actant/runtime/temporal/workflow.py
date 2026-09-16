@@ -1,9 +1,9 @@
 """Workflow definitions for the Actant Temporal runtime.
 
 One ``AgentThreadWorkflow`` execution per ``(agent_id, thread_id)``.
-The workflow id encodes the thread, the workflow's lifetime is the
-thread's lifetime, and all interaction with the thread (send a
-message, cancel) flows through this workflow.
+The workflow id encodes the thread. Executions close when the inbox is empty;
+a later message starts another execution with the same logical id. Commands
+(send a message, cancel) flow through Temporal.
 
 The workflow is a thin orchestrator. It:
 
@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from dataclasses import replace
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from actant.runtime.temporal.activities import (
@@ -69,8 +71,8 @@ class AgentThreadWorkflow:
     The workflow owns the durable lifetime of one agent thread. Each inbox
     activation starts an agent run that continues until ``COMPLETED``,
     ``EXHAUSTED``, ``FAILED``, or ``CANCELLED``. After finalization, the thread
-    workflow parks on ``wait_condition`` until another ``inbound`` message
-    arrives or the workflow is cancelled.
+    workflow closes if its inbox is empty. A later message starts a new
+    execution with the same logical thread id and persisted transcript.
 
     Exhaustion ends only the current agent run. The agent thread remains alive
     and the next inbound message starts a fresh run with a fresh budget.
@@ -168,7 +170,7 @@ class AgentThreadWorkflow:
         # Seeded from the store, not carried: a thread ends when it is done
         # and restarts on the next message, so a count held only here would
         # reset and turn numbers would repeat within one thread.
-        self._turn_count_total = await workflow.execute_activity_method(
+        started = await workflow.execute_activity_method(
             RunActivities.start_run,
             StartRunInput(
                 agent_id=payload.agent_id,
@@ -179,8 +181,14 @@ class AgentThreadWorkflow:
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )
-        self._stop_reason = None
-        outcome = await self._run_agent(payload, run_id, new_messages)
+        self._turn_count_total = started.turn_count
+        payload = replace(payload, max_turns_per_run=started.max_turns)
+        self._stop_reason = started.error
+        outcome = (
+            RunOutcome.FAILED
+            if started.error is not None
+            else await self._run_agent(payload, run_id, new_messages)
+        )
         await workflow.execute_activity_method(
             RunActivities.finalize_run,
             FinalizeRunInput(
@@ -202,6 +210,7 @@ class AgentThreadWorkflow:
         new_messages: list[InboundMessage],
     ) -> RunOutcome:
         """Run agent turns until a stop condition or the turn budget."""
+        assert payload.max_turns_per_run is not None
         turns_remaining = payload.max_turns_per_run
         text_only_turns = 0
 
@@ -224,7 +233,8 @@ class AgentThreadWorkflow:
                     start_to_close_timeout=_RUN_TURN_TIMEOUT,
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
-            except Exception:
+            except Exception as error:
+                self._stop_reason = str(error.__cause__ or error)
                 # RUN_TURN failed (LLM error, cancellation, etc.).
                 # Surface as FAILED and return to the thread lifecycle —
                 # next user message starts a fresh run. The thread
@@ -246,7 +256,11 @@ class AgentThreadWorkflow:
                     return RunOutcome.EXHAUSTED
                 return RunOutcome.COMPLETED
 
-            should_stop = await self._run_tool_group(payload, turn)
+            try:
+                should_stop = await self._run_tool_group(payload, turn)
+            except ActivityError as error:
+                self._stop_reason = str(error.__cause__ or error)
+                return RunOutcome.FAILED
             if self._cancelled:
                 return RunOutcome.CANCELLED
             if should_stop:
@@ -263,8 +277,8 @@ class AgentThreadWorkflow:
     ) -> bool:
         """Admit, execute or resolve in parallel, then finalize once.
 
-        Tool-level failures are absorbed inside activities (each is
-        infallible at its boundary), so this method has no try/except.
+        Tool exceptions become structured results. Temporal-level failures
+        (for example worker loss or timeout) fail the run after siblings drain.
         Every tool_call ends with a terminal status and a persisted
         result by the time ``finalize_tool_group`` runs — which appends
         the tool_result messages and closes the transcript invariant.
@@ -288,9 +302,15 @@ class AgentThreadWorkflow:
             for spec in turn.tool_calls
         ]
         admits: dict[str, AdmitOutcome] = {}
+        admission_error: ActivityError | None = None
         for fut in workflow.as_completed(admit_handles):
-            outcome = await fut
-            admits[outcome.tool_call_id] = outcome
+            try:
+                outcome = await fut
+                admits[outcome.tool_call_id] = outcome
+            except ActivityError as error:
+                admission_error = error
+        if admission_error is not None:
+            raise admission_error
 
         # 2. Each tool produces one outcome. EXECUTE runs it. AWAIT_HUMAN
         #    suspends inside the workflow until a person answers. DENY is
@@ -332,9 +352,17 @@ class AgentThreadWorkflow:
         # 3. This is the durable tool-group barrier. Temporal wakes the
         #    workflow only for activity completions, signals, timers, or cancel.
         terminal_tool = False
+        execution_error: ActivityError | None = None
         for fut in workflow.as_completed(exec_handles):
-            outcome = await fut  # result already persisted by activity body
-            terminal_tool = terminal_tool or outcome.terminal
+            try:
+                outcome = await fut  # result already persisted by activity body
+                terminal_tool = terminal_tool or outcome.terminal
+            except ActivityError as error:
+                # Drain siblings before finalization; do not race late tool writes.
+                # The failed external call may have executed and is never retried.
+                execution_error = error
+        if execution_error is not None:
+            raise execution_error
 
         if self._cancelled:
             return terminal_tool

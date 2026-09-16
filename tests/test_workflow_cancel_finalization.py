@@ -18,6 +18,9 @@ Both tests run against a real Temporal worker via
 
 from __future__ import annotations
 
+from actant.runtime.temporal.activities.context import ActivityContext
+from runtime_fixtures import static_agents
+
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
@@ -113,8 +116,10 @@ async def _run(
 ) -> None:
     stores = InMemoryRuntimeStores()
     activities = TemporalRuntimeActivities(
-        stores=stores,
-        agents={agent.id: agent},
+        ActivityContext(
+            stores=stores,
+            resolve_agent=static_agents({agent.id: agent}),
+        )
     )
     task_queue = f"test-cancel-{uuid.uuid4().hex[:8]}"
 

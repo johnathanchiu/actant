@@ -24,7 +24,7 @@ import pytest
 
 from actant.sandbox import ImageBucket, LocalSandbox, LocalSandboxProvider, SandboxSpec
 from actant.sandbox import SandboxRunner
-from actant.sandbox.protocol import InlineSource, UrlSource
+from actant.sandbox.protocol import InlineSource, AssetSource
 
 ENDPOINT = os.environ.get("ACTANT_TEST_S3_ENDPOINT", "")
 PUBLIC = os.environ.get("ACTANT_TEST_S3_PUBLIC_ENDPOINT")
@@ -64,7 +64,6 @@ async def _open(tmp_path: Path, images: ImageBucket) -> AsyncIterator[LocalSandb
     spec = SandboxSpec(
         services={"counter": "service_fixtures:Counter"},
         env={"PYTHONPATH": TESTS},
-        image_url_ttl_s=600,
     )
     sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
     assert isinstance(sandbox, LocalSandbox)
@@ -76,7 +75,7 @@ async def _open(tmp_path: Path, images: ImageBucket) -> AsyncIterator[LocalSandb
 
 @pytest.fixture
 async def sandbox(tmp_path: Path, bucket: str) -> AsyncIterator[LocalSandbox]:
-    async for opened in _open(tmp_path, ImageBucket(bucket, ENDPOINT, endpoint_url=ENDPOINT)):
+    async for opened in _open(tmp_path, ImageBucket(bucket, endpoint_url=ENDPOINT)):
         yield opened
 
 
@@ -90,8 +89,10 @@ async def test_returned_images_arrive_as_urls_a_plain_get_fetches(
         )
         assert response.storage is not None and response.storage.image_error is None
         [image] = response.images
-        assert isinstance(image.source, UrlSource)
-        data, content_type = _get(image.source.url)
+        assert isinstance(image.source, AssetSource)
+        data, content_type = _get(
+            _s5("presign", "--expire", "600s", image.source.storage_key).stdout.strip()
+        )
         assert data.startswith(b"\x89PNG") and len(data) == 64 + 8
         assert content_type == "image/png"
     listed = _s5("ls", f"s3://{bucket}/actant-images/t1/*").stdout
@@ -99,7 +100,7 @@ async def test_returned_images_arrive_as_urls_a_plain_get_fetches(
 
 
 async def test_an_unreachable_bucket_sends_bytes_and_says_why(tmp_path: Path, bucket: str) -> None:
-    missing = ImageBucket(f"{bucket}-missing", ENDPOINT, endpoint_url=ENDPOINT)
+    missing = ImageBucket(f"{bucket}-missing", endpoint_url=ENDPOINT)
     async for sandbox in _open(tmp_path, missing):
         response = await SandboxRunner("counter").call(
             "picture", {"size": 16}, key="t1", sandbox=sandbox
@@ -115,13 +116,13 @@ async def test_an_unreachable_bucket_sends_bytes_and_says_why(tmp_path: Path, bu
 async def test_urls_presigned_for_a_public_endpoint_fetch_through_it(
     tmp_path: Path, bucket: str
 ) -> None:
-    images = ImageBucket(bucket, PUBLIC or "", endpoint_url=ENDPOINT)
+    images = ImageBucket(bucket, endpoint_url=ENDPOINT)
     async for sandbox in _open(tmp_path, images):
         response = await SandboxRunner("counter").call(
             "picture", {"size": 32}, key="t1", sandbox=sandbox
         )
         [image] = response.images
-        assert isinstance(image.source, UrlSource) and PUBLIC
-        assert image.source.url.startswith(PUBLIC.rstrip("/") + "/")
-        data, _ = _get(image.source.url)
+        assert isinstance(image.source, AssetSource) and PUBLIC
+        assert image.source.storage_key.startswith(f"s3://{bucket}/")
+        data, _ = _get(_s5("presign", "--expire", "600s", image.source.storage_key).stdout.strip())
         assert data.startswith(b"\x89PNG") and len(data) == 32 + 8

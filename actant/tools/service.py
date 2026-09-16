@@ -5,7 +5,7 @@ Each public method becomes one tool: the schema comes from its signature without
 through any :class:`~actant.sandbox.service.Runner`; every runner encodes results
 the same way, so switching between them changes where the code runs and nothing
 the model sees. Images become the image content blocks the LLM adapters accept
-(:func:`image_block`): a URL where the host presigned one, else base64 bytes.
+(:func:`image_block`): a durable reference after upload, otherwise base64 bytes.
 """
 
 from __future__ import annotations
@@ -16,15 +16,15 @@ from pydantic import ValidationError
 
 from actant.core import JSONObject
 import actant.sandbox.host as host
-from actant.sandbox.protocol import CallResponse, Image, InlineSource
+from actant.sandbox.protocol import AssetSource, CallResponse, Image, InlineSource
 from actant.sandbox.service import LocalRunner, Runner
 from actant.tools.base import BaseToolInvocation, CallContext, MetadataKey, ToolResult, ToolSchema
 
 
 def image_block(image: Image) -> dict[str, object]:
-    """An image as the content block the LLM adapters take: a ``url`` source when the host
-    presigned one (with its ``expires_at``, which the adapters strip, and use to replace
-    an expired image with a note on replay), else ``base64`` bytes."""
+    """A durable asset reference, inline image, or legacy URL content block."""
+    if isinstance(image.source, AssetSource):
+        return {"type": "asset", "storage_key": image.source.storage_key, "mime": image.media_type}
     if isinstance(image.source, InlineSource):
         source: dict[str, object] = {
             "type": "base64",

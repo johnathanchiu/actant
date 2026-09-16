@@ -29,6 +29,7 @@ dependencies = [
 actant = "actant.cli:main"
 
 [project.optional-dependencies]
+s3 = ["boto3>=1.35"]
 anthropic = ["anthropic>=0.40"]
 gemini = ["google-genai>=1.0"]
 openai = ["openai>=1.60"]
@@ -42,6 +43,9 @@ providers = [
   "openai>=1.60",
 ]
 dev = [
+  "asyncpg>=0.30",
+  "greenlet>=3",
+  "boto3>=1.35",
   "pytest>=8.0",
   "pytest-asyncio>=0.24",
   "ruff>=0.8",
