@@ -37,8 +37,11 @@ from actant.tools.calls import ToolCallRecord, ToolCallStatus
 HEARTBEAT_SECONDS = 30.0
 
 
-class ToolActivities(ActivityContext):
+class ToolActivities:
     """Activities for one parallel tool group."""
+
+    def __init__(self, context: ActivityContext) -> None:
+        self.context = context
 
     @activity.defn(name=ActivityName.ADMIT_TOOL)
     async def admit_tool(self, payload: AdmitInput) -> AdmitOutcome:
@@ -49,10 +52,12 @@ class ToolActivities(ActivityContext):
             return await self._admit_failed(payload.tool_call_id, f"admission_error: {exc}")
 
     async def _admit_tool(self, payload: AdmitInput) -> AdmitOutcome:
-        agent = self._require_agent(payload.agent_id)
-        record = await self.stores.tool_calls.get(payload.tool_call_id)
-        thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
-        hooks = self._hooks(thread)
+        agent = await self.context.agent(payload.agent_id, payload.thread_id)
+        record = await self.context.stores.tool_calls.get(payload.tool_call_id)
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
+        hooks = self.context.hooks(thread, run_id=record.run_id, turn_id=record.turn_id)
         tool = agent.tools.get(record.name)
         if tool is None:
             return await self._deny(record, hooks, f"Tool {record.name} not found")
@@ -71,7 +76,7 @@ class ToolActivities(ActivityContext):
         context = TurnContext(
             agent=agent,
             system_prompt=agent.persona,
-            messages=await self.stores.messages.list_for_thread(
+            messages=await self.context.stores.messages.list_for_thread(
                 payload.agent_id, payload.thread_id
             ),
             thread_id=payload.thread_id,
@@ -85,12 +90,13 @@ class ToolActivities(ActivityContext):
             request = decision.wait_request
             request_data = request.to_dict() if request is not None else None
             prompt = decision.reason or invocation.get_description()
-            await self.stores.tool_calls.update_status(
+            if not await self.context.stores.tool_calls.update_status(
                 record.id,
                 ToolCallStatus.WAITING,
                 prompt=prompt,
                 wait_request=request_data,
-            )
+            ):
+                return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.DENY.value)
             await hooks.on_tool_waiting(
                 record.id, prompt, record.turn_id, wait_request=request_data
             )
@@ -101,7 +107,10 @@ class ToolActivities(ActivityContext):
                 wait_request=request_data,
             )
 
-        await self.stores.tool_calls.update_status(record.id, ToolCallStatus.RUNNING)
+        if not await self.context.stores.tool_calls.update_status(
+            record.id, ToolCallStatus.RUNNING
+        ):
+            return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.DENY.value)
         return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.EXECUTE.value)
 
     async def _deny(
@@ -109,10 +118,10 @@ class ToolActivities(ActivityContext):
     ) -> AdmitOutcome:
         result = ToolResult.fail(reason)
         result.tool_call_id = record.id
-        await self.stores.tool_calls.update_status(
+        if await self.context.stores.tool_calls.update_status(
             record.id, ToolCallStatus.BLOCKED, result=result.to_dict()
-        )
-        await hooks.on_tool_result(record.id, result, record.turn_id)
+        ):
+            await hooks.on_tool_result(record.id, result, record.turn_id)
         return AdmitOutcome(
             tool_call_id=record.id,
             decision=AdmitDecision.DENY.value,
@@ -123,7 +132,7 @@ class ToolActivities(ActivityContext):
         result = ToolResult.fail(reason)
         result.tool_call_id = tool_call_id
         try:
-            await self.stores.tool_calls.update_status(
+            await self.context.stores.tool_calls.update_status(
                 tool_call_id, ToolCallStatus.BLOCKED, result=result.to_dict()
             )
         except Exception:  # noqa: BLE001 -- preserve structured boundary
@@ -143,8 +152,14 @@ class ToolActivities(ActivityContext):
             return await self._execute_failed(payload.tool_call_id, f"execute_error: {exc}")
 
     async def _execute_tool(self, payload: ExecuteInput) -> ExecuteOutcome:
-        agent = self._require_agent(payload.agent_id)
-        record = await self.stores.tool_calls.get(payload.tool_call_id)
+        agent = await self.context.agent(payload.agent_id, payload.thread_id)
+        record = await self.context.stores.tool_calls.get(payload.tool_call_id)
+        if record.status in {
+            ToolCallStatus.COMPLETED,
+            ToolCallStatus.BLOCKED,
+            ToolCallStatus.FAILED,
+        }:
+            return _outcome_from_record(record)
         tool = agent.tools.get(record.name)
         if tool is None:
             return await self._execute_failed(record.id, f"Tool {record.name} not found")
@@ -169,9 +184,16 @@ class ToolActivities(ActivityContext):
 
         result.tool_call_id = record.id
         status = ToolCallStatus.COMPLETED if result.error is None else ToolCallStatus.FAILED
-        await self.stores.tool_calls.update_status(record.id, status, result=result.to_dict())
-        thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
-        await self._hooks(thread).on_tool_result(record.id, result, record.turn_id)
+        if not await self.context.stores.tool_calls.update_status(
+            record.id, status, result=result.to_dict()
+        ):
+            return _outcome_from_record(await self.context.stores.tool_calls.get(record.id))
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
+        await self.context.hooks(
+            thread, run_id=record.run_id, turn_id=record.turn_id
+        ).on_tool_result(record.id, result, record.turn_id)
         return _outcome(record.id, result)
 
     async def _call_context(
@@ -181,8 +203,8 @@ class ToolActivities(ActivityContext):
         that declared they need it, so a plain tool never waits on one."""
         sandbox = None
         if getattr(tool, "needs_sandbox", False):
-            sandbox = await self._sandbox_for(agent, record.thread_id)
-        thread = await self.stores.threads.get(record.agent_id, record.thread_id)
+            sandbox = await self.context.sandbox_for(agent, record.thread_id)
+        thread = await self.context.stores.threads.get(record.agent_id, record.thread_id)
         return CallContext(
             agent_id=record.agent_id,
             thread_id=record.thread_id,
@@ -212,7 +234,7 @@ class ToolActivities(ActivityContext):
         paths = [str(item) for item in raw] if isinstance(raw, list) else []
         if not paths:
             return result
-        if self.artifact_sink is None:
+        if self.context.artifact_sink is None:
             failed = ToolResult.fail(
                 "deliverables were listed but the worker has no artifact sink"
             )
@@ -222,7 +244,7 @@ class ToolActivities(ActivityContext):
             return failed
         sandbox = ctx.sandbox
         if sandbox is None:
-            sandbox = await self._sandbox_for(agent, record.thread_id)
+            sandbox = await self.context.sandbox_for(agent, record.thread_id)
         refs: list[dict[str, object]] = []
         for path in paths:
             try:
@@ -235,7 +257,7 @@ class ToolActivities(ActivityContext):
                 return failed
             mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
             name = path.rsplit("/", 1)[-1]
-            ref = await self.artifact_sink.save(record.thread_id, name, data, mime)
+            ref = await self.context.artifact_sink.save(record.thread_id, name, data, mime)
             refs.append(ref.to_dict())
         result.metadata[MetadataKey.ARTIFACTS] = refs
         return result
@@ -244,9 +266,10 @@ class ToolActivities(ActivityContext):
         result = ToolResult.fail(reason)
         result.tool_call_id = tool_call_id
         try:
-            await self.stores.tool_calls.update_status(
+            if not await self.context.stores.tool_calls.update_status(
                 tool_call_id, ToolCallStatus.FAILED, result=result.to_dict()
-            )
+            ):
+                return _outcome_from_record(await self.context.stores.tool_calls.get(tool_call_id))
         except Exception:  # noqa: BLE001 -- preserve structured boundary
             pass
         return ExecuteOutcome(tool_call_id=tool_call_id, status=ExecuteStatus.FAILED.value)
@@ -254,7 +277,7 @@ class ToolActivities(ActivityContext):
     @activity.defn(name=ActivityName.RESOLVE_TOOL)
     async def resolve_tool(self, payload: ResolveToolInput) -> ExecuteOutcome:
         """Persist a resolution delivered after the workflow's durable wait."""
-        record = await self.stores.tool_calls.get(payload.tool_call_id)
+        record = await self.context.stores.tool_calls.get(payload.tool_call_id)
         if record.status in {
             ToolCallStatus.COMPLETED,
             ToolCallStatus.BLOCKED,
@@ -278,12 +301,16 @@ class ToolActivities(ActivityContext):
 
         result.tool_call_id = record.id
         status = ToolCallStatus.COMPLETED if result.is_success() else ToolCallStatus.FAILED
-        if not await self.stores.tool_calls.finish_waiting(
+        if not await self.context.stores.tool_calls.finish_waiting(
             record.id, status, result=result.to_dict()
         ):
-            return _outcome_from_record(await self.stores.tool_calls.get(record.id))
-        thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
-        await self._hooks(thread).on_tool_resolved(record.id, result, record.turn_id)
+            return _outcome_from_record(await self.context.stores.tool_calls.get(record.id))
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
+        await self.context.hooks(
+            thread, run_id=record.run_id, turn_id=record.turn_id
+        ).on_tool_resolved(record.id, result, record.turn_id)
         return _outcome(record.id, result)
 
     async def _apply_resolution(
@@ -292,21 +319,17 @@ class ToolActivities(ActivityContext):
         record: ToolCallRecord,
         resolution: ToolResolution,
     ) -> ToolResult:
-        agent = self.agents.get(agent_id)
-        if agent is not None:
+        try:
+            agent = await self.context.agent(agent_id, record.thread_id)
             tool = agent.tools.get(record.name)
             if tool is not None and callable(getattr(tool, "on_resolve", None)):
-                try:
-                    resolve = cast(ToolResolve, tool).on_resolve
-                    # A tool that runs after approval needs the same context it
-                    # would have had at execution (its sandbox, its ids).
-                    if "ctx" in inspect.signature(resolve).parameters:
-                        ctx = await self._call_context(agent, tool, record)
-                        # The protocol has no ``ctx``; a tool that takes one opts in.
-                        return await cast(Any, resolve)(record, resolution, ctx=ctx)
-                    return await resolve(record, resolution)
-                except Exception as exc:  # noqa: BLE001
-                    return ToolResult.fail(f"on_resolve failed: {exc}")
+                resolve = cast(ToolResolve, tool).on_resolve
+                if "ctx" in inspect.signature(resolve).parameters:
+                    ctx = await self._call_context(agent, tool, record)
+                    return await cast(Any, resolve)(record, resolution, ctx=ctx)
+                return await resolve(record, resolution)
+        except Exception as error:
+            return ToolResult.fail(f"on_resolve failed: {error}")
         output: dict[str, object] = {
             "approved": resolution.approved,
             "answer": resolution.answer,
@@ -317,10 +340,10 @@ class ToolActivities(ActivityContext):
     @activity.defn(name=ActivityName.FINALIZE_TOOL_GROUP)
     async def finalize_tool_group(self, group_id: str) -> None:
         """Append one canonical tool-result message for every group member."""
-        records = await self.stores.tool_calls.get_group(group_id)
+        records = await self.context.stores.tool_calls.get_group(group_id)
         for record in sorted(records, key=lambda item: item.id):
             result = record.result if isinstance(record.result, dict) else {"error": "No result"}
-            await self.stores.messages.append_tool_result(
+            await self.context.stores.messages.append_tool_result(
                 record.agent_id,
                 record.thread_id,
                 record.turn_id,

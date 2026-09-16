@@ -15,8 +15,8 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
     pushes once more. Restored files get their objects' mtimes, so a push
     uploads only what changed. Images a service returns are uploaded at once under
-    ``image_prefix`` and sent as presigned URLs (``SandboxSpec.image_url_ttl_s``), signed
-    for ``public_endpoint_url``. The tradeoff: s5cmd
+    ``image_prefix`` and returned as durable asset references when
+    ``SandboxSpec.upload_images`` is enabled. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
     needs s5cmd (:func:`with_s5cmd`).
@@ -119,10 +119,6 @@ class ModalSandboxProvider:
     bucket: str
     key_prefix: str = "sandboxes/"
     endpoint_url: str | None = None
-    #: The host presigned image URLs name, reachable by the model provider (for R2/S3 the
-    #: bucket endpoint itself; for a MinIO, its tunnel). Required for ``disk_sync`` unless
-    #: the spec's ``image_url_ttl_s`` is ``None``.
-    public_endpoint_url: str | None = None
     #: Where a ``disk_sync`` host uploads returned images: ``<image_prefix><thread>/``.
     image_prefix: str = "actant-images/"
     secret_name: str | None = None
@@ -282,21 +278,14 @@ class ModalSandboxProvider:
                 scrub=list(spec.scrub_env),
                 push=push,
                 images=host.image_upload_config(self.image_bucket(), spec, thread_id)
-                if disk_sync and spec.image_url_ttl_s is not None
+                if disk_sync and spec.upload_images
                 else None,
             )
         return EntryConfig(restore=restore, host=served)
 
     def image_bucket(self) -> ImageBucket:
         """Where a ``disk_sync`` host uploads the images its services return."""
-        if self.public_endpoint_url is None:
-            raise ValueError(
-                "disk_sync sends images as presigned URLs: set "
-                "ModalSandboxProvider.public_endpoint_url, or SandboxSpec.image_url_ttl_s=None"
-            )
-        return ImageBucket(
-            self.bucket, self.public_endpoint_url, self.image_prefix, self.endpoint_url
-        )
+        return ImageBucket(self.bucket, self.image_prefix, self.endpoint_url)
 
     def _remote(self, thread_id: str) -> str:
         return f"s3://{self.bucket}/{self.key_prefix}{thread_id}/"

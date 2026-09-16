@@ -394,20 +394,38 @@ class SQLAlchemyToolCallStore:
         result: object = None,
         prompt: str | None = None,
         wait_request: JSONObject | None = None,
-    ) -> None:
+    ) -> bool:
+        values: dict[str, object] = {"status": status.value, "updated_at": datetime.now(UTC)}
+        if result is not None:
+            values["result"] = result
+        if prompt is not None:
+            values["prompt"] = prompt
+        if wait_request is not None:
+            values["wait_request"] = wait_request
         async with self.session_factory() as session:
             async with session.begin():
-                tc = await session.get(ActantToolCallModel, tc_id)
-                if tc is None:
+                outcome = await session.execute(
+                    update(ActantToolCallModel)
+                    .where(
+                        ActantToolCallModel.tool_call_id == tc_id,
+                        ActantToolCallModel.status.not_in(
+                            [
+                                status.value
+                                for status in (
+                                    ToolCallStatus.COMPLETED,
+                                    ToolCallStatus.BLOCKED,
+                                    ToolCallStatus.FAILED,
+                                )
+                            ]
+                        ),
+                    )
+                    .values(**values)
+                )
+                if cast(CursorResult[object], outcome).rowcount == 1:
+                    return True
+                if await session.get(ActantToolCallModel, tc_id) is None:
                     raise KeyError(tc_id)
-                tc.status = status.value
-                if result is not None:
-                    tc.result = result
-                if prompt is not None:
-                    tc.prompt = prompt
-                if wait_request is not None:
-                    tc.wait_request = cast(dict[str, object], wait_request)
-                tc.updated_at = datetime.now(UTC)
+                return False
 
     async def finish_waiting(
         self,

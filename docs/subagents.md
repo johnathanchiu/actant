@@ -86,7 +86,7 @@ The coordinator owns harvest semantics. It might return:
 - a success/failure envelope;
 - a product-specific result assembled from several stores.
 
-Register a `RunCompletionHandler` on `TemporalRuntimeWorker`, or use the
+Register a `RunCompletionHandler` on `AgentRuntime`, or use the
 thread hooks. Either runs after the child's projections are committed. The
 handler harvests persisted child output and **sends the parent a message**
 saying the child is done.

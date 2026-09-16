@@ -60,74 +60,54 @@ The server stays attached so its logs and lifecycle remain visible. Pass
 
 ## Quickstart
 
-This complete example streams tokens and then prints the persisted final
-response:
+This complete example hosts a worker, submits a message, and reads the persisted reply:
 
 ```python
 import asyncio
 from contextlib import suppress
 from uuid import uuid4
 
+from temporalio.client import Client
 from actant import AgentDefinition
 from actant.llm.providers.fake import FakeLLM, FakeResponse
-from actant.runtime import AgentRuntime, TemporalRuntimeConfig, TemporalRuntimeWorker
+from actant.runtime import AgentRuntime
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools import ToolRegistry
-
-stores = InMemoryRuntimeStores()
-config = TemporalRuntimeConfig(address="localhost:7233")
-
 
 agent = AgentDefinition(
     id="assistant",
     name="Assistant",
-    persona="You are a useful assistant.",
-    llm=FakeLLM(
-        [
-            FakeResponse(
-                text="Hello from Actant.",
-                text_chunks=["Hello ", "from ", "Actant."],
-            )
-        ]
-    ),
+    persona="You are useful.",
+    llm=FakeLLM([FakeResponse(text="Hello from Actant.", text_chunks=["Hello ", "from Actant."])]),
     tools=ToolRegistry([]),
 )
-agents = {agent.id: agent}
-
-runtime = AgentRuntime(stores=stores, agents=agents, temporal=config)
-worker = TemporalRuntimeWorker(stores=stores, agents=agents, config=config)
 
 
-async def observe(thread):
-    async for event in thread.events():
-        if event.type == "text_delta" and event.text:
-            print(event.text, end="", flush=True)
-        elif event.type == "assistant_message":
-            return event.text
-        elif event.type == "error":
-            raise RuntimeError(str(event.data.get("message", "agent failed")))
+async def resolve_agent(agent_id: str, thread_id: str) -> AgentDefinition:
+    if agent_id != agent.id:
+        raise KeyError(agent_id)
+    return agent
 
 
 async def main() -> None:
-    worker_task = asyncio.create_task(worker.run())
+    client = await Client.connect("localhost:7233")
+    runtime = AgentRuntime(
+        client=client, stores=InMemoryRuntimeStores(), resolve_agent=resolve_agent
+    )
+    polling = asyncio.create_task(runtime.run_worker())
     try:
         thread = runtime.thread(agent.id, uuid4())
-        observer_task = asyncio.create_task(observe(thread))
-        await asyncio.sleep(0)  # start the live subscription before sending
-        print("Streaming: ", end="", flush=True)
-        await thread.send("hello")
-        response = await asyncio.wait_for(observer_task, timeout=60)
-        print(f"\nFinal: {response}")
+        workflow_id = await thread.send("hello")
+        await client.get_workflow_handle(workflow_id).result()
+        print((await thread.messages())[-1].content)
     finally:
-        worker_task.cancel()
+        polling.cancel()
         with suppress(asyncio.CancelledError):
-            await worker_task
+            await polling
 
 
 asyncio.run(main())
-
-# Streaming: Hello from Actant.
-# Final: Hello from Actant.
+# Hello from Actant.
 ```
 
 `thread.send()` durably submits work and returns immediately. `thread.events()`

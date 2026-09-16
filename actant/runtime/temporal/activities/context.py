@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
+import logging
 
 from temporalio.exceptions import ApplicationError
 
 from actant.agents import AgentDefinition
+from actant.assets import AssetResolver
+from actant.runtime.events.publisher import EventSink
+from actant.runtime.events.observers import ObservedHooks, ObservedStream, ScopedEventSink
+from actant.runtime.events.lifecycle import PublishingThreadHooks
+from actant.runtime.events.streaming import PublishingStreamListener
 from actant.llm.messages import Message
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.lifecycle import AgentThreadHooks
@@ -17,9 +23,14 @@ from actant.runtime.types.threads import AgentThread
 from actant.sandbox.base import ArtifactSink, Sandbox
 from actant.sandbox.registry import SandboxRegistry
 
+AgentResolver = Callable[[str, str], Awaitable[AgentDefinition]]
+
 HookFactory = Callable[[AgentThread], AgentThreadHooks]
 ListenerFactory = Callable[[AgentThread], StreamListener]
 MessagePreprocessor = Callable[[list[Message]], Awaitable[list[Message]]]
+
+
+log = logging.getLogger(__name__)
 
 
 class ActivityContext:
@@ -29,7 +40,9 @@ class ActivityContext:
         self,
         *,
         stores: RuntimeStores,
-        agents: Mapping[str, AgentDefinition],
+        resolve_agent: AgentResolver | None = None,
+        assets: AssetResolver | None = None,
+        event_sink: EventSink | None = None,
         hooks_factory: HookFactory | None = None,
         listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
@@ -39,7 +52,9 @@ class ActivityContext:
         artifact_sink: ArtifactSink | None = None,
     ) -> None:
         self.stores = stores
-        self.agents = agents
+        self.resolve_agent = resolve_agent
+        self.assets = assets
+        self.event_sink = event_sink
         self.hooks_factory = hooks_factory
         self.listener_factory = listener_factory
         self.message_preprocessor = message_preprocessor
@@ -48,13 +63,18 @@ class ActivityContext:
         self.sandboxes = sandboxes
         self.artifact_sink = artifact_sink
 
-    def _require_agent(self, agent_id: str) -> AgentDefinition:
-        agent = self.agents.get(agent_id)
-        if agent is None:
-            raise ApplicationError(f"Unknown agent: {agent_id}", non_retryable=True)
+    async def agent(self, agent_id: str, thread_id: str) -> AgentDefinition:
+        if self.resolve_agent is None:
+            raise ApplicationError("agent resolution is not configured", non_retryable=True)
+        try:
+            agent = await self.resolve_agent(agent_id, thread_id)
+        except KeyError as exc:
+            raise ApplicationError(f"Unknown agent: {agent_id}", non_retryable=True) from exc
+        if agent.id != agent_id:
+            raise ApplicationError("resolver returned a different agent id", non_retryable=True)
         return agent
 
-    async def _sandbox_for(self, agent: AgentDefinition, thread_id: str) -> Sandbox:
+    async def sandbox_for(self, agent: AgentDefinition, thread_id: str) -> Sandbox:
         """The thread's sandbox, opened on first use. Refused, not retried, when
         the agent declares no spec or the worker registered no providers."""
         if agent.sandbox is None:
@@ -70,12 +90,32 @@ class ActivityContext:
             )
         return await self.sandboxes.for_thread(agent.sandbox, agent.id, thread_id)
 
-    def _hooks(self, thread: AgentThread) -> AgentThreadHooks:
-        if self.hooks_factory is None:
+    def hooks(
+        self, thread: AgentThread, *, run_id: str | None = None, turn_id: str | None = None
+    ) -> AgentThreadHooks:
+        if self.hooks_factory is not None:
+            try:
+                return ObservedHooks(self.hooks_factory(thread))
+            except Exception:
+                log.exception("runtime hook factory failed")
+                return AgentThreadHooks()
+        if self.event_sink is None:
             return AgentThreadHooks()
-        return self.hooks_factory(thread)
+        return PublishingThreadHooks(
+            thread.id, publisher=ScopedEventSink(self.event_sink, thread.agent_id, run_id, turn_id)
+        )
 
-    def _listener(self, thread: AgentThread) -> StreamListener:
-        if self.listener_factory is None:
+    def listener(
+        self, thread: AgentThread, *, run_id: str | None = None, turn_id: str | None = None
+    ) -> StreamListener:
+        if self.listener_factory is not None:
+            try:
+                return ObservedStream(self.listener_factory(thread))
+            except Exception:
+                log.exception("runtime listener factory failed")
+                return StreamListener()
+        if self.event_sink is None:
             return StreamListener()
-        return self.listener_factory(thread)
+        return PublishingStreamListener(
+            thread.id, publisher=ScopedEventSink(self.event_sink, thread.agent_id, run_id, turn_id)
+        )

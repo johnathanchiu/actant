@@ -3,6 +3,9 @@ driven through the real Temporal workflow against in-memory stores."""
 
 from __future__ import annotations
 
+from actant.runtime.temporal.activities.context import ActivityContext
+from runtime_fixtures import static_agents
+
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
@@ -103,11 +106,13 @@ async def _run(agent: AgentDefinition, body: Callable[[_Setup], Awaitable[None]]
         completions.append(completion)
 
     activities = TemporalRuntimeActivities(
-        stores=stores,
-        agents={agent.id: agent},
-        run_completion_handler=on_complete,
-        sandboxes=SandboxRegistry({"local": LocalSandboxProvider()}, stores.threads),
-        artifact_sink=sink,
+        ActivityContext(
+            stores=stores,
+            resolve_agent=static_agents({agent.id: agent}),
+            run_completion_handler=on_complete,
+            sandboxes=SandboxRegistry({"local": LocalSandboxProvider()}, stores.threads),
+            artifact_sink=sink,
+        )
     )
     task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
     async with await WorkflowEnvironment.start_local() as env:

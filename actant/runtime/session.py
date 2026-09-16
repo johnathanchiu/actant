@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from typing import cast
 
 from actant.core import JSONObject, JSONValue
@@ -216,61 +215,3 @@ def _is_json_value(value: object) -> bool:
     if isinstance(value, dict):
         return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
     return False
-
-
-@dataclass
-class InMemorySessionStore:
-    _messages_by_thread: dict[str, list[list[MessagePart]]] = field(default_factory=dict)
-    _message_counter: int = 0
-
-    async def save_user_message(
-        self, thread_id: str, content: str | list[dict[str, object]]
-    ) -> str:
-        if isinstance(content, list):
-            blocks = [block for block in content if isinstance(block, dict)]
-            part = MessagePart(kind=PartKind.USER_PROMPT, content_blocks=blocks or None)
-        else:
-            part = MessagePart(kind=PartKind.USER_PROMPT, content=content)
-        return await self._append(thread_id, [part])
-
-    async def save_assistant_message(self, thread_id: str, parts: list[MessagePart]) -> str:
-        return await self._append(thread_id, parts)
-
-    async def update_tool_result(
-        self,
-        thread_id: str,
-        tool_call_id: str,
-        result: dict[str, object],
-    ) -> None:
-        part = self._find_tool_call(thread_id, tool_call_id)
-        if part is not None:
-            part.result = result
-            part.wait_status = None
-
-    async def update_wait_status(
-        self,
-        thread_id: str,
-        tool_call_id: str,
-        status: WaitStatus,
-    ) -> None:
-        part = self._find_tool_call(thread_id, tool_call_id)
-        if part is not None:
-            part.wait_status = status
-
-    async def get_conversation(self, thread_id: str) -> list[Message]:
-        messages: list[Message] = []
-        for parts in self._messages_by_thread.get(thread_id, []):
-            messages.extend(parts_to_messages(list(parts)))
-        return messages
-
-    async def _append(self, thread_id: str, parts: list[MessagePart]) -> str:
-        self._messages_by_thread.setdefault(thread_id, []).append(parts)
-        self._message_counter += 1
-        return f"msg_{self._message_counter}"
-
-    def _find_tool_call(self, thread_id: str, tool_call_id: str) -> MessagePart | None:
-        for parts in self._messages_by_thread.get(thread_id, []):
-            for part in parts:
-                if part.kind == PartKind.TOOL_CALL and part.tool_call_id == tool_call_id:
-                    return part
-        return None

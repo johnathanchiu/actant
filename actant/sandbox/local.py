@@ -4,7 +4,7 @@ No isolation. It is the development backend and the one tests use; in
 production the directory is whatever the operator mounted there. A spec's
 services are served by a host subprocess on 127.0.0.1 with a random token.
 Given an :class:`~actant.sandbox.base.ImageBucket`, that host uploads the images its
-services return and sends presigned URLs (bucket keys from the environment).
+services return and returns durable asset references (bucket keys from the environment).
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ class LocalSandboxProvider:
     """Sandboxes under ``spec.mount`` (or ``root``, or a temp dir), one directory per thread.
 
     Service hosts live as long as this provider's process; ``attach`` reuses a
-    running one and restarts a dead one. ``images`` makes hosts send presigned image URLs.
+    running one and restarts a dead one. ``images`` makes hosts return durable asset references.
     """
 
     def __init__(self, root: Path | None = None, *, images: ImageBucket | None = None) -> None:

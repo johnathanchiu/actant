@@ -1,7 +1,7 @@
 # Actant Demo Server
 
 Minimal FastAPI + SSE server demonstrating the Actant runtime. Wraps
-`AgentRuntime` and an in-process `TemporalRuntimeWorker` behind a small
+one `AgentRuntime` polling Temporal behind a small
 HTTP/SSE API.
 
 ## Prerequisites

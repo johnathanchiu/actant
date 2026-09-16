@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import cast
-from unittest.mock import AsyncMock, Mock
+from temporalio.client import Client
+from unittest.mock import Mock
+
+import asyncio
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
-from actant.runtime.runtime import AgentRuntime
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.thread import ThreadHandle, ThreadRuntime
-from actant.runtime.temporal.client import TemporalRuntimeClient
+from actant.runtime import AgentRuntime
 
 
 def _handle() -> tuple[ThreadHandle, Mock, InMemoryRuntimeStores]:
@@ -71,7 +73,7 @@ async def test_thread_handle_consumes_typed_events() -> None:
 
 def test_runtime_thread_handle_accepts_uuid() -> None:
     thread_id = uuid4()
-    runtime = AgentRuntime(stores=InMemoryRuntimeStores(), agents={})
+    runtime = AgentRuntime(client=cast(Client, Mock()), stores=InMemoryRuntimeStores())
 
     handle = runtime.thread("assistant", thread_id)
 
@@ -83,8 +85,8 @@ async def test_runtime_forwards_parent_lineage(
     monkeypatch: pytest.MonkeyPatch, parent_thread_id: str | None
 ) -> None:
     send = AsyncMock(return_value="child-workflow")
-    monkeypatch.setattr(TemporalRuntimeClient, "send_message", send)
-    runtime = AgentRuntime(stores=InMemoryRuntimeStores(), agents={})
+    monkeypatch.setattr(AgentRuntime, "send_message", send)
+    runtime = AgentRuntime(client=cast(Client, Mock()), stores=InMemoryRuntimeStores())
 
     result = await runtime.send_message(
         "child-agent", "child-thread", "work", parent_thread_id=parent_thread_id

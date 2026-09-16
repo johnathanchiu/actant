@@ -1,36 +1,23 @@
-"""Public runtime entry points.
-
-The runtime package is organized by responsibility:
-
-- ``runtime.py``: application-facing client facade.
-- ``temporal/workflow.py``: durable orchestration algorithm.
-- ``temporal/activities/``: run, tool, and thread side effects.
-- ``temporal/client.py`` and ``temporal/worker.py``: deployment roles.
-- ``stores/``: readable execution projections.
-- ``events/``: optional lifecycle and streaming observers.
-
-See ``docs/architecture.md`` in the source distribution for the detailed
-execution path and activity contracts.
-"""
+"""Public Temporal runtime, thread handles, and execution contracts."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from actant.runtime.temporal.activities.context import AgentResolver
     from actant.runtime.completion import RunCompletion, RunCompletionHandler
     from actant.runtime.gate import TurnGate, TurnStart
     from actant.runtime.temporal.types import TemporalRuntimeConfig
-    from actant.runtime.temporal.worker import TemporalRuntimeWorker
     from actant.runtime.thread import ThreadHandle
     from actant.runtime.runtime import AgentRuntime
 
 __all__ = [
     "AgentRuntime",
+    "AgentResolver",
     "RunCompletion",
     "RunCompletionHandler",
     "TemporalRuntimeConfig",
-    "TemporalRuntimeWorker",
     "ThreadHandle",
     "TurnGate",
     "TurnStart",
@@ -38,6 +25,10 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
+    if name == "AgentResolver":
+        from actant.runtime.temporal.activities.context import AgentResolver
+
+        return AgentResolver
     if name == "AgentRuntime":
         from actant.runtime.runtime import AgentRuntime
 
@@ -54,10 +45,6 @@ def __getattr__(name: str) -> Any:
         from actant.runtime.temporal.types import TemporalRuntimeConfig
 
         return TemporalRuntimeConfig
-    if name == "TemporalRuntimeWorker":
-        from actant.runtime.temporal.worker import TemporalRuntimeWorker
-
-        return TemporalRuntimeWorker
     if name == "ThreadHandle":
         from actant.runtime.thread import ThreadHandle
 

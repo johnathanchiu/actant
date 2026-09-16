@@ -20,7 +20,6 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from urllib.parse import urlsplit
 from typing import Protocol
 
 
@@ -100,10 +99,6 @@ class Endpoint:
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
 
 
-#: The longest a SigV4 presigned URL may live (seven days).
-MAX_PRESIGN_S = 7 * 24 * 3600
-
-
 class Backend(StrEnum):
     """The backends actant ships. ``SandboxSpec.backend`` stays a ``str``: a product
     may register its own provider under any name."""
@@ -165,11 +160,10 @@ class SandboxSpec:
     #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
     #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
     seed: str | None = None
-    #: How long a presigned image URL lives. A host whose files reach a bucket (``disk_sync``,
-    #: or a provider given an :class:`ImageBucket`) uploads each image a service returns and
-    #: sends its URL instead of its bytes. ``None`` always sends bytes. At most seven days.
-    image_url_ttl_s: int | None = 6 * 3600
-    #: Upload plus presign of one image; past it that image goes as bytes.
+    #: Upload returned images to configured storage and return durable references.
+    #: False returns inline bytes; signing and retention belong to storage adapters.
+    upload_images: bool = True
+    #: Maximum seconds to upload one image before returning inline bytes.
     image_upload_timeout_s: float = 10.0
 
     def __post_init__(self) -> None:
@@ -181,11 +175,6 @@ class SandboxSpec:
             self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
         ):
             raise ValueError("seed is a key prefix ending in '/', for disk_sync storage")
-        ttl = self.image_url_ttl_s
-        if ttl is not None and (
-            isinstance(ttl, bool) or not isinstance(ttl, int) or not 0 < ttl <= MAX_PRESIGN_S
-        ):
-            raise ValueError("image_url_ttl_s must be whole seconds, positive, at most seven days")
         timeout = self.image_upload_timeout_s
         if (
             isinstance(timeout, bool)
@@ -197,26 +186,11 @@ class SandboxSpec:
 
 @dataclass(frozen=True)
 class ImageBucket:
-    """Where a backend whose files are not in a bucket uploads returned images to presign them.
-
-    Images land under ``<prefix><thread>/``, a prefix of their own so no push or pull of a
-    thread's files touches them and one lifecycle rule can expire them (nothing else
-    deletes them). ``public_endpoint_url`` is the host the presigned URLs name and must be
-    reachable by the model provider: for a local MinIO, the tunnel's public URL
-    (``cloudflared tunnel --url http://127.0.0.1:9000``). ``endpoint_url`` is where uploads
-    go (``None`` is AWS S3). Bucket keys come from the environment; URLs signed with
-    temporary credentials stop working when those expire.
-    """
+    """Storage destination for service images, separate from workspace sync."""
 
     bucket: str
-    public_endpoint_url: str
     prefix: str = "actant-images/"
     endpoint_url: str | None = None
-
-    def __post_init__(self) -> None:
-        url = urlsplit(self.public_endpoint_url)
-        if url.scheme not in {"http", "https"} or not url.hostname or " " in url.netloc:
-            raise ValueError("public_endpoint_url must be an http(s) URL a model provider reaches")
 
     def destination(self, thread_id: str) -> str:
         """The ``s3://`` prefix a thread's images upload to."""

@@ -134,8 +134,10 @@ class InMemoryToolCallStore:
         result: object = None,
         prompt: str | None = None,
         wait_request: JSONObject | None = None,
-    ) -> None:
+    ) -> bool:
         tc = self._records[tc_id]
+        if tc.status in {ToolCallStatus.COMPLETED, ToolCallStatus.BLOCKED, ToolCallStatus.FAILED}:
+            return False
         tc.status = status
         if result is not None:
             tc.result = result
@@ -143,6 +145,7 @@ class InMemoryToolCallStore:
             tc.prompt = prompt
         if wait_request is not None:
             tc.wait_request = wait_request
+        return True
 
     async def finish_waiting(
         self,

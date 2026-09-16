@@ -8,6 +8,7 @@ from typing import cast
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from actant.assets import AssetContext, prepare_messages
 from actant.core import JSONObject, new_id
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import ToolCall as LLMToolCall
@@ -20,6 +21,7 @@ from actant.runtime.temporal.types import (
     RunOutcome,
     RunTurnInput,
     StartRunInput,
+    StartedRun,
     ToolCallSpec,
     TurnResult,
 )
@@ -37,11 +39,14 @@ FINISH_REMINDER = (
 STOPPED_WITHOUT_FINISHING = "stopped without finishing"
 
 
-class RunActivities(ActivityContext):
+class RunActivities:
     """Activities for the lifecycle and LLM turns of an agent run."""
 
+    def __init__(self, context: ActivityContext) -> None:
+        self.context = context
+
     @activity.defn(name=ActivityName.START_RUN)
-    async def start_run(self, payload: StartRunInput) -> int:
+    async def start_run(self, payload: StartRunInput) -> StartedRun:
         """Create the run projection, and say how many turns this thread has had.
 
         The count is returned because the workflow cannot keep it any more. A
@@ -51,42 +56,59 @@ class RunActivities(ActivityContext):
         store has the real count, and this activity already runs once before
         every run, so reading it here costs nothing extra.
         """
+        resolution_error = None
         try:
-            await self.stores.runs.create(
+            agent = await self.context.agent(payload.agent_id, payload.thread_id)
+            max_turns = max(1, agent.max_turns_per_thread)
+        except ApplicationError as error:
+            if not error.non_retryable:
+                raise
+            # An invalid definition is a terminal run, not an unprojected failed workflow.
+            resolution_error = str(error)
+            max_turns = max(1, payload.max_turns or 1)
+        if payload.max_turns is not None:
+            max_turns = min(max_turns, max(1, payload.max_turns))
+        try:
+            await self.context.stores.runs.create(
                 payload.agent_id,
                 payload.thread_id,
                 run_id=payload.run_id,
-                max_turns=payload.max_turns,
+                max_turns=max_turns,
             )
         except Exception:
             try:
-                await self.stores.runs.get(payload.run_id)
+                await self.context.stores.runs.get(payload.run_id)
             except Exception:
                 raise
-        thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
         thread.active_run_id = payload.run_id
         thread.status = ThreadStatus.ACTIVE
         if payload.parent_thread_id and thread.parent_thread_id is None:
             thread.parent_thread_id = payload.parent_thread_id
-        await self.stores.threads.update(thread)
-        return thread.turn_count
+        await self.context.stores.threads.update(thread)
+        run = await self.context.stores.runs.get(payload.run_id)
+        return StartedRun(thread.turn_count, run.max_turns, resolution_error)
 
     @activity.defn(name=ActivityName.RUN_TURN)
     async def run_turn(self, payload: RunTurnInput) -> TurnResult:
         """Invoke the LLM once and atomically persist its assistant turn."""
-        agent = self._require_agent(payload.agent_id)
-        thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
-        run = await self.stores.runs.get(payload.run_id)
-        hooks = self._hooks(thread)
+        agent = await self.context.agent(payload.agent_id, payload.thread_id)
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
+        run = await self.context.stores.runs.get(payload.run_id)
+        hooks = self.context.hooks(thread, run_id=payload.run_id, turn_id=payload.turn_id)
 
         for msg in payload.new_messages:
-            await self.stores.messages.append_user(
+            await self.context.stores.messages.append_user(
                 payload.agent_id, payload.thread_id, msg.content
             )
             await hooks.on_user_message(msg.content)
 
-        if self.turn_gate is not None:
-            reason = await self.turn_gate(
+        if self.context.turn_gate is not None:
+            reason = await self.context.turn_gate(
                 TurnStart(
                     agent_id=payload.agent_id,
                     thread_id=payload.thread_id,
@@ -102,9 +124,21 @@ class RunActivities(ActivityContext):
                     stop_reason=reason,
                 )
 
-        messages = await self.stores.messages.list_for_thread(payload.agent_id, payload.thread_id)
-        if self.message_preprocessor is not None:
-            messages = await self.message_preprocessor(messages)
+        messages = await self.context.stores.messages.list_for_thread(
+            payload.agent_id, payload.thread_id
+        )
+        if self.context.message_preprocessor is not None:
+            messages = await self.context.message_preprocessor(messages)
+        messages = await prepare_messages(
+            messages,
+            self.context.assets,
+            AssetContext(
+                payload.agent_id,
+                payload.thread_id,
+                payload.run_id,
+                payload.turn_id,
+            ),
+        )
         context = TurnContext(
             agent=agent,
             system_prompt=agent.persona,
@@ -118,7 +152,7 @@ class RunActivities(ActivityContext):
         try:
             assistant = await agent.complete(
                 context.messages,
-                self._listener(thread),
+                self.context.listener(thread, run_id=payload.run_id, turn_id=payload.turn_id),
                 final_turn=run.turn_count + 1 >= run.max_turns,
             )
         except StreamCancelled as exc:
@@ -139,7 +173,7 @@ class RunActivities(ActivityContext):
             )
             for tool_call in (assistant.tool_calls or [])
         ]
-        await self.stores.messages.append_assistant_with_tool_calls(
+        await self.context.stores.messages.append_assistant_with_tool_calls(
             payload.agent_id,
             payload.thread_id,
             payload.turn_id,
@@ -154,15 +188,15 @@ class RunActivities(ActivityContext):
         thread.turn_count += 1
         run.turn_count += 1
         run.status = RunStatus.ACTIVE
-        await self.stores.threads.update(thread)
-        await self.stores.runs.update(run)
+        await self.context.stores.threads.update(thread)
+        await self.context.stores.runs.update(run)
 
         if not records and agent.completion == "terminal":
             # A task agent does not end by silence. Once: remind it, persisted
             # so the transcript (and any replay) shows the nudge. Twice: the
             # run ends, and the reason says why.
             if payload.text_only_turns == 0:
-                await self.stores.messages.append_user(
+                await self.context.stores.messages.append_user(
                     payload.agent_id, payload.thread_id, FINISH_REMINDER
                 )
                 await hooks.on_user_message(FINISH_REMINDER)
@@ -194,37 +228,61 @@ class RunActivities(ActivityContext):
     @activity.defn(name=ActivityName.FINALIZE_RUN)
     async def finalize_run(self, payload: FinalizeRunInput) -> None:
         """Close a run, repair cancelled calls, and notify observers."""
-        if payload.outcome == RunOutcome.CANCELLED.value:
-            open_records = await self.stores.tool_calls.get_open_for_thread(
-                payload.agent_id, payload.thread_id
-            )
-            for record in open_records:
-                await self.stores.tool_calls.update_status(
+        if payload.outcome in {RunOutcome.CANCELLED.value, RunOutcome.FAILED.value}:
+            records = await self.context.stores.tool_calls.get_by_run(payload.run_id)
+            terminal = {ToolCallStatus.COMPLETED, ToolCallStatus.BLOCKED, ToolCallStatus.FAILED}
+            for record in sorted(records, key=lambda item: (item.turn_index, item.id)):
+                result = record.result
+                if record.status not in terminal:
+                    cancelled = payload.outcome == RunOutcome.CANCELLED.value
+                    result = (
+                        {"status": "cancelled", "reason": "session_cancelled"}
+                        if cancelled
+                        else {
+                            "error": f"run failed; tool outcome uncertain: {payload.stop_reason or 'unknown'}"
+                        }
+                    )
+                    await self.context.stores.tool_calls.update_status(
+                        record.id,
+                        ToolCallStatus.COMPLETED if cancelled else ToolCallStatus.FAILED,
+                        result=result,
+                    )
+                # A surviving timed-out activity may have won the terminal transition.
+                record = await self.context.stores.tool_calls.get(record.id)
+                result = record.result
+                # Idempotent store operation also repairs a turn persisted before its
+                # activity died, and a tool group whose finalization failed.
+                await self.context.stores.messages.append_tool_result(
+                    record.agent_id,
+                    record.thread_id,
+                    record.turn_id,
                     record.id,
-                    ToolCallStatus.COMPLETED,
-                    result={"status": "cancelled", "reason": "session_cancelled"},
+                    record.name,
+                    result if result is not None else {"error": "No result"},
                 )
 
-        await self.stores.runs.finish(
+        await self.context.stores.runs.finish(
             payload.run_id, _run_status(payload.outcome), stop_reason=payload.stop_reason
         )
-        thread = await self.stores.threads.get_or_create(payload.agent_id, payload.thread_id)
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
         thread.active_run_id = None
         thread.status = _thread_status(payload.outcome)
-        await self.stores.threads.update(thread)
+        await self.context.stores.threads.update(thread)
 
         # Deliverables are read back from the run's tool calls, so a retried
         # finalization reports the same list.
         artifacts: list[dict[str, object]] = []
-        for record in await self.stores.tool_calls.get_by_run(payload.run_id):
+        for record in await self.context.stores.tool_calls.get_by_run(payload.run_id):
             raw = record.result if isinstance(record.result, dict) else {}
             metadata = raw.get("metadata")
             refs = metadata.get(MetadataKey.ARTIFACTS) if isinstance(metadata, dict) else None
             if isinstance(refs, list):
                 artifacts.extend(ref for ref in refs if isinstance(ref, dict))
 
-        if self.run_completion_handler is not None:
-            await self.run_completion_handler(
+        if self.context.run_completion_handler is not None:
+            await self.context.run_completion_handler(
                 RunCompletion(
                     agent_id=payload.agent_id,
                     thread_id=payload.thread_id,
@@ -234,7 +292,7 @@ class RunActivities(ActivityContext):
                     artifacts=tuple(artifacts),
                 )
             )
-        await self._hooks(thread).on_complete(
+        await self.context.hooks(thread, run_id=payload.run_id).on_complete(
             success=payload.outcome == RunOutcome.COMPLETED.value,
             reason=payload.stop_reason or payload.outcome,
             message="",

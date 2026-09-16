@@ -15,6 +15,17 @@ jobs:
   python:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: actant-test-only
+          POSTGRES_DB: actant_core_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d actant_core_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v6
 
@@ -33,6 +44,8 @@ jobs:
         run: uv run --extra dev --extra providers pyright actant tests
 
       - name: Test
+        env:
+          ACTANT_TEST_POSTGRES_URL: postgresql+asyncpg://postgres:actant-test-only@127.0.0.1:5432/actant_core_test
         run: uv run --extra dev --extra providers python -m pytest -q
 
   package:

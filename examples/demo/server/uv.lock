@@ -4,7 +4,7 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "actant"
-version = "0.16.0"
+version = "0.17.0"
 source = { editable = "../../../" }
 dependencies = [
     { name = "httpx" },
@@ -29,8 +29,12 @@ requires-dist = [
     { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.16" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
     { name = "anthropic", marker = "extra == 'providers'", specifier = ">=0.40" },
+    { name = "asyncpg", marker = "extra == 'dev'", specifier = ">=0.30" },
+    { name = "boto3", marker = "extra == 'dev'", specifier = ">=1.35" },
+    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.35" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "google-genai", marker = "extra == 'providers'", specifier = ">=1.0" },
+    { name = "greenlet", marker = "extra == 'dev'", specifier = ">=3" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.5.5,<2" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.60" },
@@ -46,7 +50,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.8" },
 ]
-provides-extras = ["anthropic", "gemini", "openai", "qwen", "modal", "providers", "dev"]
+provides-extras = ["s3", "anthropic", "gemini", "openai", "qwen", "modal", "providers", "dev"]
 
 [package.metadata.requires-dev]
 docs = [{ name = "mkdocs-material", specifier = ">=9.6" }]

@@ -12,19 +12,24 @@ Tools that run code get a per-thread sandbox from the worker (see the tools
 guide). Wire the backends and the artifact sink on the worker:
 
 ```python
+from pathlib import Path
+from actant.runtime import AgentRuntime
 from actant.sandbox.local import LocalSandboxProvider
+from actant.sandbox.registry import SandboxRegistry
 
-worker = TemporalRuntimeWorker(
+runtime = AgentRuntime(
+    client=client,
     stores=stores,
-    agents=agents,
-    sandbox_providers={"local": LocalSandboxProvider(Path("/srv/agent-workspaces"))},
-    artifact_sink=sink,  # async save(thread_id, name, data, mime) -> ArtifactRef
+    resolve_agent=resolve_agent,
+    sandboxes=SandboxRegistry(
+        {"local": LocalSandboxProvider(Path("/srv/agent-workspaces"))}, stores.threads
+    ),
+    artifact_sink=sink,
 )
 ```
 
-`local` is registered by default with a temporary root; pass your own to
-put workspaces somewhere durable. `actant[modal]` adds
-`actant.sandbox.modal.ModalSandboxProvider`.
+Sandbox providers are explicit, caller-owned dependencies. `actant[modal]` adds
+`ModalSandboxProvider`. Tool execution location does not change the Temporal runtime.
 
 Migration `0002_sandbox_and_run_reason` adds `actant_threads.sandbox_id` and
 `actant_runs.stop_reason`; run `alembic upgrade actant@head` as for any Actant
@@ -82,7 +87,7 @@ retaining its data. `actant server reset` stops it and deletes that data.
 
 This command is a local convenience, not the production deployment model.
 Production clients and workers should connect to an independently managed
-Temporal service through `TemporalRuntimeConfig`.
+Temporal service through an injected Temporal `Client`. `TemporalRuntimeConfig` controls queue and lifecycle policy.
 
 For local overrides, `server start` accepts `--port`, `--ui-port`, and
 `--no-ui`. Options placed before the action select a different Compose file,
@@ -114,12 +119,16 @@ agent = AgentDefinition(
     tools=ToolRegistry([]),
 )
 agents = {agent.id: agent}
+
+
+async def resolve_agent(agent_id: str, thread_id: str) -> AgentDefinition:
+    return agents[agent_id]
 ```
 
 Use an explicit application setting for `model_id`. Provider model catalogs
 change independently of Actant releases.
 
-## Create the runtime client
+## Create the runtime
 
 ```python
 from actant.runtime import AgentRuntime, TemporalRuntimeConfig
@@ -131,7 +140,10 @@ config = TemporalRuntimeConfig(
     namespace="default",
     task_queue="actant-runtime",
 )
-runtime = AgentRuntime(stores=stores, agents=agents, temporal=config)
+from temporalio.client import Client
+
+client = await Client.connect(config.address, namespace=config.namespace)
+runtime = AgentRuntime(client=client, stores=stores, config=config)
 ```
 
 In-memory stores are suitable for tests and local examples. Use the included
@@ -203,23 +215,24 @@ apply normally.
 
 ## Run a worker
 
-The runtime facade does not execute model calls by itself. A worker must poll
-the same Temporal namespace and task queue:
+Call `run_worker()` on the same `AgentRuntime` type to execute work. An API process
+can use it only for commands; an execution process supplies an async resolver:
 
 ```python
-from actant.runtime import TemporalRuntimeWorker
+from actant.runtime import AgentRuntime
 
-worker = TemporalRuntimeWorker(
+runtime = AgentRuntime(
+    client=client,
     stores=stores,
-    agents=agents,
+    resolve_agent=resolve_agent,
     config=config,
     hooks_factory=my_hooks_factory,
     listener_factory=my_listener_factory,
 )
-await worker.run()
+await runtime.run_worker()
 ```
 
-Client and worker can live in one service for local development or separate
+Submission and execution can live in one service for local development or separate
 processes in production. Every worker that may receive an activity must be able
 to resolve the referenced agent definition and access compatible projection
 stores.
@@ -256,8 +269,8 @@ waiting = await thread.waiting_tools()
 await thread.cancel()
 ```
 
-The query returns live workflow state such as inbox size, total turns, current
-run ID, and cancellation state. Projection stores provide richer readable
+State reads persisted projections, including total turns, current run, and cancellation.
+Inbox size is unknown because a completed workflow may have left Temporal retention. Projection stores provide richer readable
 history. Cancellation is durable and projection cleanup is idempotent.
 
 ## Resolve deferred tools
@@ -280,7 +293,9 @@ For each run, `AgentThreadWorkflow`:
 5. executes allowed calls and awaits deferred calls concurrently;
 6. finalizes the tool-result group in transcript order;
 7. repeats until completion, exhaustion, failure, or cancellation;
-8. parks until another message arrives.
+8. processes queued messages, or closes when its inbox is empty.
+
+A later message starts a new execution with the same logical thread ID and persisted history.
 
 At a run boundary, sufficiently long workflow histories use Temporal
 continue-as-new. Queued inbox messages are carried into the new execution.
@@ -297,7 +312,7 @@ async for event in thread.events():
         print(f"Approval needed: {event.tool_call_id}")
 ```
 
-`AgentRuntime` reads events from its `event_source`; `TemporalRuntimeWorker`
+`AgentRuntime` reads events from its `event_source` and
 writes events to its `event_sink`. Both default to `stores.publisher`, which is
 convenient in one process. In a split deployment, supply the two sides of a
 shared event transport explicitly. Events are observational: after reconnect,
@@ -315,7 +330,7 @@ messages from hooks: the runtime stores are already the transcript writer.
 
 Use `RunCompletionHandler` for correctness-bearing work that must retry after a
 run projection commits, such as resolving the parent of a completed subagent.
-Pass it to `TemporalRuntimeWorker`; unlike hooks, handler failure keeps the
+Pass it to `AgentRuntime`; unlike hooks, handler failure keeps the
 finalization activity incomplete and eligible for retry. Handlers must be
 idempotent.
 
@@ -324,10 +339,10 @@ idempotent.
 Hooks observe; they cannot stop a run. Tool admission decides one tool call at
 a time, and a denied call still leaves the agent taking turns. To stop a run
 before it spends a model call -- an organization is out of credit, a budget or
-rate limit is reached -- pass a `TurnGate` to `TemporalRuntimeWorker`:
+rate limit is reached -- pass a `TurnGate` to `AgentRuntime`:
 
 ```python
-from actant.runtime import TemporalRuntimeWorker, TurnStart
+from actant.runtime import AgentRuntime, TurnStart
 
 
 async def check_credit(turn: TurnStart) -> str | None:
@@ -336,7 +351,9 @@ async def check_credit(turn: TurnStart) -> str | None:
     return None
 
 
-worker = TemporalRuntimeWorker(stores=stores, agents=agents, turn_gate=check_credit)
+runtime = AgentRuntime(
+    client=client, stores=stores, resolve_agent=resolve_agent, turn_gate=check_credit
+)
 ```
 
 The gate runs in the turn activity before every model call, after the run's
