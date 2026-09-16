@@ -18,10 +18,8 @@ from actant.llm.messages import ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime import AgentRuntime, TemporalRuntimeConfig
 from actant.runtime.completion import RunCompletion
-from actant.runtime.events.lifecycle import AgentThreadHooks
-from actant.runtime.events.streaming import StreamListener
 from actant.runtime.stores import InMemoryRuntimeStores
-from actant.runtime.types.threads import AgentThread, RunStatus
+from actant.runtime.types.threads import RunStatus
 from actant.tools import ToolRegistry, ToolResult
 
 
@@ -55,6 +53,7 @@ async def test_same_runtime_submits_runs_and_uses_worker_resolved_limits() -> No
         runtime = AgentRuntime(
             client=env.client,
             stores=stores,
+            event_sink=stores.publisher,
             resolve_agent=resolve,
             config=TemporalRuntimeConfig(task_queue=uuid4().hex),
         )
@@ -148,19 +147,10 @@ async def test_approval_resumes_with_a_new_runtime_and_resolver() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("custom", [False, True])
-async def test_observer_failure_does_not_fail_or_repeat_model_work(custom: bool) -> None:
+async def test_observer_failure_does_not_fail_or_repeat_model_work() -> None:
     class BadSink:
         async def publish(self, channel: str, event: JSONObject) -> None:
             raise RuntimeError("event transport unavailable")
-
-    class BadHooks(AgentThreadHooks):
-        async def on_turn_start(self, turn: int, turn_id: str | None = None) -> None:
-            raise RuntimeError("hook unavailable")
-
-    class BadStream(StreamListener):
-        async def on_text_delta(self, delta: str) -> None:
-            raise RuntimeError("stream unavailable")
 
     stores = InMemoryRuntimeStores()
     fake = FakeLLM([FakeResponse(text="answer", text_chunks=["answer"])])
@@ -168,12 +158,6 @@ async def test_observer_failure_does_not_fail_or_repeat_model_work(custom: bool)
 
     async def resolve(agent_id: str, thread_id: str) -> AgentDefinition:
         return agent
-
-    def hooks(thread: AgentThread) -> AgentThreadHooks:
-        return BadHooks()
-
-    def listener(thread: AgentThread) -> StreamListener:
-        return BadStream()
 
     completions: list[str] = []
 
@@ -189,8 +173,6 @@ async def test_observer_failure_does_not_fail_or_repeat_model_work(custom: bool)
             config=TemporalRuntimeConfig(task_queue=uuid4().hex),
             resolve_agent=resolve,
             event_sink=BadSink(),
-            hooks_factory=hooks if custom else None,
-            listener_factory=listener if custom else None,
             run_completion_handler=complete,
         )
         polling = asyncio.create_task(runtime.run_worker())
@@ -278,6 +260,7 @@ async def test_tool_asset_is_resolved_for_model_but_stored_as_reference() -> Non
         runtime = AgentRuntime(
             client=env.client,
             stores=stores,
+            event_sink=stores.publisher,
             resolve_agent=resolve,
             assets=Resolver(),
             config=TemporalRuntimeConfig(task_queue=uuid4().hex),
@@ -341,6 +324,7 @@ async def test_shutdown_waits_for_active_tool_and_returns_from_run_worker() -> N
         runtime = AgentRuntime(
             client=env.client,
             stores=stores,
+            event_sink=stores.publisher,
             resolve_agent=resolve,
             config=TemporalRuntimeConfig(
                 task_queue=uuid4().hex,

@@ -1,6 +1,6 @@
 """One sandbox per thread, for the life of this worker process.
 
-Process-scoped like :class:`~actant.runtime.coordinator.SubThreadRegistry`:
+Process-scoped:
 a live handle is cached here, and the sandbox id is persisted on the thread
 so another worker (or this one after a restart) reattaches instead of
 opening a second sandbox over the same files.

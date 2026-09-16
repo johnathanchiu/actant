@@ -22,7 +22,7 @@ from typing import Any, cast
 
 from actant.agents import AgentDefinition
 from actant.core import JSONObject
-from actant.runtime.events.lifecycle import PublishingThreadHooks
+from actant.runtime.events.runtime import RuntimeEvents
 from actant.tools.admission import ToolDecisionKind
 from actant.tools.calls import ToolCallRecord
 from actant.tools.task import TaskTool
@@ -210,7 +210,7 @@ async def test_the_sub_thread_id_survives_the_event_a_viewer_sees() -> None:
     call = _FakeCall(id="tc_1", thread_id="thread_1", args={"subagent": "r", "message": "go"})
 
     result = await (await tool.build(call.args, _ctx(call.thread_id))).execute()
-    hooks = PublishingThreadHooks("thread_1", _Publisher())
+    hooks = RuntimeEvents("thread_1", _Publisher())
     await hooks.on_tool_result("tc_1", result)
 
     assert published, "the tool result was published"

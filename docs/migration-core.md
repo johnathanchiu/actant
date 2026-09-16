@@ -1,8 +1,8 @@
-# Unified runtime migration (unreleased)
+# Unified runtime migration (0.17.0)
 
-This branch changes Actant's Python API and sandbox image protocol. It is not a release.
-Existing consumers should keep their published pins until their migration branches pass
-integration tests against this exact candidate commit. No database migration is required.
+Actant 0.17.0 changed the Python runtime API and sandbox image protocol without a
+DB migration. The steps below describe that released migration. The subsequent event
+cleanup is documented separately below and requires coordinated consumer updates.
 
 ## One runtime
 
@@ -149,10 +149,10 @@ Default runtime events carry `agent_id`, `run_id`, and, for turn/tool events, `t
 `data`; identities come from the activity payload. Existing event names and content fields
 remain. An application SSE adapter can keep its external wire contract unchanged.
 
-Observer errors are logged and isolated from execution. Existing hook/listener factories
-remain observational integration points, wrapped to isolate exceptions. They must stay fast;
-blocking callbacks can still consume an activity's time budget. Cancellation propagates. Temporal-level tool failures drain sibling activities, then fail the
-run and repair incomplete tool results without repeating uncertain side effects.
+Live event publication is observational. Event sink errors are logged and isolated from
+execution; cancellation propagates. Keep sinks fast: blocking publication still consumes
+activity time. Temporal-level tool failures drain sibling activities, then fail the run
+and repair incomplete tool results without repeating uncertain side effects.
 
 Durable product effects belong in `run_completion_handler`, not a live event handler.
 Completion failures retry after finalization. Consumers must deduplicate by `run_id`;
@@ -176,43 +176,34 @@ workers that survive a Temporal timeout; it does not undo external tool side eff
 - Ume events: adapt scoped events while preserving UI and billing contracts.
 - Spaceform: handle `AssetSource` in direct runner responses; resolve for models or local files.
 - Roomform: update hosted adapters only where affected; leave core geometry pipeline unchanged.
-- Pin all candidate consumers to the exact Actant revision and run cross-repository tests.
+- Pin consumers to the exact Actant revision and run cross-repository tests.
+
+## Event cleanup after 0.17.0
+
+- Remove `hooks_factory` and `listener_factory`; supply one `event_sink` adapter.
+- Pass `event_source` explicitly when using `ThreadHandle.events()`. Stores no longer
+  implicitly supply either event dependency.
+- `AgentThreadHooks`, the publishing hook/listener classes, and
+  `actant.runtime.coordinator` are removed. Provider `StreamListener` remains.
+- Read turn identity from each event instead of maintaining shared current-turn state.
+- Tool events carry a structured `result`, including content blocks and metadata.
+- Keep PDF/non-image preprocessing, execution gates, and durable completion callbacks.
+  None is replaced by best-effort event publication.
+
+See the [coordinator guide](coordinator-guide.md) for event and completion contracts.
+No schema migration or activity name/input/result change is introduced by this cleanup.
 
 ## Cutover and rollback
 
-The new start-run activity result carries the resolved turn budget. Existing Temporal
-histories are not promised replay compatibility. Do not put new workers onto old active
-executions. After separate release authorization, upgrade readers first, pause submissions,
-drain old work (including approval waits), then switch workers and writers. Cancellation of
-pending work is an explicit product decision, not an automatic migration step.
+For upgrades from versions before 0.17.0, active Temporal histories are not promised replay
+compatibility: the start-run activity result changed. Pause submissions and drain old
+executions, including children and approval waits, on old workers before switching.
+A worker's graceful shutdown period alone is not proof that all workflows drained.
+Deploy compatible image readers and workers together, smoke-test, then reopen submissions.
 
-Historical DB rows remain. A rollback must retain readers that understand newly written
-asset references; reverting binaries solely because the schema is unchanged is insufficient.
-This draft PR does not authorize merge, release, deployment, or production data changes.
+For the later event cleanup, migrate consumers before updating dependency pins: factories
+and coordinator imports have no compatibility aliases. Validate UI events and completion
+contracts against the pinned candidate before deployment.
 
-
-### Coordinated release procedure
-
-Runtime unification, activity composition, and durable media stay in one candidate PR.
-Validate consumers against the exact candidate commit before changing published pins.
-
-1. Complete Ume and Spaceform migrations in isolated worktrees. Arrange a quiet window
-   with owners of concurrent Spaceform runtime work before integration and cutover.
-2. Run failure drills and one Tea room parity comparison against today's pinned build,
-   using the same input and settings. Compare completion, artifacts, model-visible images,
-   usage/billing records, and event delivery. Record both revisions and results. This is a
-   release gate, not a completed validation claim.
-3. Verify the deployed drain mechanism. Ume PR #21 addresses graceful worker shutdown
-   and remains deferred; it is separate from full workflow draining. This procedure does
-   not require that particular PR, but it does require a verified way to finish old work.
-4. After release approval, deploy readers that accept legacy and asset-reference images
-   while keeping old workers/writers. Pause all scene and agent submission entry points.
-5. Let old workflows finish on old workers. Budget for 15–30 minute scenes, and inspect
-   queued work, child workflows, activities, and approval waits. An elapsed grace period
-   is not proof of a drain. Resolve approval waits deliberately; do not auto-cancel them.
-6. Confirm no old active executions remain on affected task queues. Deploy candidate
-   workers and writers together with compatible Ume/Spaceform packages, run a smoke scene,
-   then reopen submissions. Do not mix old histories with the new start-run result shape.
-7. If rollback is required, pause submissions again. Keep asset-compatible readers and
-   separately drain candidate executions before switching workers. Schema compatibility
-   alone does not establish workflow or image compatibility.
+Historical DB rows remain. Rollback must retain readers that understand durable asset
+references. Schema compatibility alone does not establish workflow or image compatibility.

@@ -49,7 +49,7 @@ Open `http://localhost:8181/docs` for the OpenAPI page.
 
 ## SSE event types
 
-The stream emits the raw hook events from `PublishingThreadHooks`. Each frame
+The stream emits runtime events routed by the demo EventSink. Each frame
 has `event: <type>` and `data: <json>` where the JSON is
 `{"type", "thread_id", "data"}`. Event types:
 

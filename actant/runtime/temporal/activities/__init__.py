@@ -3,8 +3,6 @@
 from collections.abc import Callable
 from actant.runtime.temporal.activities.context import (
     ActivityContext,
-    HookFactory,
-    ListenerFactory,
     MessagePreprocessor,
 )
 from actant.runtime.temporal.activities.runs import RunActivities
@@ -38,7 +36,5 @@ __all__ = [
     "ToolActivities",
     "ThreadActivities",
     "ActivityContext",
-    "HookFactory",
-    "ListenerFactory",
     "MessagePreprocessor",
 ]

@@ -1,7 +1,7 @@
 """Streaming primitives — fake LLM token deltas + cancel.
 
 End-to-end runtime streaming is covered in
-``tests/test_workflow_thread.py`` (the ``listener_factory`` runs inside
+``tests/test_workflow_thread.py`` (stream event publication runs inside
 ``run_turn``). Here we exercise the LLM/listener contract without
 spinning up a full Temporal worker.
 """
