@@ -24,6 +24,11 @@ await runtime.thread("assistant", thread_id).send("hello")
 A process that executes work supplies an asynchronous resolver and calls `run_worker()`.
 The same instance can also submit messages. There is no separate executor or worker facade.
 
+For graceful process shutdown, set `config.graceful_shutdown_timeout_seconds` and call
+`await runtime.shutdown()` while `run_worker()` is running. Both return after active
+activities finish or acknowledge cancellation after the grace period. This stops polling;
+it does not drain entire workflows or close caller-owned resources.
+
 ```python
 from actant import AgentDefinition
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+from datetime import timedelta
 from uuid import UUID
 import temporalio.client
 import temporalio.worker
@@ -86,9 +86,10 @@ class AgentRuntime:
             message_preprocessor=message_preprocessor,
         )
         self._running = False
+        self._worker: temporalio.worker.Worker | None = None
 
     async def run_worker(self) -> None:
-        """Poll until cancelled. Injected resources remain caller-owned."""
+        """Poll until shutdown or cancellation. Injected resources remain caller-owned."""
         if self._context.resolve_agent is None:
             raise ValueError("run_worker requires resolve_agent")
         if self._running:
@@ -96,15 +97,30 @@ class AgentRuntime:
         self._running = True
         try:
             activities = TemporalRuntimeActivities(self._context)
-            async with temporalio.worker.Worker(
+            self._worker = temporalio.worker.Worker(
                 self.client,
                 task_queue=self.config.task_queue,
                 workflows=[AgentThreadWorkflow],
                 activities=activities.all,
-            ):
-                await asyncio.Future()
+                graceful_shutdown_timeout=timedelta(
+                    seconds=self.config.graceful_shutdown_timeout_seconds
+                ),
+            )
+            await self._worker.run()
         finally:
+            self._worker = None
             self._running = False
+
+    async def shutdown(self) -> None:
+        """Stop polling and await activity shutdown; does not drain whole workflows.
+
+        In-flight activities receive the configured grace period before cancellation.
+        Both this call and run_worker return after worker shutdown completes.
+        Calling without an active worker is harmless.
+        """
+        worker = self._worker
+        if worker is not None:
+            await worker.shutdown()
 
     def thread(self, agent_id: str, thread_id: str | UUID) -> ThreadHandle:
         return ThreadHandle(self, agent_id=agent_id, thread_id=str(thread_id))

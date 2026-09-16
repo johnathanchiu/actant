@@ -24,6 +24,8 @@ class TemporalRuntimeConfig:
     task_queue: str = "actant-runtime"
     workflow_id_prefix: str = "actant-thread"
     max_turns_per_run: int | None = None
+    # Allow active activities to finish before worker shutdown requests cancellation.
+    graceful_shutdown_timeout_seconds: float = 0.0
     # Soft threshold for triggering continue_as_new at the run boundary.
     # Replay walks every event so very long histories slow workflow tasks
     # down. 5_000 is a starting point; tune via load test.

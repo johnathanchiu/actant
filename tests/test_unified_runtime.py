@@ -297,3 +297,73 @@ async def test_tool_asset_is_resolved_for_model_but_stored_as_reference() -> Non
             ]
         finally:
             await stop(polling)
+
+
+async def test_shutdown_waits_for_active_tool_and_returns_from_run_worker() -> None:
+    from temporalio import activity
+
+    started, stopping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @tool
+    async def finish_during_shutdown() -> str:
+        started.set()
+        await activity.wait_for_worker_shutdown()
+        stopping.set()
+        await release.wait()
+        return "finished within grace"
+
+    agent = AgentDefinition(
+        id="a",
+        name="a",
+        persona="",
+        tools=ToolRegistry([finish_during_shutdown]),
+        llm=FakeLLM(
+            [
+                FakeResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="c",
+                            function=ToolCallFunction(
+                                name="finish_during_shutdown", arguments="{}"
+                            ),
+                        )
+                    ]
+                )
+            ]
+        ),
+    )
+
+    async def resolve(agent_id: str, thread_id: str) -> AgentDefinition:
+        return agent
+
+    async with await WorkflowEnvironment.start_local() as env:
+        stores = InMemoryRuntimeStores()
+        runtime = AgentRuntime(
+            client=env.client,
+            stores=stores,
+            resolve_agent=resolve,
+            config=TemporalRuntimeConfig(
+                task_queue=uuid4().hex,
+                graceful_shutdown_timeout_seconds=10,
+            ),
+        )
+        await runtime.shutdown()  # No worker yet.
+        polling = asyncio.create_task(runtime.run_worker())
+        shutdown: asyncio.Task[None] | None = None
+        try:
+            await runtime.send_message("a", "t", "go")
+            await asyncio.wait_for(started.wait(), 20)
+            shutdown = asyncio.create_task(runtime.shutdown())
+            await asyncio.wait_for(stopping.wait(), 10)
+            assert not shutdown.done() and not polling.done()
+            release.set()
+            await asyncio.wait_for(shutdown, 20)
+            await asyncio.wait_for(polling, 20)
+            record = await stores.tool_calls.get("c")
+            assert record.result == {"tool_call_id": "c", "result": "finished within grace"}
+            await runtime.shutdown()  # Already stopped.
+        finally:
+            release.set()
+            if shutdown is not None:
+                await shutdown
+            await stop(polling)
