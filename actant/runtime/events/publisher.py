@@ -7,6 +7,7 @@ from typing import Protocol
 import logging
 
 from actant.core import JSONObject
+from actant.runtime.events.payloads import PAYLOAD_MODELS
 
 
 class EventSink(Protocol):
@@ -58,6 +59,12 @@ class ScopedEventSink:
         data = event.get("data")
         payload = {**event, "data": {**self.identity, **(data if isinstance(data, dict) else {})}}
         try:
+            kind = event.get("type")
+            model = PAYLOAD_MODELS.get(kind) if isinstance(kind, str) else None
+            if model is not None:
+                payload["data"] = model.model_validate(payload["data"]).model_dump(
+                    mode="json", exclude_unset=True
+                )
             await self.sink.publish(channel, payload)
         except Exception:
             log.exception("runtime event publication failed")

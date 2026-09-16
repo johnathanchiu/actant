@@ -50,6 +50,11 @@ the display-oriented `output`. Adapters can recover structured output, content b
 and artifact metadata without reparsing Python string representations. Authorize and
 resolve image references before exposing them to a UI.
 
+Structured payload models live in `actant.runtime.events.payloads`: `AssistantMessagePayload`,
+`ToolResultPayload`, `ToolWaitingPayload`, and `ModelUsagePayload`. Adapters can parse
+`data` with `model_validate` and access typed fields. Arbitrary tool output, content blocks,
+and provider metadata remain JSON. Validation runs inside the observer failure boundary.
+
 Live publication is observational: ordinary sink errors are logged, cancellation
 propagates, and events may be lost or repeated. Do not use it as the only delivery path
 for durable product actions. Keep adapters lightweight; an awaited slow sink still uses
