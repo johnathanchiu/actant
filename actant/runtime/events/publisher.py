@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Protocol
+import logging
 
 from actant.core import JSONObject
+from actant.runtime.events.payloads import PAYLOAD_MODELS
 
 
 class EventSink(Protocol):
@@ -27,3 +29,42 @@ class EventPublisher(EventSink, EventSource, Protocol):
     deltas, tool results, completion). Apps wire their own publisher
     (Redis pubsub, SSE bus, websockets) to receive them.
     """
+
+
+log = logging.getLogger(__name__)
+
+
+class ScopedEventSink:
+    def __init__(
+        self,
+        sink: EventSink | None,
+        agent_id: str,
+        run_id: str | None,
+        turn_id: str | None,
+        turn_index: int | None = None,
+    ) -> None:
+        self.sink = sink
+        self.identity: JSONObject = {"agent_id": agent_id}
+        if run_id is not None:
+            self.identity["run_id"] = run_id
+        if turn_id is not None:
+            self.identity.update({"turn_id": turn_id, "turn_uid": turn_id})
+
+        if turn_index is not None:
+            self.identity["turn_index"] = turn_index
+
+    async def publish(self, channel: str, event: JSONObject) -> None:
+        if self.sink is None:
+            return
+        data = event.get("data")
+        payload = {**event, "data": {**self.identity, **(data if isinstance(data, dict) else {})}}
+        try:
+            kind = event.get("type")
+            model = PAYLOAD_MODELS.get(kind) if isinstance(kind, str) else None
+            if model is not None:
+                payload["data"] = model.model_validate(payload["data"]).model_dump(
+                    mode="json", exclude_unset=True
+                )
+            await self.sink.publish(channel, payload)
+        except Exception:
+            log.exception("runtime event publication failed")

@@ -4,6 +4,17 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- **Breaking:** replace runtime hook/listener factories with one explicit `event_sink`;
+  `event_source` is also explicit. Remove implicit store publisher discovery.
+- Remove `AgentThreadHooks`, publishing adapters, observer wrappers and the core
+  subthread coordinator registry. The demo routes events from persisted parent links.
+- Scope lifecycle and stream events to their activity turn; include structured tool
+  results for application image/artifact adapters. Keep generic execution gates and
+  durable completion callbacks separate from live observation.
+- No database schema or Temporal activity contract changes.
+
 ## 0.17.0
 
 - Consolidate command submission and worker polling into `AgentRuntime`, with injected

@@ -10,7 +10,7 @@ from typing import Any, cast
 from temporalio import activity
 
 from actant.agents import AgentDefinition
-from actant.runtime.events import AgentThreadHooks
+from actant.runtime.events.runtime import RuntimeEvents
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
     ActivityName,
@@ -57,10 +57,12 @@ class ToolActivities:
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
-        hooks = self.context.hooks(thread, run_id=record.run_id, turn_id=record.turn_id)
+        events = self.context.events(
+            thread, run_id=record.run_id, turn_id=record.turn_id, turn_index=record.turn_index
+        )
         tool = agent.tools.get(record.name)
         if tool is None:
-            return await self._deny(record, hooks, f"Tool {record.name} not found")
+            return await self._deny(record, events, f"Tool {record.name} not found")
 
         try:
             # The same builder execution uses, so a tool that needs its call
@@ -71,7 +73,7 @@ class ToolActivities:
                 record.args, await self._call_context(agent, tool, record)
             )
         except Exception as exc:  # noqa: BLE001
-            return await self._deny(record, hooks, f"Tool build error: {exc}")
+            return await self._deny(record, events, f"Tool build error: {exc}")
 
         context = TurnContext(
             agent=agent,
@@ -85,7 +87,7 @@ class ToolActivities:
         )
         decision = await _tool_decision(tool, record, invocation, context)
         if decision.kind == ToolDecisionKind.DENY:
-            return await self._deny(record, hooks, decision.reason or "Tool call denied")
+            return await self._deny(record, events, decision.reason or "Tool call denied")
         if decision.kind == ToolDecisionKind.AWAIT_HUMAN:
             request = decision.wait_request
             request_data = request.to_dict() if request is not None else None
@@ -97,7 +99,7 @@ class ToolActivities:
                 wait_request=request_data,
             ):
                 return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.DENY.value)
-            await hooks.on_tool_waiting(
+            await events.on_tool_waiting(
                 record.id, prompt, record.turn_id, wait_request=request_data
             )
             return AdmitOutcome(
@@ -114,14 +116,14 @@ class ToolActivities:
         return AdmitOutcome(tool_call_id=record.id, decision=AdmitDecision.EXECUTE.value)
 
     async def _deny(
-        self, record: ToolCallRecord, hooks: AgentThreadHooks, reason: str
+        self, record: ToolCallRecord, events: RuntimeEvents, reason: str
     ) -> AdmitOutcome:
         result = ToolResult.fail(reason)
         result.tool_call_id = record.id
         if await self.context.stores.tool_calls.update_status(
             record.id, ToolCallStatus.BLOCKED, result=result.to_dict()
         ):
-            await hooks.on_tool_result(record.id, result, record.turn_id)
+            await events.on_tool_result(record.id, result, record.turn_id)
         return AdmitOutcome(
             tool_call_id=record.id,
             decision=AdmitDecision.DENY.value,
@@ -191,8 +193,8 @@ class ToolActivities:
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
-        await self.context.hooks(
-            thread, run_id=record.run_id, turn_id=record.turn_id
+        await self.context.events(
+            thread, run_id=record.run_id, turn_id=record.turn_id, turn_index=record.turn_index
         ).on_tool_result(record.id, result, record.turn_id)
         return _outcome(record.id, result)
 
@@ -308,8 +310,8 @@ class ToolActivities:
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
-        await self.context.hooks(
-            thread, run_id=record.run_id, turn_id=record.turn_id
+        await self.context.events(
+            thread, run_id=record.run_id, turn_id=record.turn_id, turn_index=record.turn_index
         ).on_tool_resolved(record.id, result, record.turn_id)
         return _outcome(record.id, result)
 

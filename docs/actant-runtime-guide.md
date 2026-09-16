@@ -226,8 +226,8 @@ runtime = AgentRuntime(
     stores=stores,
     resolve_agent=resolve_agent,
     config=config,
-    hooks_factory=my_hooks_factory,
-    listener_factory=my_listener_factory,
+    event_sink=my_event_sink,
+    event_source=my_event_source,
 )
 await runtime.run_worker()
 ```
@@ -256,7 +256,7 @@ thread workflow; later messages signal that same workflow. Messages arriving
 while a run is active remain in the workflow inbox and are drained at the next
 run boundary.
 
-The call returns after delivery to Temporal. Observe completion through hooks,
+The call returns after delivery to Temporal. Observe completion through events,
 projections, or your application's event API rather than holding the request
 open for the entire agent run.
 
@@ -312,31 +312,27 @@ async for event in thread.events():
         print(f"Approval needed: {event.tool_call_id}")
 ```
 
-`AgentRuntime` reads events from its `event_source` and
-writes events to its `event_sink`. Both default to `stores.publisher`, which is
-convenient in one process. In a split deployment, supply the two sides of a
-shared event transport explicitly. Events are observational: after reconnect,
-reload messages and waiting tools from their projections before resuming the
-live stream.
+`AgentRuntime` reads from an explicit `event_source` and writes both lifecycle and
+model-stream events to one explicit `event_sink`. Neither dependency is inferred from
+stores. Applications adapt envelopes to their UI and owner/parent routing contracts.
 
-`AgentThreadHooks` reports persisted lifecycle events. `StreamListener` reports
-low-latency model deltas. The worker automatically publishes both through its
-event sink. Custom factories remain available for application-specific
-callbacks, with one hook/listener instance created per thread.
+Each event carries immutable activity identity. Use its `run_id`, `turn_id` and
+`turn_index` rather than a process-local current-turn cache. Tool events include the
+structured `result` for image and artifact adapters. `StreamListener` remains the LLM
+provider callback contract; applications no longer construct hook/listener factories.
 
-Good hook responsibilities include publishing SSE/websocket events, updating
-product status, and emitting audit telemetry. Do not persist duplicate runtime
-messages from hooks: the runtime stores are already the transcript writer.
+Events are observational. After reconnect, reload persisted messages and waiting tools
+before resuming the stream. Do not duplicate transcript writes in an event adapter.
 
 Use `RunCompletionHandler` for correctness-bearing work that must retry after a
 run projection commits, such as resolving the parent of a completed subagent.
-Pass it to `AgentRuntime`; unlike hooks, handler failure keeps the
+Pass it to `AgentRuntime`; unlike live events, handler failure keeps the
 finalization activity incomplete and eligible for retry. Handlers must be
 idempotent.
 
 ## Turn gate
 
-Hooks observe; they cannot stop a run. Tool admission decides one tool call at
+Event sinks observe; they cannot stop a run. Tool admission decides one tool call at
 a time, and a denied call still leaves the agent taking turns. To stop a run
 before it spends a model call -- an organization is out of credit, a budget or
 rate limit is reached -- pass a `TurnGate` to `AgentRuntime`:

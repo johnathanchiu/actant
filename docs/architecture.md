@@ -241,23 +241,20 @@ Live events must not become the only mechanism for a durable coordination
 decision. In particular, parent/subagent completion should ultimately be owned
 by durable orchestration rather than by an SSE-publishing hook.
 
-## Hooks versus stream listeners
+## Lifecycle and stream events
 
-`AgentThreadHooks` reports lifecycle facts such as persisted assistant
-messages, waiting tools, tool results, and run completion.
-
-`StreamListener` reports provider output before the final assistant message is
-assembled: text deltas, thinking deltas, and partial tool arguments.
+An activity-scoped event publisher reports persisted lifecycle facts and implements
+`StreamListener` for provider deltas. Both paths use the same explicit application
+`EventSink`, immutable turn identity, and exception boundary.
 
 ```text
-provider stream -- StreamListener --> responsive UI
-       |
-       v
-assembled message -- persist -- AgentThreadHooks --> lifecycle event
+provider deltas -----------+
+                          +--> EventSink --> application UI/telemetry
+persisted lifecycle ------+
 ```
 
 Good consumers include SSE/websocket publication, telemetry, audit feeds, and
-non-critical notifications. Hooks should not duplicate canonical message
+non-critical notifications. Event adapters should not duplicate canonical message
 writes. A reconnecting consumer loads stores first and then resumes live event
 consumption.
 

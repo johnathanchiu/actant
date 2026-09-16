@@ -1,19 +1,7 @@
-"""DemoCoordinator — composes actant's coordinator primitives with
-demo-specific policy.
+"""Application-owned agent construction, delegation, and durable completion.
 
-This is the canonical "how to build on actant" reference example
-that `docs/coordinator-guide.md` points at. The shape is:
-
-- Own the runtime stores + publisher + sub-thread registry.
-- Build one main agent plus researcher and summarizer subagents globally.
-- Wire AgentRuntime with the registry-aware factories from
-  `actant.runtime.coordinator`.
-- Implement `SubagentSpawner` for `TaskTool` to delegate work, and
-  `SubagentSupervisor` so the parent can check/message/stop its children.
-- Funnel user-driven resolutions through `AgentRuntime.resolve_tool_call`,
-  and tell a parent its child finished with `AgentRuntime.send_message`.
-
-NO subclassing of any actant base class. Pure composition.
+DemoEvents routes live events using persisted parent links. Completion is a
+separate retryable callback, independent of the process that spawned the child.
 """
 
 from __future__ import annotations
@@ -24,7 +12,6 @@ import json
 import os
 import uuid
 from dataclasses import dataclass
-from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -33,17 +20,6 @@ from actant.core import JSONObject
 from actant.agents import AgentDefinition
 from actant.runtime import AgentRuntime, TemporalRuntimeConfig
 from actant.runtime.completion import RunCompletion
-from actant.runtime.coordinator import (
-    SubThreadLink,
-    SubThreadRegistry,
-    publishing_hooks_factory,
-)
-from actant.runtime.events import (
-    AgentThreadHooks,
-    PublishingStreamListener,
-    PublishingThreadHooks,
-    StreamListener,
-)
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
 from actant.runtime.stores.postgres import (
     SQLAlchemyMessageStore,
@@ -52,7 +28,7 @@ from actant.runtime.stores.postgres import (
     SQLAlchemyToolCallStore,
     create_schema,
 )
-from actant.runtime.types.threads import AgentThread, ThreadStatus
+from actant.runtime.types.threads import AgentThread
 from actant.tools.base import Tool
 from actant.tools.supervise import supervision_tools
 from actant.tools.task import TaskTool
@@ -66,6 +42,7 @@ from app.agents import (
     build_summarizer_agent,
 )
 from app.llm import build_llm
+from app.events import DemoEvents
 
 
 # Subagent names the demo recognizes, mapped to their agent IDs in the
@@ -105,8 +82,6 @@ class DemoCoordinator:
         worker_task: asyncio.Task[None],
         engine: object,
         model_id: str,
-        registry: SubThreadRegistry,
-        hooks_factory: Callable[[AgentThread], AgentThreadHooks],
     ) -> None:
         self.stores = stores
         self.runtime = runtime
@@ -114,8 +89,6 @@ class DemoCoordinator:
         self.worker_task = worker_task
         self.engine = engine
         self.model_id = model_id
-        self.registry = registry
-        self.hooks_factory = hooks_factory
 
     # ─── SubagentSpawner protocol (TaskTool.spawner) ────────────────
 
@@ -138,23 +111,6 @@ class DemoCoordinator:
         if sub_agent_id is None:
             raise ValueError(f"unknown subagent name: {name!r}")
         sub_thread_id = f"sub_{uuid.uuid4().hex[:10]}"
-        link = SubThreadLink(
-            sub_thread_id=sub_thread_id,
-            parent_thread_id=parent_thread_id,
-            # The spawning tool call is no longer part of the link: the
-            # task call completes immediately and its stored result names
-            # the sub-thread, which is what the UI reads.
-            sub_agent_id=sub_agent_id,
-            subagent_name=name,
-            metadata={"parent_agent_id": await self.agent_id_for(parent_thread_id)},
-        )
-        # Register BEFORE send_message so the hooks_factory sees the
-        # link synchronously and wires dual-publish from the very
-        # first event.
-        self.registry.register(link)
-        # Persist the parent id onto the sub-thread row too so
-        # /api/threads/:id/sub_threads can report the mapping after
-        # process restart.
         thread = await self.stores.threads.get_or_create(sub_agent_id, sub_thread_id)
         await self.stores.threads.update(
             AgentThread(
@@ -189,10 +145,6 @@ class DemoCoordinator:
         }
 
     async def send(self, thread_id: str, message: str) -> None:
-        # A finished sub-thread is a normal target: its next run has to
-        # publish to the root thread like the first one did, so put its
-        # chain back in the routing index before the message starts it.
-        await self._link_ancestry(thread_id)
         await self.runtime.send_message(await self.agent_id_for(thread_id), thread_id, message)
 
     async def stop(self, thread_id: str) -> None:
@@ -227,26 +179,6 @@ class DemoCoordinator:
         thread = await self._thread_row(thread_id)
         return thread.agent_id if thread is not None else AGENT_ID
 
-    async def _link_ancestry(self, thread_id: str) -> None:
-        """Put a thread's parent chain back into the routing registry.
-
-        Registration normally happens in `spawn`, in the process that
-        spawned. Anything that wakes a sub-thread later — a follow-up
-        message, a resolved wait, a child of its own finishing — may run
-        after a restart or in another worker, so it rebuilds the chain
-        from the thread rows first. Registration is idempotent."""
-        thread = await self._thread_row(thread_id)
-        while thread is not None and thread.parent_thread_id is not None:
-            self.registry.register(
-                SubThreadLink(
-                    sub_thread_id=thread.id,
-                    parent_thread_id=thread.parent_thread_id,
-                    sub_agent_id=thread.agent_id,
-                    subagent_name=thread.agent_id,
-                )
-            )
-            thread = await self._thread_row(thread.parent_thread_id)
-
     # ─── Resolve flows ──────────────────────────────────────────────
 
     async def resolve_user_deferred(
@@ -268,7 +200,6 @@ class DemoCoordinator:
         owning thread workflow."""
         # The resolve restarts the thread, so its events need somewhere
         # to route, same as `send`.
-        await self._link_ancestry(thread_id)
         await self.runtime.resolve_tool_call(
             await self.agent_id_for(thread_id),
             thread_id,
@@ -339,7 +270,6 @@ class DemoCoordinator:
         }
         # The parent may itself be a sub-thread whose link this worker has
         # never seen, and the message is about to start a run on it.
-        await self._link_ancestry(thread.parent_thread_id)
         await self.runtime.send_message(
             parent_agent_id,
             thread.parent_thread_id,
@@ -347,7 +277,6 @@ class DemoCoordinator:
         )
         # The child's run is over, so its routing entry is dead weight until
         # something wakes it again — and whatever does re-links it first.
-        self.registry.pop(completion.thread_id)
 
     # ─── Shutdown ───────────────────────────────────────────────────
 
@@ -363,52 +292,6 @@ class DemoCoordinator:
 
 
 # ─── Event routing ──────────────────────────────────────────────────
-
-
-def _find_root_thread_id(registry: SubThreadRegistry, link: SubThreadLink) -> str:
-    """Walk the sub-thread chain up to the root (a thread NOT in the
-    registry). For 1-level nesting the root is the immediate parent;
-    for N-level it's the topmost ancestor."""
-    current = link
-    while True:
-        parent = registry.get(current.parent_thread_id)
-        if parent is None:
-            return current.parent_thread_id
-        current = parent
-
-
-async def _restore_subthread_registry(
-    stores: _DemoStores,
-    registry: SubThreadRegistry,
-    agent_ids: list[str],
-) -> None:
-    """Rebuild LIVE parent/child links from durable projections.
-
-    A parent tool call no longer gates this: it completes as soon as the
-    child is spawned, so the sub-thread row's parent id is the only link
-    there is. Liveness is the sub-thread's own status instead — a run that
-    Temporal will resume is the thing that still has events to route.
-    Registering every thread that ever had a parent would grow the index
-    without bound and index threads that will never emit again; the ones
-    that do wake later are re-linked by `DemoCoordinator._link_ancestry`.
-    """
-    for agent_id in agent_ids:
-        for thread in await stores.threads.list_for_agent(agent_id):
-            if thread.parent_thread_id is None:
-                continue
-            if thread.status is not ThreadStatus.ACTIVE:
-                continue
-            registry.register(
-                SubThreadLink(
-                    sub_thread_id=thread.id,
-                    parent_thread_id=thread.parent_thread_id,
-                    sub_agent_id=thread.agent_id,
-                    subagent_name=thread.agent_id,
-                )
-            )
-
-
-# ─── Build the coordinator ──────────────────────────────────────────
 
 
 async def build_coordinator() -> DemoCoordinator:
@@ -427,7 +310,6 @@ async def build_coordinator() -> DemoCoordinator:
     )
 
     llm, model_id = build_llm()
-    registry = SubThreadRegistry()
 
     # TaskTool's spawner needs a reference back to the coordinator.
     # The coordinator instance doesn't exist yet, so we use a
@@ -490,51 +372,11 @@ async def build_coordinator() -> DemoCoordinator:
         researcher.id: researcher,
         summarizer.id: summarizer,
     }
-    await _restore_subthread_registry(stores, registry, list(agents))
-
-    # Hook + listener factories. For sub-threads, both dual-publish to
-    # the ROOT thread (not just the immediate parent) so the main
-    # thread's SSE subscriber sees every descendant event regardless
-    # of nesting depth. Durable parent resolution is handled separately
-    # by the retryable run_completion_handler below.
-    base_hooks = publishing_hooks_factory(stores.publisher, registry=registry)
-
-    def hooks_factory(thread: AgentThread) -> AgentThreadHooks:
-        link = registry.get(thread.id)
-        if link is None:
-            return base_hooks(thread)
-        root_id = _find_root_thread_id(registry, link)
-        return PublishingThreadHooks(
-            thread.id,
-            publisher=stores.publisher,
-            parent_channel=f"thread:{root_id}",
-            parent_metadata={
-                "parent_thread_id": link.parent_thread_id,
-                "subagent": link.subagent_name,
-            },
-        )
-
-    def listener_factory(thread: AgentThread) -> StreamListener:
-        link = registry.get(thread.id)
-        if link is None:
-            return PublishingStreamListener(thread.id, publisher=stores.publisher)
-        root_id = _find_root_thread_id(registry, link)
-        return PublishingStreamListener(
-            thread.id,
-            publisher=stores.publisher,
-            parent_channel=f"thread:{root_id}",
-            parent_metadata={
-                "parent_thread_id": link.parent_thread_id,
-                "subagent": link.subagent_name,
-            },
-        )
-
     temporal_address = os.getenv("ACTANT_TEMPORAL_ADDRESS", "localhost:27233")
     temporal_config = TemporalRuntimeConfig(address=temporal_address)
     client = await Client.connect(temporal_address, namespace=temporal_config.namespace)
 
     async def resolve_agent(agent_id: str, thread_id: str) -> AgentDefinition:
-        await coordinator_ref[0]._link_ancestry(thread_id)
         return agents[agent_id]
 
     runtime = AgentRuntime(
@@ -542,8 +384,8 @@ async def build_coordinator() -> DemoCoordinator:
         stores=stores,
         config=temporal_config,
         resolve_agent=resolve_agent,
-        hooks_factory=hooks_factory,
-        listener_factory=listener_factory,
+        event_sink=DemoEvents(stores.threads, stores.publisher, list(agents)),
+        event_source=stores.publisher,
         run_completion_handler=lambda completion: coordinator_ref[0].handle_run_completion(
             completion
         ),
@@ -557,8 +399,6 @@ async def build_coordinator() -> DemoCoordinator:
         worker_task=worker_task,
         engine=engine,
         model_id=model_id,
-        registry=registry,
-        hooks_factory=hooks_factory,
     )
     coordinator_ref.append(coordinator)
     return coordinator

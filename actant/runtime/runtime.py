@@ -22,8 +22,6 @@ from actant.runtime.temporal.activities import TemporalRuntimeActivities
 from actant.runtime.temporal.activities.context import (
     ActivityContext,
     AgentResolver,
-    HookFactory,
-    ListenerFactory,
     MessagePreprocessor,
 )
 from actant.runtime.temporal.types import (
@@ -64,25 +62,21 @@ class AgentRuntime:
         event_sink: EventSink | None = None,
         turn_gate: TurnGate | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
-        hooks_factory: HookFactory | None = None,
-        listener_factory: ListenerFactory | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
     ) -> None:
         self.client = client
         self.stores = stores
         self.config = config or TemporalRuntimeConfig()
-        self.event_source = event_source or getattr(stores, "publisher", None)
+        self.event_source = event_source
         self._context = ActivityContext(
             stores=stores,
             resolve_agent=resolve_agent,
             sandboxes=sandboxes,
             assets=assets,
             artifact_sink=artifact_sink,
-            event_sink=event_sink or getattr(stores, "publisher", None),
+            event_sink=event_sink,
             turn_gate=turn_gate,
             run_completion_handler=run_completion_handler,
-            hooks_factory=hooks_factory,
-            listener_factory=listener_factory,
             message_preprocessor=message_preprocessor,
         )
         self._running = False

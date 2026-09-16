@@ -105,20 +105,18 @@ async def test_temporal_activity_failure_drains_siblings_and_repairs_transcript(
 async def test_late_tool_completion_preserves_repaired_result() -> None:
     """A timed-out worker can survive and finish after another worker repairs its run."""
     from actant.llm.messages import Message
-    from actant.runtime.events.lifecycle import AgentThreadHooks
+    from actant.core import JSONObject
     from actant.runtime.temporal.types import FinalizeRunInput
-    from actant.tools.base import ToolResult
     from actant.tools.calls import ToolCallRecord
 
     started, release = asyncio.Event(), asyncio.Event()
     effects: list[str] = []
-    events: list[ToolResult] = []
+    events: list[JSONObject] = []
 
-    class Hooks(AgentThreadHooks):
-        async def on_tool_result(
-            self, tool_call_id: str, result: ToolResult, turn_id: str | None = None
-        ) -> None:
-            events.append(result)
+    class Sink:
+        async def publish(self, channel: str, event: JSONObject) -> None:
+            if event["type"] == "tool_result":
+                events.append(event)
 
     @tool
     async def slow() -> str:
@@ -135,7 +133,7 @@ async def test_late_tool_completion_preserves_repaired_result() -> None:
         ActivityContext(
             stores=stores,
             resolve_agent=static_agents({"a": agent}),
-            hooks_factory=lambda _: Hooks(),
+            event_sink=Sink(),
         )
     )
     await stores.threads.get_or_create("a", "t")

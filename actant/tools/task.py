@@ -294,7 +294,7 @@ class TaskInvocation(BaseToolInvocation[JSONObject, object]):
         # ``sub_thread_id`` is in the output, not in metadata, even though
         # it is bookkeeping rather than something the model needs: the tool
         # result event carries only ``output`` and ``error``
-        # (``PublishingThreadHooks.on_tool_result``), so metadata never
+        # (``RuntimeEvents.on_tool_result``), so metadata never
         # reaches a viewer. Putting it there hides a running subagent from
         # the UI until someone reloads the page.
         return ToolResult.ok(

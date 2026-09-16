@@ -1,264 +1,82 @@
-# Building a coordinator on actant
+# Application-owned coordination
 
-This guide is for apps that go beyond a single-agent chatbot — apps
-that have multiple agents, delegate work via `task()`, or need
-robust state recovery when Temporal and the actant store diverge.
+Actant runs durable agent threads. Applications choose agent definitions, parent/child
+relationships, user authorization, and what a completed child means to its parent.
+A single-agent application can use `AgentRuntime` directly.
 
-If you're building a single-agent chatbot, skip this guide and use
-[`AgentRuntime`](./actant-runtime-guide.md) directly. You don't need
-a coordinator.
+## Persist identity before starting work
 
-## The problem actant doesn't solve for you
+Save the child's agent identity, definition inputs, and parent linkage before submitting
+its first message. A resolver must reconstruct that definition on a worker that did not
+spawn it. Process-local registries cannot be the source of truth.
 
-Actant is a kernel: durable inbox, tool admission, hooks,
-replay. It deliberately doesn't ship policy for:
+`TaskTool` returns a child thread ID immediately; the parent can continue. The supervision
+tools check, message, or stop that child. Durable completion notifies the parent separately.
 
-- **Per-thread vs global agent definitions** — does each thread get
-  its own `AgentDefinition` (different model, workspace, tools)?
-  Or do all threads share one? Your call.
-- **Sub-thread lifecycle** — when a parent's `task()` tool delegates
-  to a sub-agent, who registers the relationship? Where does the
-  sub-agent's terminal event trigger the parent's deferred-tool
-  resolution? Your code.
-- **Harvest semantics** — when the sub-agent finishes, what gets
-  passed back to the parent? Just the final text? An artifact bundle?
-  A structured envelope? Your decision.
-- **State reconciliation** — if Temporal's view diverges from the
-  store's (volume reset, activity timeout, workflow termination),
-  who reconciles?
-- **Cancellation policy** — when a parent thread is cancelled, do
-  its sub-threads cancel too? Continue? Get reaped?
+## One live event adapter
 
-A production coordinator is one set of answers to these questions.
-Yours will be different depending on whether your app needs workspace
-directories, artifact gateways, owner-scoped event channels, or a much
-simpler thread model.
-
-## What actant DOES provide
-
-[`actant.runtime.coordinator`](../actant/runtime/coordinator.py)
-ships three primitives:
-
-1. **`SubThreadLink`** — dataclass capturing a single parent ↔ sub
-   relationship.
-2. **`SubThreadRegistry`** — in-memory map of active links.
-3. **`publishing_hooks_factory`** / **`publishing_listener_factory`** —
-   build `AgentRuntime` factories that auto-dual-publish sub-thread
-   events to the parent's SSE channel.
-
-Plus a related framework fix:
-
-- **`TaskTool` now takes `parent_thread_id` per-call** (reads
-  `call.thread_id` if no construction-time value). A single
-  TaskTool instance can be shared across threads — you don't need
-  per-thread agent construction just for delegation.
-
-## The canonical pattern
+Pass an `EventSink` to `AgentRuntime(event_sink=...)`. The runtime publishes both lifecycle
+and model-stream events through `publish(channel, event)`. Applications can transform
+those events into their UI contract or route them to parent and owner channels.
 
 ```python
-from actant.agents import AgentDefinition
-from actant.runtime import AgentRuntime, RunCompletion
-from actant.runtime.coordinator import (
-    SubThreadLink,
-    SubThreadRegistry,
-    publishing_hooks_factory,
-    publishing_listener_factory,
-)
-from actant.runtime.stores.in_memory import InMemoryEventPublisher
-from actant.tools.task import TaskTool
+class ApplicationEvents:
+    async def publish(self, channel, event):
+        await broker.publish(channel, event)
+        # Load durable parent/owner links here before routing another copy.
 
 
-class MyCoordinator:
-    def __init__(self, client, stores, llm):
-        self.stores = stores
-        self.publisher = InMemoryEventPublisher()
-        self.registry = SubThreadRegistry()
-
-        # Build agents — your policy decides per-thread vs global.
-        self.main_agent = AgentDefinition(
-            id="main",
-            name="Main",
-            persona="...",
-            llm=llm,
-            tools=ToolRegistry(
-                [
-                    # TaskTool reads call.thread_id at invocation time, so
-                    # ONE instance works for many threads.
-                    TaskTool(
-                        spawner=self,  # implements SubagentSpawner
-                        subagent_choices=["researcher"],
-                    ),
-                    # ... your other tools ...
-                ]
-            ),
-        )
-        self.researcher_agent = AgentDefinition(
-            id="researcher",
-            name="Researcher",
-            persona="...",
-            llm=llm,
-            tools=ToolRegistry([...]),
-        )
-
-        # Wire AgentRuntime with the registry-aware factories.
-        self.runtime = AgentRuntime(
-            client=client,
-            stores=stores,
-            resolve_agent=self.resolve_agent,
-            hooks_factory=publishing_hooks_factory(self.publisher, registry=self.registry),
-            listener_factory=publishing_listener_factory(self.publisher, registry=self.registry),
-        )
-
-    async def resolve_agent(self, agent_id: str, thread_id: str) -> AgentDefinition:
-        return {"main": self.main_agent, "researcher": self.researcher_agent}[agent_id]
-
-    # TaskTool's SubagentSpawner Protocol. Returns the sub-thread's id,
-    # which becomes the parent's tool result: the parent is not waiting on
-    # this, it is being handed a handle.
-    async def spawn(self, *, name, message, context, parent_thread_id):
-        sub_thread_id = f"sub_{uuid.uuid4().hex[:10]}"
-        # Register the link BEFORE send_message so the hook factory
-        # sees the relationship synchronously.
-        self.registry.register(
-            SubThreadLink(
-                sub_thread_id=sub_thread_id,
-                parent_thread_id=parent_thread_id,
-                sub_agent_id=self.researcher_agent.id,
-                subagent_name=name,
-            )
-        )
-        # Record parentage durably too. The registry is process memory and
-        # the child may finish on another worker.
-        child = await self.stores.threads.get_or_create(self.researcher_agent.id, sub_thread_id)
-        child.parent_thread_id = parent_thread_id
-        await self.stores.threads.update(child)
-
-        await self.runtime.send_message(
-            self.researcher_agent.id,
-            sub_thread_id,
-            message,
-        )
-        return sub_thread_id
-
-    # Passed to AgentRuntime(run_completion_handler=...).
-    # This runs inside the retryable finalize_run activity, after the
-    # child's thread/run/message projections have committed.
-    async def handle_run_completion(self, completion: RunCompletion):
-        child = await self.stores.threads.get(
-            completion.agent_id,
-            completion.thread_id,
-        )
-        if child.parent_thread_id is None:
-            return
-        messages = await self.stores.messages.list_for_thread(
-            completion.agent_id,
-            completion.thread_id,
-        )
-        final_text = next(
-            (
-                m.content
-                for m in reversed(messages)
-                if m.role == "assistant" and isinstance(m.content, str)
-            ),
-            completion.outcome,
-        )
-        # Tell the parent, rather than resolve anything: its task call
-        # completed the moment the child started. The message wakes it
-        # whether it is parked or has already closed.
-        envelope = {
-            "subagent": completion.agent_id,
-            "thread_id": completion.thread_id,
-            "run_id": completion.run_id,
-            "succeeded": completion.succeeded,
-            "text": final_text,
-        }
-        await self.runtime.send_message(
-            await self.agent_id_for(child.parent_thread_id),
-            child.parent_thread_id,
-            json.dumps(envelope),
-        )
-
-    # The same runtime submits work and hosts activities.
-    # runtime = AgentRuntime(
-    #     stores=self.stores,
-    #     client=client, resolve_agent=resolve_agent,
-    #     run_completion_handler=self.handle_run_completion,
-    # )
-
-    # Single entry point for user-driven resolves too — funneling
-    # both paths through the same method gives one place to handle
-    # state divergence.
-    async def resolve_user_input(
-        self,
-        *,
-        agent_id,
-        thread_id,
-        tool_call_id,
-        approved=None,
-        answer="",
-        payload=None,
-    ):
-        await self.runtime.resolve_tool_call(
-            agent_id,
-            thread_id,
-            tool_call_id,
-            approved=approved,
-            answer=answer,
-            payload=payload,
-        )
-```
-
-## What you DON'T have to do
-
-- Use hooks to continue a parent. Hooks only publish observations;
-  `RunCompletionHandler` owns retryable completion integration.
-- Maintain a side-channel map of "is this thread a sub-thread"
-  (the registry IS that map; the factories consult it).
-- Continue a parent when its subagent finishes by resolving a tool call.
-  Nothing is waiting: the task call completed the moment the child
-  started, and the child tells its parent by sending it a message.
-  `resolve_tool_call` is for a person answering, and has one caller.
-
-## What you still own
-
-- **Per-thread agent construction strategy.** Some apps rebuild an
-  agent for every thread; the demo registers one agent globally and
-  uses `call.thread_id` per-invocation via TaskTool's fallback. Both
-  are valid — pick what fits your app.
-- **Harvest semantics.** What does "sub-agent done" mean for your
-  parent? A production app might extract artifacts or structured
-  outputs. The demo just passes the final text. Your call.
-- **Cancellation policy.** When a parent thread cancels, do
-  in-flight sub-threads cancel too? Production apps often implement
-  cascade-cancel; the demo doesn't bother.
-- **Registry reconstruction.** `SubThreadRegistry` is an in-memory live-event
-  routing index. Rebuild active links from thread and tool-call projections on
-  startup. Parent continuation remains safe because the completion handler
-  derives linkage from those projections rather than registry memory.
-
-## Reference implementation
-
-The `actant` repo's `examples/demo/` directory contains a complete worked
-example (`DemoCoordinator`) that uses these primitives. Read it
-alongside this guide — it's intentionally minimal but production-
-shaped.
-
-## When you DON'T need a coordinator
-
-Counter-example. If you're building this:
-
-```python
 runtime = AgentRuntime(
     client=client,
-    stores=InMemoryRuntimeStores(),
+    stores=stores,
     resolve_agent=resolve_agent,
+    event_sink=ApplicationEvents(),
+    event_source=broker,
+    run_completion_handler=on_complete,
 )
-thread_id = uuid.uuid4().hex
-await runtime.send_message("bot", thread_id, "hello")
 ```
 
-…and you don't have a `task()` tool, and you don't run a worker
-across multiple processes, you don't need ANY of this. Use the
-runtime directly. The coordinator pattern is for apps with state
-that needs to be coordinated; if there's no coordination to do,
-adding a coordinator is pure overhead.
+`event_source` is the optional reader used by `ThreadHandle.events()`. It is explicit,
+as is the sink; neither is inferred from a store's `publisher` attribute. A gateway can
+subscribe to the application's broker without running a worker.
+
+Each runtime event contains `type`, `thread_id`, and `data`. Activity-scoped data includes
+`agent_id`, `run_id`, and, when available, `turn_id`, `turn_uid`, and `turn_index`.
+Use these identities instead of tracking a mutable "current turn" in the event adapter.
+A delayed event from one activity must not acquire the next activity's identity.
+
+Tool events include `result`, a structured tool-result payload (including partial output on failure), alongside
+the display-oriented `output`. Adapters can recover structured output, content blocks,
+and artifact metadata without reparsing Python string representations. Authorize and
+resolve image references before exposing them to a UI.
+
+Structured payload models live in `actant.runtime.events.payloads`: `AssistantMessagePayload`,
+`ToolResultPayload`, `ToolWaitingPayload`, and `ModelUsagePayload`. Adapters can parse
+`data` with `model_validate` and access typed fields. Arbitrary tool output, content blocks,
+and provider metadata remain JSON. Validation runs inside the observer failure boundary.
+
+Live publication is observational: ordinary sink errors are logged, cancellation
+propagates, and events may be lost or repeated. Do not use it as the only delivery path
+for durable product actions. Keep adapters lightweight; an awaited slow sink still uses
+activity time. Model stream resets tell clients to discard an abandoned attempt's deltas.
+
+## Durable completion
+
+`run_completion_handler` runs after finalization, in a retryable activity. It receives
+persisted run/thread identity and outcome. Read parent links from storage and deduplicate
+product effects by `run_id`; external delivery is not exactly once.
+
+Applications own any credit gate, usage charging, notifications, or parent follow-up policy.
+Actant provides execution gates and usage events without implementing billing policy.
+Keep those concerns separate from best-effort UI publication.
+
+## Demo
+
+The [demo coordinator](../examples/demo/server/app/coordinator.py) constructs agents,
+spawns children, and notifies parents from durable completion. Its
+[event adapter](../examples/demo/server/app/events.py) derives ancestor routing from
+persisted thread rows and caches immutable links. A fresh adapter can route a grandchild
+straight to the root without a startup registry reconstruction pass.
+
+The former `actant.runtime.coordinator` module and hook/listener factories are removed.
+Applications own routing in their sink; there is no replacement coordinator framework.

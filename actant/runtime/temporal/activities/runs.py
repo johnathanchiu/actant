@@ -99,13 +99,15 @@ class RunActivities:
             payload.agent_id, payload.thread_id
         )
         run = await self.context.stores.runs.get(payload.run_id)
-        hooks = self.context.hooks(thread, run_id=payload.run_id, turn_id=payload.turn_id)
+        events = self.context.events(
+            thread, run_id=payload.run_id, turn_id=payload.turn_id, turn_index=payload.turn_index
+        )
 
         for msg in payload.new_messages:
             await self.context.stores.messages.append_user(
                 payload.agent_id, payload.thread_id, msg.content
             )
-            await hooks.on_user_message(msg.content)
+            await events.on_user_message(msg.content)
 
         if self.context.turn_gate is not None:
             reason = await self.context.turn_gate(
@@ -148,11 +150,11 @@ class RunActivities:
             turn_index=payload.turn_index,
         )
 
-        await hooks.on_turn_start(payload.turn_index, payload.turn_id)
+        await events.on_turn_start(payload.turn_index, payload.turn_id)
         try:
             assistant = await agent.complete(
                 context.messages,
-                self.context.listener(thread, run_id=payload.run_id, turn_id=payload.turn_id),
+                events,
                 final_turn=run.turn_count + 1 >= run.max_turns,
             )
         except StreamCancelled as exc:
@@ -181,9 +183,9 @@ class RunActivities:
             records,
         )
 
-        await hooks.on_assistant_message(assistant)
+        await events.on_assistant_message(assistant)
         for record in records:
-            await hooks.on_tool_call(record.id, record.name, record.args)
+            await events.on_tool_call(record.id, record.name, record.args)
 
         thread.turn_count += 1
         run.turn_count += 1
@@ -199,7 +201,7 @@ class RunActivities:
                 await self.context.stores.messages.append_user(
                     payload.agent_id, payload.thread_id, FINISH_REMINDER
                 )
-                await hooks.on_user_message(FINISH_REMINDER)
+                await events.on_user_message(FINISH_REMINDER)
                 return TurnResult(
                     turn_id=payload.turn_id, turn_index=payload.turn_index, reminded=True
                 )
@@ -292,7 +294,7 @@ class RunActivities:
                     artifacts=tuple(artifacts),
                 )
             )
-        await self.context.hooks(thread, run_id=payload.run_id).on_complete(
+        await self.context.events(thread, run_id=payload.run_id).on_complete(
             success=payload.outcome == RunOutcome.COMPLETED.value,
             reason=payload.stop_reason or payload.outcome,
             message="",

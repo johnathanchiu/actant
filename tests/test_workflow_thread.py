@@ -26,7 +26,7 @@ from temporalio.worker import Worker
 
 from actant.agents import AgentDefinition
 from actant.core import JSONObject, new_id
-from actant.llm.messages import Message, ToolCall, ToolCallFunction
+from actant.llm.messages import ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime.temporal.activities import TemporalRuntimeActivities
 from actant.runtime import AgentRuntime
@@ -37,11 +37,11 @@ from actant.runtime.temporal.types import (
     ThreadInput,
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
-from actant.runtime.events.lifecycle import AgentThreadHooks
+from actant.runtime.events.publisher import EventSink
 from actant.runtime.completion import RunCompletion, RunCompletionHandler
 from actant.runtime.gate import TurnGate, TurnStart
 from actant.runtime.stores import InMemoryRuntimeStores
-from actant.runtime.types.threads import AgentThread, RunStatus
+from actant.runtime.types.threads import RunStatus
 from actant.tools.admission import (
     ToolCallView,
     ToolDecision,
@@ -113,7 +113,7 @@ async def _run(
     test: Callable[[_RunSetup, object], Awaitable[None]],
     *,
     agent: AgentDefinition,
-    hooks_factory: object | None = None,
+    event_sink: EventSink | None = None,
     run_completion_handler: RunCompletionHandler | None = None,
     turn_gate: TurnGate | None = None,
 ) -> None:
@@ -123,7 +123,7 @@ async def _run(
         ActivityContext(
             stores=stores,
             resolve_agent=static_agents({agent.id: agent}),
-            hooks_factory=hooks_factory,  # type: ignore[arg-type]
+            event_sink=event_sink,
             run_completion_handler=run_completion_handler,
             turn_gate=turn_gate,
         )
@@ -645,29 +645,27 @@ async def test_exhaustion_finalizes_run_then_next_message_starts_fresh_run() -> 
 # === hooks fire from inside activities ===
 
 
-class _RecordingHooks(AgentThreadHooks):
+class _RecordingEvents:
     def __init__(self) -> None:
         self.events: list[tuple[str, object]] = []
 
-    async def on_user_message(self, content) -> None:  # type: ignore[no-untyped-def]
-        self.events.append(("user", content))
-
-    async def on_assistant_message(self, message: Message) -> None:
-        self.events.append(("assistant", message.content))
-
-    async def on_turn_start(self, turn: int, turn_id: str | None = None) -> None:
-        self.events.append(("turn_start", (turn, turn_id)))
-
-    async def on_complete(self, success: bool, reason: str, message: str) -> None:
-        self.events.append(("complete", reason))
+    async def publish(self, channel: str, event: JSONObject) -> None:
+        data = event["data"]
+        assert isinstance(data, dict)
+        kind = str(event["type"])
+        if kind == "user_message":
+            self.events.append(("user", data.get("content")))
+        elif kind == "assistant_message":
+            self.events.append(("assistant", data.get("content")))
+        elif kind == "complete":
+            self.events.append(("complete", data.get("reason")))
+        else:
+            self.events.append((kind, data))
 
 
 @pytest.mark.asyncio
 async def test_hooks_fire_inside_activities() -> None:
-    hooks = _RecordingHooks()
-
-    def factory(_thread: AgentThread) -> _RecordingHooks:
-        return hooks
+    hooks = _RecordingEvents()
 
     agent = _agent(FakeLLM([FakeResponse(text="ok")]))
 
@@ -691,7 +689,7 @@ async def test_hooks_fire_inside_activities() -> None:
 
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
-    await _run(body, agent=agent, hooks_factory=factory)
+    await _run(body, agent=agent, event_sink=hooks)
 
 
 @pytest.mark.asyncio
@@ -733,10 +731,10 @@ async def test_run_completion_handler_receives_persisted_boundary() -> None:
 
 async def _gated_run(
     fake: FakeLLM, gate: TurnGate
-) -> tuple[RunCompletion, _RecordingHooks, _RunSetup]:
+) -> tuple[RunCompletion, _RecordingEvents, _RunSetup]:
     """Run one message through a gated worker; return its completion."""
     completions: list[RunCompletion] = []
-    hooks = _RecordingHooks()
+    hooks = _RecordingEvents()
     captured: list[_RunSetup] = []
 
     async def handle(completion: RunCompletion) -> None:
@@ -758,7 +756,7 @@ async def _gated_run(
     await _run(
         body,
         agent=_agent(fake, tools=[_EchoTool()]),
-        hooks_factory=lambda _thread: hooks,
+        event_sink=hooks,
         run_completion_handler=handle,
         turn_gate=gate,
     )
