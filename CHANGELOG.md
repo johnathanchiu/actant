@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.17.0
 
 - Consolidate command submission and worker polling into `AgentRuntime`, with injected
   Temporal client and asynchronous agent resolution. Remove the separate client/worker classes.
