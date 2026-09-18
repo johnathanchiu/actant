@@ -295,8 +295,11 @@ class ModalSandboxProvider:
         return ["s5cmd", *endpoint, *args]
 
     def sync_argv(self, thread_id: str) -> list[str]:
-        """Push a ``disk_sync`` disk to its prefix, mirroring: remote files removed locally go."""
-        return self._s5cmd("sync", "--delete", f"{DISK_PATH}/", self._remote(thread_id))
+        """Push a ``disk_sync`` disk to its prefix. Files removed locally stay in the bucket:
+        mirroring (``--delete``) needs S3's batch DeleteObjects, which Supabase's S3 gateway
+        does not serve (``InvalidRequest: must have required property 'Body'``) and one such
+        push failure loses a finished run's last files."""
+        return self._s5cmd("sync", f"{DISK_PATH}/", self._remote(thread_id))
 
     def restore_argv(self, thread_id: str) -> list[str]:
         """Pull a thread's prefix onto the disk (never deletes)."""
