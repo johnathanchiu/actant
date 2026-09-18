@@ -175,7 +175,7 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
     sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
     assert isinstance(sandbox, ModalSandbox)
     args, kw = fake.created
-    push = [*S5, "sync", "--delete", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
+    push = [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
     restore = [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
     assert list(args[:3]) == ["python", "-m", "actant.sandbox.entry"] and len(args) == 4
     assert EntryConfig.model_validate_json(args[3]) == EntryConfig(
@@ -432,7 +432,7 @@ async def test_a_seed_restores_and_copies_only_into_an_empty_thread_prefix(
     assert restore.seed.stamp.prefix == "s3://b/templates/base/"
     assert restore.seed.stamp.argv[-1] == "s3://b/templates/base/*"
     push = provider.sync_argv("t1")
-    assert push == [*S5, "sync", "--delete", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
+    assert push == [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
 
 
 def test_seed_is_a_disk_sync_key_prefix() -> None:
