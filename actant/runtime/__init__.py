@@ -10,9 +10,12 @@ if TYPE_CHECKING:
     from actant.runtime.gate import TurnGate, TurnStart
     from actant.runtime.temporal.types import TemporalRuntimeConfig
     from actant.runtime.thread import ThreadHandle
-    from actant.runtime.runtime import AgentRuntime
+    from actant.runtime.local import LocalRun, LocalThreadRuntime
+from actant.runtime.runtime import AgentRuntime
 
 __all__ = [
+    "LocalRun",
+    "LocalThreadRuntime",
     "AgentRuntime",
     "AgentResolver",
     "RunCompletion",
@@ -29,6 +32,10 @@ def __getattr__(name: str) -> Any:
         from actant.runtime.temporal.activities.context import AgentResolver
 
         return AgentResolver
+    if name in {"LocalRun", "LocalThreadRuntime"}:
+        from actant.runtime import local
+
+        return getattr(local, name)
     if name == "AgentRuntime":
         from actant.runtime.runtime import AgentRuntime
 
