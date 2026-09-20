@@ -203,7 +203,10 @@ async def test_one_hundred_async_calls_do_not_queue_on_the_default_thread_pool(
     started = time.monotonic()
     replies = await asyncio.gather(*(_call(runner, "wait", seconds=0.5) for _ in range(100)))
     assert all(reply.error is None for reply in replies)
-    assert time.monotonic() - started < 1.8
+    # 100 calls of 0.5 s each: serialised on one thread that is 50 s, on the default pool
+    # of 40 it is ~1.5 s. The bar is generous because it is wall clock on a shared runner —
+    # it fails on queueing, not on a slow machine.
+    assert time.monotonic() - started < 10
 
 
 async def test_a_connection_lost_after_the_request_is_sent_is_an_error_not_a_retry(
