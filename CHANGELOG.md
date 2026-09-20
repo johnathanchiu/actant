@@ -4,7 +4,20 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.18.2
+
+- A tool call whose arguments stall in whitespace is taken as that call when what the
+  model wrote is already one complete JSON object. It used to raise a retryable
+  `StreamInterrupted`, so the turn was asked again and its tokens paid for twice;
+  gpt-6-astra does this several times per authoring round. Arguments cut inside a string
+  still retry.
+
+## 0.18.1
+
+- `Sandbox.sync` stops mirroring deletions: S3 implementations without DeleteObjects
+  (Supabase) refused the request and failed the push.
+
+## 0.18.0
 
 - **Breaking:** replace runtime hook/listener factories with one explicit `event_sink`;
   `event_source` is also explicit. Remove implicit store publisher discovery.
