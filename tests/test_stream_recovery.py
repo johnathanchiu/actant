@@ -313,6 +313,74 @@ async def test_whitespace_loop_is_interrupted() -> None:
         await provider.complete("system", [], [])
 
 
+async def test_arguments_written_whole_before_the_stall_are_taken_as_the_call() -> None:
+    """gpt-6-astra writes every argument of a call and then streams whitespace instead of
+    stopping, several times per authoring round. What it wrote is the call, so it is taken
+    rather than spending a turn asking again."""
+
+    call = {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "fit",
+            "arguments": "",
+        },
+    }
+    written = {
+        "type": "response.function_call_arguments.delta",
+        "output_index": 0,
+        "item_id": "fc_1",
+        "delta": '{"object_id": "chair-1", "yaw": 149.0',  # no closing brace
+    }
+    spaces = {
+        "type": "response.function_call_arguments.delta",
+        "output_index": 0,
+        "item_id": "fc_1",
+        "delta": " " * 150,
+    }
+    provider, _ = _provider([_events(call, written, spaces, spaces)], attempts=1)
+    message = await provider.complete("system", [], [])
+    assert message.tool_calls is not None
+    (only,) = message.tool_calls
+    assert only.id == "call_1"
+    assert only.function.name == "fit"
+    assert json.loads(only.function.arguments) == {"object_id": "chair-1", "yaw": 149.0}
+
+
+async def test_arguments_cut_inside_a_string_still_ask_again() -> None:
+    """A write's file content cut mid-string is genuinely unfinished, not a stalled call."""
+
+    call = {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "write",
+            "arguments": "",
+        },
+    }
+    partial = {
+        "type": "response.function_call_arguments.delta",
+        "output_index": 0,
+        "item_id": "fc_1",
+        "delta": '{"path": "room.py", "text": "room.place(',  # cut inside the string
+    }
+    spaces = {
+        "type": "response.function_call_arguments.delta",
+        "output_index": 0,
+        "item_id": "fc_1",
+        "delta": " " * 150,
+    }
+    provider, _ = _provider([_events(call, partial, spaces, spaces)], attempts=1)
+    with pytest.raises(StreamInterrupted, match="whitespace"):
+        await provider.complete("system", [], [])
+
+
 async def test_final_tools_preserve_full_request_schema() -> None:
     provider, requests = _provider([_events(*_text("done"))])
     tools = [

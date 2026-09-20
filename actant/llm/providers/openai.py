@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import asyncio
 import logging
 import random
@@ -321,6 +322,8 @@ class OpenAIProvider:
         try:
             events = stream.__aiter__()
             whitespace = 0
+            arguments = ""
+            open_call: tuple[str | None, str | None] = (None, None)
             emitting = False
             while True:
                 # Idle bounds follow the Responses streaming contract: while a
@@ -338,6 +341,14 @@ class OpenAIProvider:
                     raise StreamCancelled
                 if event.type == "response.output_item.added":
                     emitting = event.item.type in ("message", "function_call")
+                    if event.item.type == "function_call":
+                        # remembered here, not from the listener's state: a completion with
+                        # no listener still has to be able to salvage a stalled call below
+                        open_call = (
+                            getattr(event.item, "call_id", None),
+                            getattr(event.item, "name", None),
+                        )
+                        arguments = ""
                 elif event.type == "response.output_item.done":
                     emitting = False
                 elif event.type == "error":
@@ -349,12 +360,34 @@ class OpenAIProvider:
                     raise _unfinished(event.response)
                 elif event.type == "response.function_call_arguments.delta":
                     delta = event.delta or ""
+                    arguments += delta
                     whitespace = (
                         whitespace + len(delta)
                         if not delta.strip()
                         else len(delta) - len(delta.rstrip())
                     )
                     if whitespace >= 300:
+                        # The model wrote every argument and then streamed whitespace instead
+                        # of stopping. When what it wrote is already one complete object, that
+                        # is the call: take it rather than spend a turn asking again. Arguments
+                        # cut mid-string (a file's content) are genuinely unfinished and retry.
+                        whole = _whole_arguments(arguments)
+                        call_id, name = open_call
+                        if whole is not None and call_id and name:
+                            return (
+                                Message(
+                                    role="assistant",
+                                    tool_calls=[
+                                        ToolCall(
+                                            id=call_id,
+                                            function=ToolCallFunction(
+                                                name=name, arguments=whole
+                                            ),
+                                        )
+                                    ],
+                                ),
+                                0,
+                            )
                         raise StreamInterrupted(
                             "tool arguments contain 300 consecutive whitespace characters",
                             retryable=True,
@@ -654,3 +687,25 @@ def _usage_int(usage: object, field: str) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _whole_arguments(text: str) -> str | None:
+    """`text` as one compact JSON object when it already is one, else None.
+
+    gpt-6-astra writes every argument of a call and then streams whitespace instead of
+    stopping, several times per authoring round. What it wrote is the call, so taking it
+    saves a turn. Only the closing brace may be missing: arguments cut inside a string (a
+    file's content in a write) are genuinely unfinished and must be asked for again.
+    """
+
+    body = text.strip().rstrip(",")
+    if not body.startswith("{"):
+        return None
+    for candidate in (body, body + "}"):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return json.dumps(parsed, separators=(",", ":"))
+    return None
