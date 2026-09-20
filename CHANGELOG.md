@@ -4,6 +4,16 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.19.0
+
+- `LocalThreadRuntime` runs a thread in this process over the same activities the Temporal
+  workflow drives: the same `start_run`, `run_turn` and `finalize_run`, branching on the same
+  `TurnResult` fields. No server, worker or database; the in-memory stores are enough. It
+  exists so a caller that wants one agent to finish one job stops writing its own agent loop,
+  which then drifts from what its hosted runs do. It gives up what Temporal was providing:
+  nothing survives the process, a tool awaiting a human has no one to wake it, and a crash is
+  a traceback rather than a replayable history.
+
 ## 0.18.2
 
 - A tool call whose arguments stall in whitespace is taken as that call when what the
