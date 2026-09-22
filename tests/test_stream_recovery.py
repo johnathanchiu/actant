@@ -1,6 +1,7 @@
 """OpenAI stream recovery, exercised through the real SDK stream over a fake transport."""
 
 import asyncio
+import time
 import json
 from collections.abc import AsyncIterator
 
@@ -281,6 +282,29 @@ async def test_turn_budget_includes_retry_backoff(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(TimeoutError):
         await provider.complete("system", [], [])
     assert len(requests) == 1
+
+
+async def test_turn_budget_does_not_wait_for_a_call_that_ignores_cancellation() -> None:
+    """The budget is wall clock, so a call that never returns costs `turn_s`, not forever.
+
+    `asyncio.timeout` cancels the call and then waits for the cancellation to finish. A stuck
+    HTTP stream never finishes, so callers measured turns of 8 minutes on a 60 s budget and,
+    once, 2.6 hours on a 900 s one.
+    """
+
+    provider, _ = _provider([], turn_s=0.05)
+
+    async def never(*args: object, **kwargs: object) -> object:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.sleep(3600)  # ignores the cancellation, as a stuck stream does
+
+    provider._complete = never  # type: ignore[method-assign]
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await provider.complete("system", [], [])
+    assert time.monotonic() - started < 1.0
 
 
 async def test_continuously_streaming_attempt_has_a_total_deadline() -> None:

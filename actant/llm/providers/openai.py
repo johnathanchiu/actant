@@ -249,8 +249,20 @@ class OpenAIProvider:
     ) -> Message:
         # One budget includes every retry, backoff, and rate-limiter wait.
         # An outer activity deadline must not silently multiply by attempts.
-        async with asyncio.timeout(self.turn_s):
-            return await self._complete(system, messages, tools, listener, allowed_tools)
+        #
+        # `asyncio.timeout` would wait for the cancelled call to finish, and a stuck HTTP
+        # stream never does: callers measured turns of 8 minutes on a 60 s budget. So the
+        # call is abandoned instead -- cancelled, and left to die on its own time.
+        call = asyncio.ensure_future(
+            self._complete(system, messages, tools, listener, allowed_tools)
+        )
+        done, _ = await asyncio.wait({call}, timeout=self.turn_s)
+        if done:
+            return call.result()
+        call.cancel()
+        # Retrieved, so a late failure is not reported as an exception nobody consumed.
+        call.add_done_callback(lambda task: task.cancelled() or task.exception())
+        raise TimeoutError(f"no answer in {self.turn_s:.0f} s")
 
     async def _complete(
         self,
@@ -380,9 +392,7 @@ class OpenAIProvider:
                                     tool_calls=[
                                         ToolCall(
                                             id=call_id,
-                                            function=ToolCallFunction(
-                                                name=name, arguments=whole
-                                            ),
+                                            function=ToolCallFunction(name=name, arguments=whole),
                                         )
                                     ],
                                 ),
