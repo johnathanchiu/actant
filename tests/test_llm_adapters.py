@@ -218,7 +218,7 @@ def test_anthropic_thinking_follows_model_version(
     if not reasoning:
         assert thinking is None
     elif adaptive:
-        assert thinking == {"type": "adaptive", "display": "summarized"}
+        assert thinking == {"type": "adaptive"}
         assert params.get("output_config") == {"effort": "high"}
     else:
         assert thinking == {"type": "enabled", "budget_tokens": 32000}
