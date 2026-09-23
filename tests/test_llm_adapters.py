@@ -194,6 +194,127 @@ def test_anthropic_preserves_signed_thinking_in_history() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("model_id", "reasoning", "adaptive"),
+    [
+        ("claude-3-5-sonnet-20241022", False, False),
+        ("claude-3-7-sonnet-20250219", True, False),
+        ("claude-sonnet-4-20250514", True, False),
+        ("claude-haiku-4-5", True, False),
+        ("claude-opus-4-6", True, False),
+        ("claude-opus-4-7", True, True),
+        ("claude-opus-5-5", True, True),
+        ("claude-fable-5-1", True, True),
+        ("claude-sonnet-6", True, True),
+        ("claude-example", False, False),
+    ],
+)
+def test_anthropic_thinking_follows_model_version(
+    model_id: str, reasoning: bool, adaptive: bool
+) -> None:
+    provider = AnthropicProvider(model_id=model_id, api_key="test", thinking_level="high")
+    params = provider._request_params("S", [Message(role="user", content="hi")], [])
+    thinking = params.get("thinking")
+    if not reasoning:
+        assert thinking is None
+    elif adaptive:
+        assert thinking == {"type": "adaptive", "display": "summarized"}
+        assert params.get("output_config") == {"effort": "high"}
+    else:
+        assert thinking == {"type": "enabled", "budget_tokens": 32000}
+
+
+def test_anthropic_caches_tools_system_and_history() -> None:
+    provider = AnthropicProvider(model_id="claude-opus-5-5", api_key="test")
+    tools = [make_tool_schema(name, "d", {}) for name in ("a", "b")]
+    params = provider._request_params("System", [Message(role="user", content="hi")], tools)
+    ephemeral = {"type": "ephemeral"}
+    assert params.get("cache_control") == ephemeral  # automatic: the last message block
+    assert params.get("system") == [{"type": "text", "text": "System", "cache_control": ephemeral}]
+    sent = list(params.get("tools", []))
+    assert [tool for tool in sent if "cache_control" in tool] == [sent[-1]]
+    assert "cache_control" not in AnthropicProvider.convert_tools(tools)[-1]
+
+
+def test_anthropic_sends_tool_result_images_inside_tool_result() -> None:
+    image: dict[str, object] = {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "iVBO"},
+    }
+    text: dict[str, object] = {"type": "text", "text": "render"}
+    provider = AnthropicProvider(model_id="claude-opus-5-5", api_key="test")
+    params = provider._request_params(
+        "S",
+        [
+            Message(role="user", content="look"),
+            Message(
+                role="assistant",
+                tool_calls=[
+                    ToolCall(id="t1", function=ToolCallFunction(name="see", arguments="{}"))
+                ],
+            ),
+            Message(role="tool", tool_call_id="t1", content=[text, image]),
+        ],
+        [],
+    )
+    assert list(params["messages"])[-1] == {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [text, image]}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_anthropic_reports_usage_in_the_openai_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = SimpleNamespace(
+        id="msg_1",
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="ok")],
+        usage=SimpleNamespace(
+            input_tokens=40,
+            cache_read_input_tokens=5000,
+            cache_creation_input_tokens=300,
+            output_tokens=90,
+        ),
+    )
+
+    class Stream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def get_final_message(self):
+            return response
+
+    received = []
+
+    class Listener(StreamListener):
+        async def on_usage(self, response_id, model, usage, status):
+            received.append((response_id, model, usage, status))
+
+    provider = AnthropicProvider(model_id="claude-opus-5-5", api_key="test")
+    monkeypatch.setattr(provider.client.messages, "stream", lambda **kw: Stream())
+    message, total = await provider._stream({}, Listener())  # pyright: ignore[reportArgumentType]
+    usage = {
+        "input_tokens": 5340,
+        "input_tokens_details": {"cached_tokens": 5000, "cache_write_tokens": 300},
+        "output_tokens": 90,
+        "total_tokens": 5430,
+    }
+    assert received == [("msg_1", "claude-opus-5-5", usage, "end_turn")]
+    assert (message.input_tokens, message.output_tokens, total) == (5340, 90, 5430)
+    await provider.client.close()
+
+
 def test_openai_converts_chat_tool_schema_to_responses_schema() -> None:
     schema = make_tool_schema(
         "echo",
