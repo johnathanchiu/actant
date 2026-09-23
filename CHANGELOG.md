@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.19.1
+
+- Anthropic provider: Claude models from 3.7 on run with thinking, found from the model's
+  version rather than a list of names, so Claude 5.x no longer runs with thinking off.
+- Anthropic provider: prompt caching on the system prompt, tools and newest message.
+- Anthropic provider: usage reported in the OpenAI shape (`input_tokens` includes cache reads
+  and writes, broken out under `input_tokens_details`), so cost is computed one way.
+
 ## 0.19.0
 
 - `LocalThreadRuntime` runs a thread in this process over the same activities the Temporal
