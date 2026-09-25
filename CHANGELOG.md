@@ -6,6 +6,9 @@ affect users.
 
 ## Unreleased
 
+- `OpenAIProvider` retries OpenAI's 400 for an `image_url` it could not download before its
+  timeout (`invalid_value` on `url`); any other bad URL still fails at once.
+
 ## 0.20.0
 
 - Message content blocks are typed (`actant.blocks`): history stores `TextBlock`, `AssetBlock`

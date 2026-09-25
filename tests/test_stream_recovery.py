@@ -201,6 +201,37 @@ async def test_transient_failures_retry(first: httpx.Response | list[Event]) -> 
     assert len(requests) == 2
 
 
+def _url_error(message: str) -> httpx.Response:
+    return httpx.Response(
+        400,
+        json={
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "param": "url",
+                "code": "invalid_value",
+            }
+        },
+    )
+
+
+async def test_an_image_url_fetch_timeout_retries_but_a_bad_url_does_not() -> None:
+    timeout = _url_error(
+        "Unable to download content from the provided URL before the timeout. Check that "
+        "the URL is publicly accessible and responds promptly, or upload the file and "
+        "provide a file_id instead."
+    )
+    provider, requests = _provider([timeout, _events(*_text("hello"))], attempts=2)
+    assert (await provider.complete("system", [], [])).content == "hello"
+    assert len(requests) == 2
+
+    missing = _url_error("Error while downloading https://bucket.test/missing.png.")
+    provider, requests = _provider([missing] * 2, attempts=2)
+    with pytest.raises(openai.BadRequestError):
+        await provider.complete("system", [], [])
+    assert len(requests) == 1
+
+
 async def test_sdk_retries_do_not_stack_under_provider_attempts() -> None:
     provider, requests = _provider([httpx.Response(500)] * 9, attempts=2)
     with pytest.raises(openai.InternalServerError):

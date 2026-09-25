@@ -84,8 +84,8 @@ class OpenAIProvider:
     streaming; ``reasoning_idle_s`` bounds silences outside an open output item, where
     a reasoning model legitimately emits nothing; ``turn_s`` bounds the whole call,
     including retries. Only transient failures retry: timeouts, connection errors,
-    408/409/429/5xx, server or rate-limit error codes, and a stream that closes
-    before a terminal event.
+    408/409/429/5xx, server or rate-limit error codes, OpenAI timing out fetching an
+    image URL, and a stream that closes before a terminal event.
     """
 
     supports_allowed_tools = True
@@ -497,7 +497,11 @@ def _is_transient(error: Exception) -> bool:
     if isinstance(error, StreamInterrupted):
         return error.retryable
     if isinstance(error, openai.APIStatusError):
-        return error.status_code in (408, 409, 429) or error.status_code >= 500
+        return (
+            error.status_code in (408, 409, 429)
+            or error.status_code >= 500
+            or _is_image_fetch_timeout(error)
+        )
     if isinstance(error, (TimeoutError, openai.APIConnectionError, httpx.TransportError)):
         return True
     if isinstance(error, openai.APIError):
@@ -507,6 +511,21 @@ def _is_transient(error: Exception) -> bool:
             body.get("code") in _TRANSIENT_CODES or body.get("type") in _TRANSIENT_CODES
         )
     return False
+
+
+def _is_image_fetch_timeout(error: openai.APIStatusError) -> bool:
+    """OpenAI's 400 when it could not download an ``image_url`` in time.
+
+    It is a timeout on OpenAI's side fetching a URL that is fine (a presigned image,
+    say), and the same request succeeds again; the API gives it no code of its own, so
+    it is told from a bad URL by its message.
+    """
+    return (
+        error.status_code == 400
+        and error.code == "invalid_value"
+        and error.param == "url"
+        and "timeout" in error.message.lower()
+    )
 
 
 def _extract_reasoning_item(item: object) -> ToolSchema | None:
