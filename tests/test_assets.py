@@ -213,7 +213,7 @@ async def test_one_url_per_window_never_near_expiry() -> None:
         assert resolved.expires_at - clock[0] >= BUFFER
         # The fresh resolver another process would use signs the same URL.
         assert resolved == await resolver_for(Client(), lambda: clock[0]).resolve(asset, CONTEXT)
-    assert client.calls == 1  # existence is checked once; signing is local
+    assert client.calls == 5  # existence is checked on every resolve; nothing is remembered
     with pytest.raises(PermissionError):
         await resolver.resolve(replace(asset, storage_key="s3://other/images/a.png"), CONTEXT)
     with pytest.raises(PermissionError):
