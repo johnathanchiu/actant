@@ -87,10 +87,10 @@ The sandbox claim, per-thread single-flight behavior, and HTTP deadlines are unc
 
 Uploaded service images now return `AssetSource(storage_key=...)`. The key is a complete
 `s3://bucket/prefix/object` reference so the bucket is not lost at persistence. Application
-attachments can retain their existing opaque keys. `image_block(image)` serializes:
+attachments can retain their existing opaque keys. `image_block(image)` returns:
 
 ```python
-{"type": "asset", "storage_key": "s3://bucket/images/t/hash.png", "mime": "image/png"}
+AssetBlock(storage_key="s3://bucket/images/t/hash.png", mime="image/png")
 ```
 
 Replace `SandboxSpec.image_url_ttl_s=None` with `upload_images=False`. Otherwise uploads are

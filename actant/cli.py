@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import shlex
 import subprocess
@@ -11,6 +12,14 @@ from importlib import metadata, resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Sequence
+
+from pydantic import ValidationError
+from sqlalchemy import select, type_coerce
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+from actant.blocks import BLOCKS
+from actant.runtime.stores.postgres.models import ActantMessagePartModel
 
 _DEFAULT_COMPOSE_PROJECT = "actant-local"
 
@@ -92,6 +101,21 @@ def _parser() -> argparse.ArgumentParser:
     )
     for action in (start, stop, status, reset, logs):
         _add_server_overrides(action, inherited=True)
+
+    validate = commands.add_parser(
+        "validate-blocks",
+        help="report stored content blocks that do not validate",
+        description=(
+            "Read every actant_message_parts.content_blocks row and print the ones "
+            "actant.blocks rejects. Exits 1 if any do. Run it before deploying a "
+            "release that changes the block types."
+        ),
+    )
+    validate.add_argument(
+        "--database-url",
+        default=os.getenv("DATABASE_URL"),
+        help="SQLAlchemy async URL, e.g. postgresql+asyncpg://... (DATABASE_URL)",
+    )
     return parser
 
 
@@ -188,10 +212,52 @@ def _server(args: argparse.Namespace) -> int:
     raise AssertionError(f"unknown server command: {args.server_command}")
 
 
+async def invalid_block_rows(engine: AsyncEngine) -> list[tuple[str, int, str]]:
+    """``(message_id, part_index, error)`` for each stored block list that does not validate."""
+    parts = ActantMessagePartModel.__table__
+    # JSONB, not the model's validating type: a bad row is reported, not raised.
+    raw = type_coerce(parts.c.content_blocks, JSONB)
+    query = select(parts.c.message_id, parts.c.part_index, raw)
+    invalid: list[tuple[str, int, str]] = []
+    async with engine.connect() as connection:
+        async for message_id, part_index, blocks in await connection.stream(query):
+            if blocks is None:  # SQL NULL or JSON null: a part with no blocks
+                continue
+            try:
+                BLOCKS.validate_python(blocks)
+            except ValidationError as exc:
+                errors = "; ".join(
+                    f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()
+                )
+                invalid.append((message_id, part_index, errors))
+    return invalid
+
+
+def _validate_blocks(database_url: str | None) -> int:
+    if not database_url:
+        print("validate-blocks needs --database-url or DATABASE_URL", file=sys.stderr)
+        return 2
+
+    async def run() -> list[tuple[str, int, str]]:
+        engine = create_async_engine(database_url)
+        try:
+            return await invalid_block_rows(engine)
+        finally:
+            await engine.dispose()
+
+    invalid = asyncio.run(run())
+    for message_id, part_index, errors in invalid:
+        print(f"{message_id} part {part_index}: {errors}")
+    print(f"{len(invalid)} invalid content_blocks rows", file=sys.stderr)
+    return 1 if invalid else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "server":
         return _server(args)
+    if args.command == "validate-blocks":
+        return _validate_blocks(args.database_url)
     raise AssertionError(f"unknown command: {args.command}")
 
 

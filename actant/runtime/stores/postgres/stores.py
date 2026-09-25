@@ -12,16 +12,16 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from actant.blocks import Block
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
-from actant.runtime.session import message_to_parts
+from actant.runtime.session import message_to_parts, tool_result_content
 from actant.runtime.stores.postgres.conversion import (
     message_from_header,
     message_part_row,
     run_from_row,
     thread_from_row,
     tool_call_from_row,
-    tool_result_content,
     tool_result_part_row,
 )
 from actant.runtime.stores.postgres.models import (
@@ -191,9 +191,12 @@ class SQLAlchemyMessageStore:
         self,
         agent_id: str,
         thread_id: str,
-        content: str | list[dict[str, object]],
+        content: str | list[Block],
     ) -> MessageRecord:
-        return await self._append(agent_id, thread_id, None, Message(role="user", content=content))
+        user = Message(
+            role="user", content=list(content) if isinstance(content, list) else content
+        )
+        return await self._append(agent_id, thread_id, None, user)
 
     async def append_assistant(
         self, agent_id: str, thread_id: str, turn_id: str, message: Message

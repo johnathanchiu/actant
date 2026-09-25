@@ -18,9 +18,15 @@ from anthropic.types.thinking_config_param import ThinkingConfigParam
 from anthropic.types.tool_union_param import ToolUnionParam
 
 from actant.core import JSONObject
+from actant.blocks import AssetBlock, PromptBlock, UrlImageBlock
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
-from actant.llm.providers._shared import env_api_key, sanitize_tool_messages
+from actant.llm.providers._shared import (
+    WireBlock,
+    env_api_key,
+    sanitize_tool_messages,
+    unresolved,
+)
 from actant.llm.rate_limit import RateLimiter
 
 if TYPE_CHECKING:
@@ -102,7 +108,7 @@ class AnthropicProvider:
         converted: list[ToolSchema] = []
         for message in messages:
             if message.role == "user":
-                converted.append({"role": "user", "content": cast(object, message.content)})
+                converted.append({"role": "user", "content": _content(message.content)})
             elif message.role == "assistant":
                 blocks: list[object] = []
                 if message.thought_summary and message.thinking_signature:
@@ -133,7 +139,7 @@ class AnthropicProvider:
                 tool_result: ToolSchema = {
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id or "",
-                    "content": cast(object, message.content),
+                    "content": _content(message.content),
                 }
                 if (
                     converted
@@ -404,3 +410,19 @@ def _claude_version(model_id: str) -> tuple[int, int] | None:
     if match is None:
         return None
     return int(match[1]), int(match[2] or 0)
+
+
+def _content(content: str | list[PromptBlock] | None) -> str | list[WireBlock]:
+    """A user or tool message's content as Anthropic takes it: text and base64 images are
+    already its shape."""
+    if not isinstance(content, list):
+        return content or ""
+    blocks: list[WireBlock] = []
+    for block in content:
+        if isinstance(block, AssetBlock):
+            unresolved(block)
+        elif isinstance(block, UrlImageBlock):
+            blocks.append({"type": "image", "source": {"type": "url", "url": block.url}})
+        else:
+            blocks.append(block.model_dump(mode="json"))
+    return blocks

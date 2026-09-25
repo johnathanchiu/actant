@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Generic, Protocol, TypeVar
 
+from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
 from actant.sandbox.base import Sandbox
 
@@ -54,7 +55,7 @@ class ToolResult:
     error: str | None = None
     tool_call_id: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
-    content_blocks: list[dict[str, object]] | None = None
+    content_blocks: list[Block] | None = None
 
     @classmethod
     def ok(cls, output: object = None, **metadata: object) -> "ToolResult":
@@ -78,7 +79,7 @@ class ToolResult:
         if self.metadata:
             result["metadata"] = self.metadata
         if self.content_blocks:
-            result["content_blocks"] = self.content_blocks
+            result["content_blocks"] = BLOCKS.dump_python(self.content_blocks, mode="json")
         return result
 
 

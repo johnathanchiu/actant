@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import base64
 import json
-import mimetypes
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
-from urllib.parse import urlsplit
 
 from google import genai  # pyright: ignore[reportAttributeAccessIssue]
 from google.genai import types
 
+from actant.blocks import InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
-from actant.llm.providers._shared import env_api_key, sanitize_tool_messages
+from actant.llm.providers._shared import env_api_key, sanitize_tool_messages, unresolved
 
 if TYPE_CHECKING:
     from actant.runtime.events.streaming import StreamListener
@@ -165,28 +164,20 @@ class GeminiProvider:
             )
         return declarations
 
-    def content_blocks_to_parts(self, content: list[ToolSchema]) -> list[types.Part]:
+    def content_blocks_to_parts(self, content: list[PromptBlock]) -> list[types.Part]:
         parts: list[types.Part] = []
         for block in content:
-            if block.get("type") == "text":
-                parts.append(types.Part(text=str(block.get("text", ""))))
-            elif block.get("type") == "image":
-                source = block.get("source")
-                if isinstance(source, Mapping) and source.get("type") == "base64":
-                    parts.append(
-                        types.Part(
-                            inline_data=types.Blob(
-                                mime_type=source.get("media_type", "image/png"),
-                                data=base64.b64decode(cast(str, source["data"])),
-                            )
-                        )
-                    )
-                elif isinstance(source, Mapping) and source.get("type") == "url":
-                    url = str(source["url"])
-                    mime_type = mimetypes.guess_type(urlsplit(url).path)[0] or "image/png"
-                    parts.append(
-                        types.Part(file_data=types.FileData(file_uri=url, mime_type=mime_type))
-                    )
+            if isinstance(block, TextBlock):
+                parts.append(types.Part(text=block.text))
+            elif isinstance(block, InlineImageBlock):
+                data = base64.b64decode(block.source.data)
+                blob = types.Blob(mime_type=block.source.media_type, data=data)
+                parts.append(types.Part(inline_data=blob))
+            elif isinstance(block, UrlImageBlock):
+                file_data = types.FileData(file_uri=block.url, mime_type=block.media_type)
+                parts.append(types.Part(file_data=file_data))
+            else:
+                unresolved(block)
         return parts
 
     def convert_message(self, message: Message) -> types.Content:
@@ -197,7 +188,7 @@ class GeminiProvider:
         if role == "model" and message.tool_calls is not None:
             if content:
                 parts.extend(
-                    self.content_blocks_to_parts(cast(list[ToolSchema], content))
+                    self.content_blocks_to_parts(content)
                     if isinstance(content, list)
                     else [types.Part(text=content)]
                 )
@@ -221,14 +212,10 @@ class GeminiProvider:
         elif message.role == "tool":
             response_body: ToolSchema
             if isinstance(content, list):
-                blocks = cast(list[ToolSchema], content)
-                text_parts = [
-                    str(block.get("text", "")) for block in blocks if block.get("type") == "text"
-                ]
+                text_parts = [block.text for block in content if isinstance(block, TextBlock)]
                 response_body = {"result": "\n".join(text_parts)} if text_parts else {}
-                for block in blocks:
-                    if block.get("type") == "image":
-                        parts.extend(self.content_blocks_to_parts([block]))
+                images: list[PromptBlock] = [b for b in content if not isinstance(b, TextBlock)]
+                parts.extend(self.content_blocks_to_parts(images))
             else:
                 response_body = self.convert_arguments(content)
             parts.append(
@@ -242,7 +229,7 @@ class GeminiProvider:
             role = "user"
         elif content:
             parts.extend(
-                self.content_blocks_to_parts(cast(list[ToolSchema], content))
+                self.content_blocks_to_parts(content)
                 if isinstance(content, list)
                 else [types.Part(text=content)]
             )

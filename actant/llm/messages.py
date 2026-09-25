@@ -7,6 +7,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+from actant.blocks import PROMPT_BLOCKS, PromptBlock
+
 Role = Literal["system", "user", "assistant", "tool"]
 
 
@@ -88,7 +90,7 @@ class ToolCall:
 @dataclass
 class Message:
     role: Role
-    content: str | list[dict[str, object]] | None = None
+    content: str | list[PromptBlock] | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None
@@ -112,7 +114,7 @@ class Message:
         if isinstance(value, cls):
             return cls(
                 role=value.role,
-                content=deepcopy(value.content),
+                content=list(value.content) if isinstance(value.content, list) else value.content,
                 tool_calls=(
                     [ToolCall.from_raw(tc) for tc in value.tool_calls]
                     if value.tool_calls is not None
@@ -134,7 +136,9 @@ class Message:
         raw_reasoning_items = value.get("reasoning_items")
         return cls(
             role=cast(Role, value.get("role", "user")),
-            content=deepcopy(content) if isinstance(content, list) else str(content),
+            content=PROMPT_BLOCKS.validate_python(content)
+            if isinstance(content, list)
+            else str(content),
             tool_calls=(
                 [ToolCall.from_raw(tc) for tc in raw_tool_calls]
                 if isinstance(raw_tool_calls, list)
@@ -154,7 +158,11 @@ class Message:
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
             "role": self.role,
-            "content": deepcopy(self.content),
+            "content": (
+                PROMPT_BLOCKS.dump_python(self.content, mode="json")
+                if isinstance(self.content, list)
+                else self.content
+            ),
         }
         if self.tool_calls is not None:
             data["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]

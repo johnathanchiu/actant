@@ -13,9 +13,11 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 
+from actant.blocks import BLOCKS, Block
 from actant.agents import Agent
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
+from actant.runtime.session import tool_result_blocks
 from actant.runtime.types.threads import (
     AgentRun,
     AgentThread,
@@ -200,9 +202,13 @@ class InMemoryMessageStore:
         self,
         agent_id: str,
         thread_id: str,
-        content: str | list[dict[str, object]],
+        content: str | list[Block],
     ) -> MessageRecord:
-        return await self._append(agent_id, thread_id, Message(role="user", content=content))
+        if isinstance(content, list):
+            user = Message(role="user", content=list(BLOCKS.validate_python(content)))
+        else:
+            user = Message(role="user", content=content)
+        return await self._append(agent_id, thread_id, user)
 
     async def append_assistant(
         self,
@@ -248,22 +254,13 @@ class InMemoryMessageStore:
         )
         if existing is not None:
             return MessageRecord(new_id("msg"), agent_id, thread_id, existing)
-        content: str | list[dict[str, object]]
-        if isinstance(result, dict):
-            blocks = result.get("content_blocks")
-            if isinstance(blocks, list):
-                normalized = [b for b in blocks if isinstance(b, dict)]
-                content = normalized if normalized else _json_text(result)
-            else:
-                content = _json_text(result)
-        else:
-            content = _json_text(result)
+        blocks = tool_result_blocks(result)
         return await self._append(
             agent_id,
             thread_id,
             Message(
                 role="tool",
-                content=content,
+                content=list(blocks) if blocks else _json_text(result),
                 tool_call_id=tool_call_id,
                 name=name,
             ),

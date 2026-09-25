@@ -1,17 +1,20 @@
 """Stored media remains stable across expiration, retries, and missing objects."""
 
 from __future__ import annotations
+import asyncio
 import time
 from dataclasses import replace
 from collections.abc import Callable, Mapping
 import pytest
 from actant.assets import (
+    RESOLVE_CONCURRENCY,
     AssetContext,
     AssetReference,
     MissingAsset,
     ResolvedImage,
     prepare_messages,
 )
+from actant.blocks import AssetBlock, InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.messages import Message
 from actant.runtime.session import message_to_parts, parts_to_messages
 from actant.storage.s3 import S3AssetResolver, S3Client
@@ -46,18 +49,59 @@ async def test_asset_preparation_preserves_stored_history_and_message_metadata()
     assert resolver.seen == ["images/a.png"]
 
 
-async def test_legacy_expired_url_resolves_only_with_explicit_reference() -> None:
-    source = {"type": "url", "url": "https://old", "expires_at": 1, "key": "images/a.png"}
+async def test_typed_blocks_resolve_in_order_and_text_passes_through() -> None:
+    text = TextBlock(text="before")
+    first, second = (AssetReference(k, "image/png").to_block() for k in ("images/a", "images/b"))
     resolver = Resolver()
+    resolver.result = ResolvedImage(
+        "image/png", url="https://signed", expires_at=time.time() + 3600
+    )
     messages = [
-        Message(role="tool", tool_call_id="c", content=[{"type": "image", "source": source}])
+        Message(role="user", content=[text, first]),
+        Message(role="assistant", content="ok"),
+        Message(role="tool", tool_call_id="c", content=[second]),
     ]
-    [prepared] = await prepare_messages(messages, resolver, CONTEXT)
-    assert prepared.tool_call_id == "c" and "base64" in str(prepared.content)
-    del source["key"]
-    [missing] = await prepare_messages(messages, resolver, CONTEXT)
-    assert "no storage reference" in str(missing.content)
-    assert resolver.seen == ["images/a.png"]
+    user, assistant, tool = await prepare_messages(messages, resolver, CONTEXT)
+    image = UrlImageBlock(url="https://signed", media_type="image/png")
+    assert user.content == [text, image] and tool.content == [image]
+    assert assistant is messages[1] and tool.tool_call_id == "c"
+    assert resolver.seen == ["images/a", "images/b"]
+
+
+async def test_a_non_image_asset_becomes_a_note_without_a_resolver() -> None:
+    pdf = AssetBlock(storage_key="uploads/spec.pdf", mime="application/pdf", asset_public_id="p1")
+    [prepared] = await prepare_messages([Message(role="user", content=[pdf])], None, CONTEXT)
+    assert prepared.content == [
+        TextBlock(text="[Attached file: mime=application/pdf, asset_storage_key=uploads/spec.pdf]")
+    ]
+
+
+async def test_a_requests_references_resolve_concurrently_within_the_bound() -> None:
+    class Slow(Resolver):
+        in_flight = peak = 0
+
+        async def resolve(
+            self, asset: AssetReference, context: AssetContext
+        ) -> ResolvedImage | MissingAsset:
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+            await asyncio.sleep(0.01)
+            self.in_flight -= 1
+            if asset.storage_key == "images/3":
+                return MissingAsset("deleted")
+            return await super().resolve(asset, context)
+
+    resolver = Slow()
+    blocks: list[PromptBlock] = [
+        AssetReference(f"images/{i}", "image/png").to_block() for i in range(40)
+    ]
+    [prepared] = await prepare_messages([Message(role="user", content=blocks)], resolver, CONTEXT)
+    assert resolver.peak == RESOLVE_CONCURRENCY
+    assert isinstance(prepared.content, list) and len(prepared.content) == 40
+    assert prepared.content[3] == TextBlock(
+        text="[Image unavailable: deleted; asset_storage_key=images/3]"
+    )
+    assert all(isinstance(b, InlineImageBlock) for i, b in enumerate(prepared.content) if i != 3)
 
 
 async def test_missing_is_visible_but_storage_failure_is_not_missing() -> None:
@@ -76,16 +120,6 @@ async def test_missing_is_visible_but_storage_failure_is_not_missing() -> None:
         await prepare_messages(messages, Failing(), CONTEXT)
     with pytest.raises(ValueError, match="AssetResolver"):
         await prepare_messages(messages, None, CONTEXT)
-
-
-async def test_legacy_live_url_is_sanitized_without_mutating_history() -> None:
-    source = {"type": "url", "url": "https://live", "expires_at": time.time() + 2000, "key": "k"}
-    message = Message(role="user", content=[{"type": "image", "source": source}])
-    [prepared] = await prepare_messages([message], None, CONTEXT)
-    assert prepared.content == [
-        {"type": "image", "source": {"type": "url", "url": "https://live"}}
-    ]
-    assert "expires_at" in source and "key" in source
 
 
 class Client:

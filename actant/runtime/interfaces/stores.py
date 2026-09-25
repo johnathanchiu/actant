@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from actant.blocks import Block
 from actant.agents import Agent
 from actant.core import JSONObject
 from actant.llm.messages import Message
@@ -80,7 +81,7 @@ class MessageStore(Protocol):
         self,
         agent_id: str,
         thread_id: str,
-        content: str | list[dict[str, object]],
+        content: str | list[Block],
     ) -> MessageRecord: ...
 
     async def append_assistant(

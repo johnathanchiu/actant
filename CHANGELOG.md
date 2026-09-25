@@ -6,6 +6,18 @@ affect users.
 
 ## Unreleased
 
+- Message content blocks are typed (`actant.blocks`): history stores `TextBlock`, `AssetBlock`
+  (a storage key, a mime and an optional `asset_public_id`; never a URL) and `InlineImageBlock` (base64). The
+  Postgres store validates `content_blocks` on every write and read; the column stays JSONB, so
+  there is no migration. `prepare_messages` turns each image `AssetBlock` into a `UrlImageBlock`
+  or inline image for one model call (other files stay an "[Attached file]" note), resolving a request's references concurrently (16 at a
+  time). `actant validate-blocks --database-url ...` lists stored rows that no longer validate.
+  Breaking: `Message.content`, `MessagePart.content_blocks`, `ToolResult.content_blocks`,
+  `append_user`, `send_message` and `ThreadHandle.send` take typed blocks; `image_block()`
+  returns one. Removed: `UrlSource` and `ImageSourceKind.URL`; image URLs with `expires_at` in
+  history and their replay (`live_image_urls`, `EXPIRY_MARGIN_S`, `EXPIRED_IMAGE`); unknown
+  keys on blocks.
+
 ## 0.20.0
 
 - Depends on `sqlalchemy[asyncio]`: SQLAlchemy 2.1 installs greenlet only with that extra, and

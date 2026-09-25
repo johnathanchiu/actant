@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
+from actant.blocks import Block
 from actant.core import JSONObject
 from actant.llm.messages import Message
 from actant.runtime.events.publisher import EventSource
@@ -25,7 +26,7 @@ class ThreadRuntime(Protocol):
         self,
         agent_id: str,
         thread_id: str,
-        content: str | list[dict[str, object]],
+        content: str | list[Block],
     ) -> str: ...
 
     async def resolve_tool_call(
@@ -52,7 +53,7 @@ class ThreadHandle:
     agent_id: str
     thread_id: str
 
-    async def send(self, content: str | list[dict[str, object]]) -> str:
+    async def send(self, content: str | list[Block]) -> str:
         """Durably submit a user message and return the Temporal workflow id."""
         return await self.runtime.send_message(self.agent_id, self.thread_id, content)
 

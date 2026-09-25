@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from actant.blocks import (
+    AssetBlock,
+    Base64Source,
+    InlineImageBlock,
+    PromptBlock,
+    TextBlock,
+    UrlImageBlock,
+)
 from actant.llm.messages import Message
 
 
@@ -16,8 +25,8 @@ class AssetReference:
     storage_key: str
     mime: str
 
-    def to_block(self) -> dict[str, object]:
-        return {"type": "asset", "storage_key": self.storage_key, "mime": self.mime}
+    def to_block(self) -> AssetBlock:
+        return AssetBlock(storage_key=self.storage_key, mime=self.mime)
 
 
 @dataclass(frozen=True)
@@ -37,7 +46,7 @@ class ResolvedImage:
     expires_at: float | None = None
     data: bytes | None = None
 
-    def to_block(self, minimum_validity_s: float) -> dict[str, object]:
+    def to_block(self, minimum_validity_s: float) -> InlineImageBlock | UrlImageBlock:
         if (self.url is None) == (self.data is None):
             raise ValueError("resolved image requires exactly one of url or data")
         if self.url is not None:
@@ -45,14 +54,9 @@ class ResolvedImage:
                 raise ValueError("resolved image URL must use HTTP(S)")
             if self.expires_at is not None and self.expires_at <= time.time() + minimum_validity_s:
                 raise ValueError("resolved image URL does not cover the model-call budget")
-            source: dict[str, object] = {"type": "url", "url": self.url}
-        else:
-            source = {
-                "type": "base64",
-                "media_type": self.mime,
-                "data": base64.b64encode(self.data or b"").decode(),
-            }
-        return {"type": "image", "source": source}
+            return UrlImageBlock(url=self.url, media_type=self.mime)
+        data = base64.b64encode(self.data or b"").decode()
+        return InlineImageBlock(source=Base64Source(media_type=self.mime, data=data))
 
 
 @dataclass(frozen=True)
@@ -66,84 +70,53 @@ class AssetResolver(Protocol):
     ) -> ResolvedImage | MissingAsset: ...
 
 
+#: How many asset references one request resolves at once.
+RESOLVE_CONCURRENCY = 16
+
+
 async def prepare_messages(
     messages: Sequence[Message],
     resolver: AssetResolver | None,
     context: AssetContext,
 ) -> list[Message]:
-    """Resolve stored blocks without mutating transcript or discarding message metadata.
-
-    Legacy URL blocks can only be recovered when they carry a storage key. Never
-    derive a key from an untrusted URL or guess an object's retention from its age.
-    Missing bytes are visible; resolver failures propagate to execution.
+    """Resolve each image :class:`AssetBlock` for this model call, and note any other file as
+    text, without mutating the transcript or discarding message metadata. A request's references resolve concurrently, at most
+    :data:`RESOLVE_CONCURRENCY` at a time. Missing bytes are visible; resolver failures
+    propagate to execution.
     """
+    assets = [
+        block
+        for message in messages
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, AssetBlock) and block.mime.startswith("image/")
+    ]
+    limit = asyncio.Semaphore(RESOLVE_CONCURRENCY)
+
+    async def resolve(block: AssetBlock) -> PromptBlock:
+        if resolver is None:
+            raise ValueError("asset references require an AssetResolver")
+        async with limit:
+            image = await resolver.resolve(AssetReference(block.storage_key, block.mime), context)
+        if isinstance(image, MissingAsset):
+            text = f"[Image unavailable: {image.reason}; asset_storage_key={block.storage_key}]"
+            return TextBlock(text=text)
+        return image.to_block(context.minimum_validity_s)
+
+    resolved = iter(await asyncio.gather(*(resolve(block) for block in assets)))
     prepared: list[Message] = []
     for message in messages:
         if not isinstance(message.content, list):
             prepared.append(message)
             continue
-        blocks: list[dict[str, object]] = []
+        blocks: list[PromptBlock] = []
         for block in message.content:
-            reference: AssetReference | None = None
-            if block.get("type") == "asset":
-                key, mime = block.get("storage_key"), block.get("mime")
-                if not isinstance(key, str) or not key or not isinstance(mime, str) or not mime:
-                    raise ValueError("asset requires nonempty storage_key and mime")
-                reference = AssetReference(key, mime)
-            elif block.get("type") == "image":
-                source = block.get("source")
-                if isinstance(source, dict) and source.get("type") == "url":
-                    expiry = source.get("expires_at")
-                    if (
-                        isinstance(expiry, (int, float))
-                        and expiry <= time.time() + context.minimum_validity_s
-                    ):
-                        key = source.get("key")
-                        if isinstance(key, str) and key:
-                            mime = source.get("media_type", "image/png")
-                            reference = AssetReference(key, str(mime))
-                        else:
-                            blocks.append(
-                                {
-                                    "type": "text",
-                                    "text": "[Image unavailable: legacy URL expired; no storage reference]",
-                                }
-                            )
-                            continue
-                    else:
-                        # Storage metadata never reaches provider wire payloads.
-                        blocks.append(
-                            {
-                                **block,
-                                "source": {
-                                    k: v
-                                    for k, v in source.items()
-                                    if k not in {"key", "expires_at"}
-                                },
-                            }
-                        )
-                        continue
-            if reference is None:
+            if not isinstance(block, AssetBlock):
                 blocks.append(block)
-            elif not reference.mime.startswith("image/"):
-                blocks.append(
-                    {
-                        "type": "text",
-                        "text": f"[Attached file: mime={reference.mime}, asset_storage_key={reference.storage_key}]",
-                    }
-                )
+            elif block.mime.startswith("image/"):
+                blocks.append(next(resolved))
             else:
-                if resolver is None:
-                    raise ValueError("asset references require an AssetResolver")
-                image = await resolver.resolve(reference, context)
-                if isinstance(image, MissingAsset):
-                    blocks.append(
-                        {
-                            "type": "text",
-                            "text": f"[Image unavailable: {image.reason}; asset_storage_key={reference.storage_key}]",
-                        }
-                    )
-                else:
-                    blocks.append(image.to_block(context.minimum_validity_s))
+                text = f"[Attached file: mime={block.mime}, asset_storage_key={block.storage_key}]"
+                blocks.append(TextBlock(text=text))
         prepared.append(replace(message, content=blocks))
     return prepared

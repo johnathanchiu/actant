@@ -1,4 +1,4 @@
-"""Images a service returns: presigned URLs from a host that uploads, bytes otherwise."""
+"""Images a service returns: storage keys from a host that uploads, bytes otherwise."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from actant.sandbox.protocol import (
     Image,
     ImageUploadConfig,
     InlineSource,
-    UrlSource,
     AssetSource,
 )
+from actant.blocks import AssetBlock, Base64Source, InlineImageBlock
 from actant.tools import image_block
 from actant.tools.base import MetadataKey
 from actant.tools.service import to_tool_result
@@ -71,21 +71,15 @@ def s5cmd_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return log
 
 
-def test_inline_legacy_and_asset_sources_round_trip() -> None:
+def test_inline_and_asset_sources_round_trip() -> None:
     inline = _inline()
-    assert image_block(inline)["source"] == {
-        "type": "base64",
-        "media_type": "image/png",
-        "data": base64.b64encode(PNG).decode(),
-    }
-    legacy = inline.model_copy(update={"source": UrlSource(url="https://u/x.png", expires_at=1)})
+    data = base64.b64encode(PNG).decode()
+    assert image_block(inline) == InlineImageBlock(
+        source=Base64Source(media_type="image/png", data=data)
+    )
     reference = inline.model_copy(update={"source": AssetSource(storage_key="s3://b/x.png")})
-    assert image_block(reference) == {
-        "type": "asset",
-        "storage_key": "s3://b/x.png",
-        "mime": "image/png",
-    }
-    response = CallResponse(images=[inline, legacy, reference])
+    assert image_block(reference) == AssetBlock(storage_key="s3://b/x.png", mime="image/png")
+    response = CallResponse(images=[inline, reference])
     assert CallResponse.model_validate_json(response.to_json()) == response
 
 
@@ -128,11 +122,9 @@ async def test_host_tool_result_uses_durable_reference_and_reports_upload_failur
     source = response.images[0].source
     assert isinstance(source, AssetSource)
     result = to_tool_result(response)
-    assert result.content_blocks and result.content_blocks[-1] == {
-        "type": "asset",
-        "storage_key": source.storage_key,
-        "mime": "image/png",
-    }
+    assert result.content_blocks and result.content_blocks[-1] == AssetBlock(
+        storage_key=source.storage_key, mime="image/png"
+    )
     monkeypatch.setenv("FAKE_S5CMD_FAIL", "pipe")
     _, fallback = await uploading.call(request)
     assert isinstance(fallback.images[0].source, InlineSource)

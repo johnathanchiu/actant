@@ -8,10 +8,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, func, text
+from sqlalchemy import DateTime, Dialect, ForeignKey, Index, Integer, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
+
+from actant.blocks import BLOCKS, Block
+from actant.core import JSONValue
 
 
 class ActantRuntimeBase(DeclarativeBase):
@@ -19,6 +23,23 @@ class ActantRuntimeBase(DeclarativeBase):
 
 
 ACTANT_RUNTIME_METADATA = ActantRuntimeBase.metadata
+
+
+class BlocksJSONB(TypeDecorator[list[Block]]):
+    """JSONB holding :data:`~actant.blocks.Block` lists, validated on every write and read."""
+
+    impl = JSONB
+    cache_ok = True
+
+    def process_bind_param(self, value: list[Block] | None, dialect: Dialect) -> JSONValue:
+        return (
+            None
+            if value is None
+            else BLOCKS.dump_python(BLOCKS.validate_python(value), mode="json")
+        )
+
+    def process_result_value(self, value: object, dialect: Dialect) -> list[Block] | None:
+        return None if value is None else BLOCKS.validate_python(value)
 
 
 async def create_schema(engine: AsyncEngine) -> None:
@@ -103,7 +124,7 @@ class ActantMessagePartModel(ActantRuntimeBase):
     part_index: Mapped[int] = mapped_column(Integer, primary_key=True)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str | None] = mapped_column(Text)
-    content_blocks: Mapped[list[dict[str, object]] | None] = mapped_column(JSONB)
+    content_blocks: Mapped[list[Block] | None] = mapped_column(BlocksJSONB)
     signature: Mapped[str | None] = mapped_column(Text)
     reasoning_items: Mapped[list[object] | None] = mapped_column(JSONB)
     tool_call_id: Mapped[str | None] = mapped_column(Text)

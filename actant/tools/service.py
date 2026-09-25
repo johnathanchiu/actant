@@ -14,26 +14,20 @@ import inspect
 
 from pydantic import ValidationError
 
+from actant.blocks import AssetBlock, Base64Source, Block, InlineImageBlock, TextBlock
 from actant.core import JSONObject
 import actant.sandbox.host as host
-from actant.sandbox.protocol import AssetSource, CallResponse, Image, InlineSource
+from actant.sandbox.protocol import AssetSource, CallResponse, Image
 from actant.sandbox.service import LocalRunner, Runner
 from actant.tools.base import BaseToolInvocation, CallContext, MetadataKey, ToolResult, ToolSchema
 
 
-def image_block(image: Image) -> dict[str, object]:
-    """A durable asset reference, inline image, or legacy URL content block."""
+def image_block(image: Image) -> AssetBlock | InlineImageBlock:
+    """An uploaded image as its storage reference; otherwise its bytes, inline."""
     if isinstance(image.source, AssetSource):
-        return {"type": "asset", "storage_key": image.source.storage_key, "mime": image.media_type}
-    if isinstance(image.source, InlineSource):
-        source: dict[str, object] = {
-            "type": "base64",
-            "media_type": image.media_type,
-            "data": image.source.data_b64,
-        }
-    else:
-        source = {"type": "url", "url": image.source.url, "expires_at": image.source.expires_at}
-    return {"type": "image", "source": source}
+        return AssetBlock(storage_key=image.source.storage_key, mime=image.media_type)
+    source = Base64Source(media_type=image.media_type, data=image.source.data_b64)
+    return InlineImageBlock(source=source)
 
 
 def to_tool_result(response: CallResponse) -> ToolResult:
@@ -56,9 +50,9 @@ def _result(response: CallResponse) -> ToolResult:
     if not response.images:
         return ToolResult.ok(text)
     # LLM APIs reject empty text blocks.
-    blocks: list[dict[str, object]] = [{"type": "text", "text": text}] if text else []
+    blocks: list[Block] = [TextBlock(text=text)] if text else []
     for image in response.images:
-        blocks.append({"type": "text", "text": f"Image {image.name}:"})
+        blocks.append(TextBlock(text=f"Image {image.name}:"))
         blocks.append(image_block(image))
     return ToolResult(output=text, content_blocks=blocks)
 

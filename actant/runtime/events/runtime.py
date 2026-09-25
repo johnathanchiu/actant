@@ -1,6 +1,7 @@
 """One activity-scoped publisher for lifecycle and provider streaming events."""
 
 from typing import cast
+from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject, JSONValue
 from actant.llm.messages import Message
 from actant.tools.base import ToolResult
@@ -23,13 +24,15 @@ class RuntimeEvents(StreamListener):
             },
         )
 
-    async def on_user_message(self, content: str | list[dict[str, object]]) -> None:
+    async def on_user_message(self, content: str | list[Block]) -> None:
+        if isinstance(content, list):
+            content = BLOCKS.dump_python(content, mode="json")
         await self.emit("user_message", {"content": cast(JSONValue, content)})
 
     async def on_assistant_message(self, message: Message) -> None:
         tool_calls = cast(list[JSONValue], [tc.to_dict() for tc in (message.tool_calls or [])])
         payload: JSONObject = {
-            "content": cast(JSONValue, message.content),
+            "content": cast(JSONValue, message.to_dict()["content"]),
             "thought_summary": message.thought_summary,
             "tool_calls": tool_calls,
         }

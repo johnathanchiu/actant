@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import time
 
 import json
 from types import SimpleNamespace
 
 import pytest
 
+from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
 from actant.llm import Message, ToolCall, ToolCallFunction, provider_for_model
 from actant.llm.providers._shared import sanitize_tool_messages
 from actant.llm.providers.anthropic import AnthropicProvider
@@ -18,6 +18,8 @@ from actant.llm.providers.openai import (
 )
 from actant.runtime.events.streaming import StreamListener
 from actant.tools import make_tool_schema
+
+PNG_BLOCK = InlineImageBlock(source=Base64Source(media_type="image/png", data="iVBO"))
 
 
 class _RecordingListener(StreamListener):
@@ -115,17 +117,7 @@ def test_openai_converts_tool_result_with_images_after_function_output() -> None
     message = Message(
         role="tool",
         tool_call_id="call_1",
-        content=[
-            {"type": "text", "text": "done"},
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": "abc",
-                },
-            },
-        ],
+        content=[TextBlock(text="done"), PNG_BLOCK],
     )
 
     items = OpenAIProvider._convert_tool_message(message)
@@ -237,11 +229,8 @@ def test_anthropic_caches_tools_system_and_history() -> None:
 
 
 def test_anthropic_sends_tool_result_images_inside_tool_result() -> None:
-    image: dict[str, object] = {
-        "type": "image",
-        "source": {"type": "base64", "media_type": "image/png", "data": "iVBO"},
-    }
-    text: dict[str, object] = {"type": "text", "text": "render"}
+    image = PNG_BLOCK
+    text = TextBlock(text="render")
     provider = AnthropicProvider(model_id="claude-opus-5-5", api_key="test")
     params = provider._request_params(
         "S",
@@ -259,7 +248,13 @@ def test_anthropic_sends_tool_result_images_inside_tool_result() -> None:
     )
     assert list(params["messages"])[-1] == {
         "role": "user",
-        "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [text, image]}],
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "t1",
+                "content": [text.model_dump(), image.model_dump()],
+            }
+        ],
     }
 
 
@@ -415,14 +410,8 @@ def test_gemini_sends_url_image_sources_as_file_data() -> None:
     provider = GeminiProvider(
         model_id="gemini-example", api_key="test", check_thinking_support=False
     )
-    [part] = provider.content_blocks_to_parts(
-        [
-            {
-                "type": "image",
-                "source": {"type": "url", "url": "https://b.example/k/a.jpg?X-Amz-Signature=s"},
-            }
-        ]
-    )
+    url = "https://b.example/k/a.jpg?X-Amz-Signature=s"
+    [part] = provider.content_blocks_to_parts([UrlImageBlock(url=url, media_type="image/jpeg")])
     assert part.file_data is not None
     assert part.file_data.file_uri == "https://b.example/k/a.jpg?X-Amz-Signature=s"
     assert part.file_data.mime_type == "image/jpeg"
@@ -490,21 +479,7 @@ async def test_openai_usage_callback_retains_cache_details(
     await provider.client.close()
 
 
-def test_replayed_url_images_drop_expires_at_and_expired_ones_become_a_note() -> None:
-    from actant.llm.providers._shared import EXPIRED_IMAGE, sanitize_tool_messages
-
-    live = {
-        "type": "image",
-        "source": {"type": "url", "url": "https://l", "expires_at": time.time() + 3600},
-    }
-    dead = {
-        "type": "image",
-        "source": {"type": "url", "url": "https://d", "expires_at": time.time() + 30},
-    }
-    stored = Message(role="tool", tool_call_id="t", content=[live, dead])
-    [sent] = sanitize_tool_messages([stored])
-    assert sent.content == [
-        {"type": "image", "source": {"type": "url", "url": "https://l"}},
-        {"type": "text", "text": EXPIRED_IMAGE},
-    ]
-    assert "expires_at" in live["source"]  # pyright: ignore[reportOperatorIssue] -- the stored message is untouched
+def test_an_unresolved_asset_never_reaches_a_provider() -> None:
+    asset = AssetBlock(storage_key="images/a.png", mime="image/png")
+    with pytest.raises(ValueError, match="prepare_messages"):
+        AnthropicProvider.convert_messages([Message(role="user", content=[asset])])

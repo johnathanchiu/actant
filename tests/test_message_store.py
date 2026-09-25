@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from actant.blocks import Base64Source, Block, InlineImageBlock, TextBlock
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
@@ -40,11 +41,11 @@ async def test_append_user_adds_user_message_to_log() -> None:
 
 @pytest.mark.asyncio
 async def test_append_user_supports_multimodal_blocks() -> None:
-    """Multimodal user turns ship content as a list of block dicts."""
+    """Multimodal user turns ship content as a list of blocks."""
     stores = InMemoryRuntimeStores()
-    blocks: list[dict[str, object]] = [
-        {"type": "text", "text": "look"},
-        {"type": "image", "url": "u"},
+    blocks: list[Block] = [
+        TextBlock(text="look"),
+        InlineImageBlock(source=Base64Source(media_type="image/png", data="cG5n")),
     ]
     await stores.messages.append_user(_AGENT, _THREAD, blocks)
 

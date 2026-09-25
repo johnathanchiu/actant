@@ -8,6 +8,7 @@ import temporalio.client
 import temporalio.worker
 import temporalio.service
 
+from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.publisher import EventSink, EventSource
@@ -127,7 +128,7 @@ class AgentRuntime:
         self,
         agent_id: str,
         thread_id: str,
-        content: str | list[dict[str, object]],
+        content: str | list[Block],
         *,
         parent_thread_id: str | None = None,
     ) -> str:
@@ -143,7 +144,11 @@ class AgentRuntime:
         """
         client = self.client
         wf_id = self._workflow_id(agent_id, thread_id)
-        msg = InboundMessage(content=content)
+        msg = InboundMessage(
+            content=BLOCKS.dump_python(content, mode="json")
+            if isinstance(content, list)
+            else content
+        )
         agent_max_turns = self.config.max_turns_per_run
         thread_input = ThreadInput(
             agent_id=agent_id,

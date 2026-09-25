@@ -21,16 +21,18 @@ from openai.types.responses.response_input_param import ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params.reasoning import Reasoning
 
+from actant.blocks import AssetBlock, PromptBlock, TextBlock
 from actant.core import JSONObject
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers._shared import (
-    ContentBlock,
+    WireBlock,
     convert_image_source,
     env_api_key,
     normalize_json_schema,
     sanitize_tool_messages,
     split_tool_content,
+    unresolved,
 )
 from actant.llm.rate_limit import RateLimiter
 
@@ -57,24 +59,21 @@ class _ToolStreamState(Protocol):
 
 
 def content_to_openai_user_parts(
-    content: str | list[ContentBlock] | None,
-) -> list[ContentBlock]:
+    content: str | list[PromptBlock] | None,
+) -> list[WireBlock]:
     if content is None:
         return [{"type": "input_text", "text": ""}]
     if isinstance(content, str):
         return [{"type": "input_text", "text": content}]
 
-    parts: list[ContentBlock] = []
+    parts: list[WireBlock] = []
     for block in content:
-        if not isinstance(block, dict):
-            parts.append({"type": "input_text", "text": str(block)})
-        elif block.get("type") == "text":
-            parts.append({"type": "input_text", "text": block.get("text", "")})
-        elif block.get("type") == "image":
-            source = block.get("source")
-            image = convert_image_source(source) if isinstance(source, Mapping) else None
-            if image:
-                parts.append(image)
+        if isinstance(block, TextBlock):
+            parts.append({"type": "input_text", "text": block.text})
+        elif isinstance(block, AssetBlock):
+            unresolved(block)
+        else:
+            parts.append(convert_image_source(block))
     return parts or [{"type": "input_text", "text": ""}]
 
 
@@ -380,9 +379,7 @@ class OpenAIProvider:
                                     tool_calls=[
                                         ToolCall(
                                             id=call_id,
-                                            function=ToolCallFunction(
-                                                name=name, arguments=whole
-                                            ),
+                                            function=ToolCallFunction(name=name, arguments=whole),
                                         )
                                     ],
                                 ),

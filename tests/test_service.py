@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from actant.blocks import InlineImageBlock
 from actant.sandbox import Endpoint, LocalSandbox, LocalSandboxProvider, SandboxSpec
 from actant.sandbox import LocalRunner, RemoteRunner, SandboxRunner, call_host
 from actant.sandbox import StorageStatus, host
@@ -155,7 +156,8 @@ async def test_local_and_remote_runners_give_identical_results(
     theirs = await _call(remote, "picture", size=10, as_file=True)
     assert mine.output == theirs.output and "dropped secret.txt" in str(theirs.output)
     assert theirs.content_blocks and len(theirs.content_blocks) == 3
-    assert theirs.content_blocks[2]["source"]["media_type"] == "image/png"  # pyright: ignore[reportIndexIssue]
+    image = theirs.content_blocks[2]
+    assert isinstance(image, InlineImageBlock) and image.source.media_type == "image/png"
 
 
 async def test_instances_are_per_key_opened_once_and_calls_run_in_parallel(
@@ -360,7 +362,9 @@ async def test_large_arguments_and_images_round_trip(sandbox: LocalSandbox) -> N
     assert (await _call(runner, "length", text=text)).output == str(len(text))
     result = await _call(runner, "picture", size=5 * 1024 * 1024)
     assert result.content_blocks
-    data = base64.b64decode(result.content_blocks[2]["source"]["data"])  # pyright: ignore[reportIndexIssue]
+    image = result.content_blocks[2]
+    assert isinstance(image, InlineImageBlock)
+    data = base64.b64decode(image.source.data)
     assert len(data) == 5 * 1024 * 1024 + 8 and data.startswith(b"\x89PNG")
 
 
