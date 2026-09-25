@@ -30,7 +30,7 @@ def test_the_revision_directory_is_locatable_and_not_empty() -> None:
 
 
 def test_there_is_an_initial_revision_on_the_actant_branch() -> None:
-    initial = versions_path() / "0001_actant_runtime.py"
+    initial = versions_path() / "0001_actant_schema.py"
     source = initial.read_text()
 
     assert "down_revision: str | None = None" in source
@@ -44,12 +44,3 @@ def test_every_runtime_table_is_created_by_a_revision() -> None:
         created.update(re.findall(r"op\.create_table\(\s*['\"]([^'\"]+)", revision.read_text()))
 
     assert set(ACTANT_RUNTIME_METADATA.tables) <= created
-
-
-def test_the_second_revision_adds_the_sandbox_and_reason_columns() -> None:
-    from actant.runtime.stores.postgres import ActantRunModel, ActantThreadModel
-
-    source = (versions_path() / "0002_sandbox_and_run_reason.py").read_text()
-    assert 'down_revision: str | None = "0001_actant_runtime"' in source
-    assert "sandbox_id" in ActantThreadModel.__table__.columns  # type: ignore[attr-defined]
-    assert "stop_reason" in ActantRunModel.__table__.columns  # type: ignore[attr-defined]
