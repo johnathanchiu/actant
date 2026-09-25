@@ -10,6 +10,10 @@ affect users.
   without it importing `actant.runtime.stores` failed.
 - `TemporalRuntimeConfig.max_concurrent_activities` caps the activities one runtime worker
   runs at once; unset keeps Temporal's default of 100.
+- `S3AssetResolver` signs URLs itself (`actant.storage.sigv4.presign_get`) at the start of a
+  fixed window, so every process and restart sends the same URL for an image and prompt caching
+  keeps hitting. Nothing is stored. Breaking: pass `endpoint_url`, `region` and `keys`;
+  `url_ttl_s` becomes `window_s` and `buffer_s`; the client needs only `head_object`.
 
 ## 0.19.1
 
