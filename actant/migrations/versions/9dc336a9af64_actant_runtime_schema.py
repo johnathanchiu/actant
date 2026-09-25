@@ -1,6 +1,6 @@
 """The Actant runtime schema
 
-Revision ID: 0001_9bd5f854
+Revision ID: 9dc336a9af64
 Revises:
 
 The five tables Actant's SQLAlchemy runtime stores read and write: threads, runs, messages
@@ -13,7 +13,7 @@ It replaces revisions ``0001_actant_runtime`` to ``0003_typed_blocks`` (0.20.x) 
 baseline that builds the same schema. A database already at ``0003_typed_blocks`` has this
 schema: point its ``actant`` row at this revision instead of running it::
 
-    UPDATE alembic_version SET version_num = '0001_9bd5f854'
+    UPDATE alembic_version SET version_num = '9dc336a9af64'
     WHERE version_num = '0003_typed_blocks';
 
 A database created by an application before Actant shipped migrations is adopted with
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0001_9bd5f854"
+revision: str = "9dc336a9af64"
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = ("actant",)
 depends_on: str | Sequence[str] | None = None

@@ -13,7 +13,6 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from actant.migrations import versions_path
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA
 from actant.runtime.stores.postgres.models import BlocksJSONB
 
@@ -29,27 +28,6 @@ config.set_main_option(
 )
 
 target_metadata = ACTANT_RUNTIME_METADATA
-
-
-def _sequential_revision_id(context, revision, directives) -> None:
-    """Number revisions in order instead of by hash.
-
-    Alembic's default is a random hex id. These revisions are read by people
-    debugging someone else's deployment -- "which Actant revision is this
-    database on" should be answerable at a glance, and hashes do not sort.
-
-    Done here rather than by passing --rev-id so the convention holds without
-    anyone remembering it.
-    """
-    del context, revision
-
-    # Only numbering happens here. Emptying `directives` to suppress a no-op
-    # revision also breaks `alembic check`, which runs this same hook and
-    # then reads generated_revisions[-1].
-    script = directives[0]
-    existing = sorted(versions_path().glob("[0-9][0-9][0-9][0-9]_*.py"))
-    nxt = int(existing[-1].name[:4]) + 1 if existing else 1
-    script.rev_id = f"{nxt:04d}_{script.rev_id[:8]}"
 
 
 def _render_item(type_: str, obj: object, autogen_context) -> str | bool:
@@ -93,7 +71,6 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_server_default=True,
-            process_revision_directives=_sequential_revision_id,
             render_item=_render_item,
         )
         with context.begin_transaction():
