@@ -31,9 +31,7 @@ runtime = AgentRuntime(
 Sandbox providers are explicit, caller-owned dependencies. `actant[modal]` adds
 `ModalSandboxProvider`. Tool execution location does not change the Temporal runtime.
 
-Migration `0002_sandbox_and_run_reason` adds `actant_threads.sandbox_id` and
-`actant_runs.stop_reason`; run `alembic upgrade actant@head` as for any Actant
-revision.
+Run `alembic upgrade actant@head` to apply Actant's schema.
 
 ## Install
 

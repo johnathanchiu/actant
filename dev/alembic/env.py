@@ -13,8 +13,8 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from actant.migrations import versions_path
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA
+from actant.runtime.stores.postgres.models import BlocksJSONB
 
 # The repo's own Postgres (`just demo-db-up`), on the uncommon port the
 # compose file deliberately picks so it does not fight other projects'
@@ -30,25 +30,18 @@ config.set_main_option(
 target_metadata = ACTANT_RUNTIME_METADATA
 
 
-def _sequential_revision_id(context, revision, directives) -> None:
-    """Number revisions in order instead of by hash.
+def _render_item(type_: str, obj: object, autogen_context) -> str | bool:
+    """``BlocksJSONB`` renders as the JSONB it stores in.
 
-    Alembic's default is a random hex id. These revisions are read by people
-    debugging someone else's deployment -- "which Actant revision is this
-    database on" should be answerable at a glance, and hashes do not sort.
-
-    Done here rather than by passing --rev-id so the convention holds without
-    anyone remembering it.
+    Autogenerate otherwise writes the decorator's import path into the revision
+    (``actant.runtime.stores.postgres.models.BlocksJSONB``), tying a migration to
+    application code that later changes. The database only ever sees JSONB. This is
+    Alembic's documented hook for it ("Affecting the Rendering of Types Themselves").
     """
-    del context, revision
-
-    # Only numbering happens here. Emptying `directives` to suppress a no-op
-    # revision also breaks `alembic check`, which runs this same hook and
-    # then reads generated_revisions[-1].
-    script = directives[0]
-    existing = sorted(versions_path().glob("[0-9][0-9][0-9][0-9]_*.py"))
-    nxt = int(existing[-1].name[:4]) + 1 if existing else 1
-    script.rev_id = f"{nxt:04d}_{script.rev_id[:8]}"
+    if type_ == "type" and isinstance(obj, BlocksJSONB):
+        autogen_context.imports.add("from sqlalchemy.dialects import postgresql")
+        return "postgresql.JSONB(astext_type=sa.Text())"
+    return False
 
 
 def run_migrations_offline() -> None:
@@ -61,6 +54,7 @@ def run_migrations_offline() -> None:
         # server_default writes no migration and every consumer keeps the
         # old default silently.
         compare_server_default=True,
+        render_item=_render_item,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -77,7 +71,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_server_default=True,
-            process_revision_directives=_sequential_revision_id,
+            render_item=_render_item,
         )
         with context.begin_transaction():
             context.run_migrations()
