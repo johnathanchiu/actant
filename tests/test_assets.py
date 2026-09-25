@@ -8,8 +8,10 @@ import pytest
 from actant.assets import (
     AssetContext,
     AssetReference,
+    InMemorySignedUrls,
     MissingAsset,
     ResolvedImage,
+    SignedUrl,
     prepare_messages,
 )
 from actant.llm.messages import Message
@@ -105,7 +107,9 @@ async def test_sdk_signing_cache_refresh_and_prefix_restriction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = Client()
-    resolver = S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/")
+    resolver = S3AssetResolver(
+        cast(S3Client, client), bucket="b", prefix="images/", urls=InMemorySignedUrls()
+    )
     asset = AssetReference("s3://b/images/a.png", "image/png")
     now = time.time()
     monkeypatch.setattr(time, "time", lambda: now)
@@ -119,6 +123,38 @@ async def test_sdk_signing_cache_refresh_and_prefix_restriction(
         await resolver.resolve(replace(asset, storage_key="private/a.png"), CONTEXT)
 
 
+async def test_processes_and_restarts_share_one_url_until_it_nears_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each resolver stands for a worker process: the SDK signs differently every call, yet
+    every process, and one started later, hands out the stored URL until it nears expiry."""
+    urls = InMemorySignedUrls()
+    client = Client()
+    one, two = (
+        S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/", urls=urls)
+        for _ in range(2)
+    )
+    asset = AssetReference("images/a.png", "image/png")
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
+    first = await one.resolve(asset, CONTEXT)
+    assert first == await two.resolve(asset, CONTEXT) and client.calls == 1
+    monkeypatch.setattr(time, "time", lambda: now + 3600 - 721)
+    restarted = S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/", urls=urls)
+    assert first == await restarted.resolve(asset, CONTEXT) and client.calls == 1
+    monkeypatch.setattr(time, "time", lambda: now + 3600 - 720)
+    second = await two.resolve(asset, CONTEXT)
+    assert second != first and client.calls == 2
+    assert second == await one.resolve(asset, CONTEXT) and client.calls == 2
+
+
+async def test_concurrent_signers_all_use_the_url_that_was_stored_first() -> None:
+    urls = InMemorySignedUrls()
+    late = time.time() + 3600
+    stored = await urls.put("s3://b/k", SignedUrl("https://one", late), replace_before=0)
+    assert stored == await urls.put("s3://b/k", SignedUrl("https://two", late), replace_before=0)
+
+
 @pytest.mark.parametrize(
     "code,missing",
     [("NoSuchKey", True), ("404", True), ("AccessDenied", False), ("SlowDown", False)],
@@ -129,7 +165,9 @@ async def test_only_explicit_missing_sdk_errors_become_notes(code: str, missing:
 
     client = Client()
     client.error = SDKError()
-    resolver = S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/")
+    resolver = S3AssetResolver(
+        cast(S3Client, client), bucket="b", prefix="images/", urls=InMemorySignedUrls()
+    )
     asset = AssetReference("images/a.png", "image/png")
     if missing:
         assert isinstance(await resolver.resolve(asset, CONTEXT), MissingAsset)
@@ -161,7 +199,9 @@ async def test_real_boto_sdk_signs_and_cache_keeps_same_request_prefix() -> None
             stub.add_response(
                 "head_object", {"ContentLength": 3}, {"Bucket": "b", "Key": "images/a.png"}
             )
-            resolver = S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/")
+            resolver = S3AssetResolver(
+                cast(S3Client, client), bucket="b", prefix="images/", urls=InMemorySignedUrls()
+            )
             asset = AssetReference("images/a.png", "image/png")
             first = await resolver.resolve(asset, CONTEXT)
             assert (

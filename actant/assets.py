@@ -60,6 +60,45 @@ class MissingAsset:
     reason: str = "asset no longer available"
 
 
+@dataclass(frozen=True)
+class SignedUrl:
+    url: str
+    expires_at: float
+
+
+class SignedUrlStore(Protocol):
+    """One signed URL per stored object, shared by every process that resolves it.
+
+    A provider's prompt cache matches image URLs byte for byte, and each signature carries its
+    signing time, so a URL signed per process or per restart breaks the cached prefix. Keeping
+    the signed URL here makes every worker hand the model the same URL until it nears expiry.
+    """
+
+    async def get(self, location: str) -> SignedUrl | None: ...
+
+    async def put(self, location: str, signed: SignedUrl, *, replace_before: float) -> SignedUrl:
+        """Store ``signed`` unless the stored URL outlives ``replace_before``; return the stored
+        URL, so processes that signed concurrently all use the one that won."""
+        ...
+
+
+class InMemorySignedUrls:
+    """A process-local store for tests and single-process runs."""
+
+    # ponytail: unbounded; entries are one short URL per image a process resolved.
+    def __init__(self) -> None:
+        self._urls: dict[str, SignedUrl] = {}
+
+    async def get(self, location: str) -> SignedUrl | None:
+        return self._urls.get(location)
+
+    async def put(self, location: str, signed: SignedUrl, *, replace_before: float) -> SignedUrl:
+        stored = self._urls.get(location)
+        if stored is None or stored.expires_at <= replace_before:
+            self._urls[location] = stored = signed
+        return stored
+
+
 class AssetResolver(Protocol):
     async def resolve(
         self, asset: AssetReference, context: AssetContext

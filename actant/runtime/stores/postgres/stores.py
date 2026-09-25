@@ -8,10 +8,12 @@ from datetime import UTC, datetime
 from typing import cast
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from actant.assets import SignedUrl
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
 from actant.runtime.session import message_to_parts
@@ -28,6 +30,7 @@ from actant.runtime.stores.postgres.models import (
     ActantMessageModel,
     ActantMessagePartModel,
     ActantRunModel,
+    ActantSignedUrlModel,
     ActantThreadModel,
     ActantToolCallModel,
 )
@@ -525,6 +528,38 @@ class SQLAlchemyEventPublisher:
             yield {}
 
 
+class SQLAlchemySignedUrlStore:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def get(self, location: str) -> SignedUrl | None:
+        async with self._session_factory() as session:
+            row = await session.get(ActantSignedUrlModel, location)
+            return None if row is None else SignedUrl(row.url, row.expires_at)
+
+    async def put(self, location: str, signed: SignedUrl, *, replace_before: float) -> SignedUrl:
+        table = ActantSignedUrlModel
+        statement = insert(table).values(
+            location=location, url=signed.url, expires_at=signed.expires_at
+        )
+        # The conflicting row is locked, so concurrent signers serialize and all but the first
+        # find a live URL and keep it.
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.location],
+            set_={"url": statement.excluded.url, "expires_at": statement.excluded.expires_at},
+            where=table.expires_at <= replace_before,
+        ).returning(table.url, table.expires_at)
+        async with self._session_factory() as session, session.begin():
+            row = (await session.execute(statement)).one_or_none()
+            if row is None:
+                row = (
+                    await session.execute(
+                        select(table.url, table.expires_at).where(table.location == location)
+                    )
+                ).one()
+            return SignedUrl(row.url, row.expires_at)
+
+
 class SQLAlchemyRuntimeStores:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.threads = SQLAlchemyThreadStore(session_factory)
@@ -532,6 +567,7 @@ class SQLAlchemyRuntimeStores:
         self.messages = SQLAlchemyMessageStore(session_factory)
         self.tool_calls = SQLAlchemyToolCallStore(session_factory)
         self.publisher = SQLAlchemyEventPublisher()
+        self.signed_urls = SQLAlchemySignedUrlStore(session_factory)
 
 
 async def _get_thread(
@@ -565,6 +601,7 @@ __all__ = [
     "SQLAlchemyMessageStore",
     "SQLAlchemyRunStore",
     "SQLAlchemyRuntimeStores",
+    "SQLAlchemySignedUrlStore",
     "SQLAlchemyThreadStore",
     "SQLAlchemyToolCallStore",
 ]

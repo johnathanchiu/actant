@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `S3AssetResolver` takes `urls`, a `SignedUrlStore` every worker process shares
+  (`stores.signed_urls`; `InMemorySignedUrls` for one process), and drops `cache_entries`. An
+  image keeps one presigned URL across processes and restarts until it nears expiry, so the
+  provider's prompt cache, which matches image URLs exactly, keeps hitting. Breaking: pass
+  `urls`, and apply migration `0003_signed_urls` (table `actant_signed_urls`).
+
 ## 0.19.1
 
 - Anthropic provider: Claude models from 3.7 on run with thinking, found from the model's

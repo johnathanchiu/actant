@@ -197,3 +197,47 @@ async def test_terminal_tool_transition_is_atomic(stores: SQLAlchemyRuntimeStore
     # Even a delayed admission cannot reopen the terminal call.
     assert not await stores.tool_calls.update_status("race", ToolCallStatus.WAITING)
     assert (await stores.tool_calls.get("race")).result == {"winner": winner}
+
+
+async def test_processes_signing_at_once_share_the_stored_url(
+    stores: SQLAlchemyRuntimeStores,
+) -> None:
+    """Two workers' resolvers race on one image; both, and a restarted one, hand out the URL the
+    database kept, though the SDK signed twice."""
+    import asyncio
+    import time
+    from collections.abc import Mapping
+    from typing import cast
+
+    from actant.assets import AssetContext, AssetReference, ResolvedImage, SignedUrl
+    from actant.storage.s3 import S3AssetResolver, S3Client
+
+    signatures = iter(range(100))
+
+    class Client:
+        def head_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]:
+            return {}
+
+        def generate_presigned_url(
+            self, ClientMethod: str, *, Params: dict[str, str], ExpiresIn: int
+        ) -> str:
+            return f"https://bucket/{Params['Key']}?signature={next(signatures)}"
+
+    def worker() -> S3AssetResolver:
+        return S3AssetResolver(
+            cast(S3Client, Client()), bucket="b", prefix="images/", urls=stores.signed_urls
+        )
+
+    asset = AssetReference("images/a.png", "image/png")
+    context = AssetContext("a", "t", "r", "turn")
+    one, two = await asyncio.gather(*(worker().resolve(asset, context) for _ in range(2)))
+    assert isinstance(one, ResolvedImage) and one == two
+    assert one == await worker().resolve(asset, context)
+    # Only a URL nearing expiry gives way to a new one.
+    renewed = SignedUrl("https://renewed", time.time() + 7200)
+    location = "s3://b/images/a.png"
+    assert await stores.signed_urls.put(location, renewed, replace_before=0) != renewed
+    assert (
+        await stores.signed_urls.put(location, renewed, replace_before=time.time() + 3600)
+        == renewed
+    )

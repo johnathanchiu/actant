@@ -400,8 +400,10 @@ image. `AgentRuntime(assets=...)` accepts an `AssetResolver`. Direct runner call
 same resolver. Existing URL and base64 images remain readable.
 
 `actant.storage.s3.S3AssetResolver` accepts a boto3-compatible client configured with the public
-endpoint and bounded SDK timeouts. It restricts references to its bucket/prefix, reuses signed
-URLs while they cover the model budget, and reports explicit missing-object errors as
+endpoint and bounded SDK timeouts. It restricts references to its bucket/prefix, keeps each signed
+URL in a `SignedUrlStore` (`stores.signed_urls`) shared by every worker process, and reuses it
+while it covers the model budget, so an image's URL stays byte-identical across processes and
+restarts and the provider's prompt cache keeps matching. It reports explicit missing-object errors as
 `MissingAsset`. Permission and transport failures propagate. Applications own per-user access
 checks and retention; Actant does not infer object lifetime from URL expiry.
 

@@ -116,13 +116,17 @@ s3 = boto3.client(
         signature_version="s3v4",
     ),
 )
-assets = S3AssetResolver(s3, bucket="bucket", prefix="images/", url_ttl_s=3600)
+assets = S3AssetResolver(
+    s3, bucket="bucket", prefix="images/", urls=stores.signed_urls, url_ttl_s=3600
+)
 runtime = AgentRuntime(client=client, stores=stores, resolve_agent=resolve_agent, assets=assets)
 ```
 
 Install `actant[s3]` to obtain boto3. The adapter uses the SDK's signing implementation,
-checks object existence before signing, and caches URLs while their remaining lifetime
-covers the model activity plus a refresh margin. Credentials must remain valid for that
+checks object existence before signing, and stores one URL per object in `urls` (every
+process reads the same one) while its remaining lifetime covers the model activity plus a
+refresh margin. Apply Actant's migrations first: `SQLAlchemyRuntimeStores.signed_urls` lives in
+`actant_signed_urls`. Credentials must remain valid for that
 lifetime; the application owns temporary-credential renewal. Per-user authorization belongs
 in the application's resolver before delegation to the bucket/prefix-scoped S3 adapter.
 

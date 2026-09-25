@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 
 from actant.agents import Agent
+from actant.assets import InMemorySignedUrls
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
 from actant.runtime.types.threads import (
@@ -311,6 +312,7 @@ class InMemoryRuntimeStores:
     messages: InMemoryMessageStore = field(default_factory=InMemoryMessageStore)
     tool_calls: InMemoryToolCallStore = field(default_factory=InMemoryToolCallStore)
     publisher: InMemoryEventPublisher = field(default_factory=InMemoryEventPublisher)
+    signed_urls: InMemorySignedUrls = field(default_factory=InMemorySignedUrls)
 
     def __post_init__(self) -> None:
         # Lets the message store fan tool-call writes into the

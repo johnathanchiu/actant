@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, func, text
+from sqlalchemy import DateTime, Double, ForeignKey, Index, Integer, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -141,12 +141,24 @@ class ActantToolCallModel(ActantRuntimeBase):
     )
 
 
+class ActantSignedUrlModel(ActantRuntimeBase):
+    """The one live signed URL per stored object that every process hands the model."""
+
+    __tablename__ = "actant_signed_urls"
+
+    location: Mapped[str] = mapped_column(Text, primary_key=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    # Epoch seconds, as ``SignedUrl.expires_at``.
+    expires_at: Mapped[float] = mapped_column(Double, nullable=False)
+
+
 __all__ = [
     "ACTANT_RUNTIME_METADATA",
     "ActantMessageModel",
     "ActantMessagePartModel",
     "ActantRunModel",
     "ActantRuntimeBase",
+    "ActantSignedUrlModel",
     "ActantThreadModel",
     "ActantToolCallModel",
     "create_schema",
