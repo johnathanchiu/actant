@@ -3,7 +3,7 @@
 from __future__ import annotations
 import time
 from dataclasses import replace
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import pytest
 from actant.assets import (
     AssetContext,
@@ -15,7 +15,10 @@ from actant.assets import (
 from actant.llm.messages import Message
 from actant.runtime.session import message_to_parts, parts_to_messages
 from actant.storage.s3 import S3AssetResolver, S3Client
-from typing import cast
+from actant.storage.sigv4 import SigningKeys, presign_get
+from datetime import datetime, timezone
+from typing import Literal, cast
+from urllib.parse import parse_qs, quote, urlsplit
 
 CONTEXT = AssetContext("a", "t", "r", "turn")
 
@@ -90,33 +93,133 @@ class Client:
     error: Exception | None = None
 
     def head_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]:
+        self.calls += 1
         if self.error:
             raise self.error
         return {}
 
-    def generate_presigned_url(
-        self, ClientMethod: str, *, Params: dict[str, str], ExpiresIn: int
-    ) -> str:
-        self.calls += 1
-        return f"https://bucket/{Params['Key']}?signature={self.calls}"
+
+KEYS_ = SigningKeys("test-key", "test-secret")
+WINDOW, BUFFER = 3600, 1800
+WINDOW_START = 1_800_000_000 - 1_800_000_000 % WINDOW
 
 
-async def test_sdk_signing_cache_refresh_and_prefix_restriction(
+def resolver_for(client: Client, clock: Callable[[], float] = time.time) -> S3AssetResolver:
+    return S3AssetResolver(
+        cast(S3Client, client),
+        endpoint_url="https://account.r2.cloudflarestorage.com",
+        region="auto",
+        keys=KEYS_,
+        bucket="b",
+        prefix="images/",
+        window_s=WINDOW,
+        buffer_s=BUFFER,
+        clock=clock,
+    )
+
+
+def test_signer_matches_the_aws_documented_presigned_url() -> None:
+    """The worked example in AWS's "Authenticating Requests: Using Query Parameters"."""
+    keys = SigningKeys("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+    signed_at = int(datetime(2013, 5, 24, tzinfo=timezone.utc).timestamp())
+    url = presign_get(
+        "https://s3.amazonaws.com",
+        "us-east-1",
+        keys,
+        "examplebucket",
+        "test.txt",
+        signed_at=signed_at,
+        expires_s=86400,
+        addressing_style="virtual",
+    )
+    assert url.endswith(
+        "X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404"
+    )
+
+
+KEYS = [
+    "images/a.png",
+    "images/a b+c=d&e.png",
+    "images/ümlaut/こんにちは.jpg",
+    "images/100%/x?y#z;,:@$!*'()[].webp",
+    "images/a//b/~tilde.png",
+]
+
+
+@pytest.mark.parametrize("key", KEYS)
+@pytest.mark.parametrize(
+    "endpoint,style",
+    [
+        ("https://account.r2.cloudflarestorage.com", "path"),
+        ("https://account.r2.cloudflarestorage.com", "virtual"),
+        ("https://host:443", "virtual"),
+        ("http://127.0.0.1:9000", "path"),
+    ],
+)
+@pytest.mark.parametrize("token", [None, "session/token+=="])
+def test_crt_signature_matches_botocores_signer_at_the_same_time(
     monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    style: Literal["path", "virtual"],
+    endpoint: str,
+    token: str | None,
 ) -> None:
+    """Two independent SigV4 implementations, AWS CRT (ours) and botocore's pure-Python
+    signer, agree on every parameter and the signature."""
+    import botocore.auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+
+    moment = datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(botocore.auth, "get_current_datetime", lambda: moment)
+    origin = urlsplit(endpoint)
+    path = "/" + quote(key, safe="/~")
+    url = (
+        f"{origin.scheme}://bucket.{origin.netloc}{path}"
+        if style == "virtual"
+        else f"{endpoint}/bucket{path}"
+    )
+    request = AWSRequest(method="GET", url=url)
+    credentials = Credentials("test-key", "test-secret", token)
+    botocore.auth.S3SigV4QueryAuth(credentials, "s3", "auto", expires=5400).add_auth(request)
+    theirs = urlsplit(request.url)
+
+    ours = urlsplit(
+        presign_get(
+            endpoint,
+            "auto",
+            SigningKeys("test-key", "test-secret", session_token=token),
+            "bucket",
+            key,
+            signed_at=int(moment.timestamp()),
+            expires_s=5400,
+            addressing_style=style,
+        )
+    )
+    assert (ours.scheme, ours.netloc, ours.path) == (theirs.scheme, theirs.netloc, theirs.path)
+    assert parse_qs(ours.query) == parse_qs(theirs.query)
+    assert ("X-Amz-Security-Token" in parse_qs(ours.query)) == (token is not None)
+
+
+async def test_one_url_per_window_never_near_expiry() -> None:
     client = Client()
-    resolver = S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/")
-    asset = AssetReference("s3://b/images/a.png", "image/png")
-    now = time.time()
-    monkeypatch.setattr(time, "time", lambda: now)
-    first = await resolver.resolve(asset, CONTEXT)
-    assert first == await resolver.resolve(asset, CONTEXT) and client.calls == 1
-    monkeypatch.setattr(time, "time", lambda: now + 3000)
-    assert first != await resolver.resolve(asset, CONTEXT) and client.calls == 2
+    clock = [0.0]
+    resolver = resolver_for(client, lambda: clock[0])
+    asset = AssetReference("images/a.png", "image/png")
+    for offset in (0, 1800, 3599.999, 3600, 7199.999):
+        clock[0] = WINDOW_START + offset
+        resolved = await resolver.resolve(asset, CONTEXT)
+        assert isinstance(resolved, ResolvedImage) and resolved.expires_at is not None
+        assert resolved.expires_at - clock[0] >= BUFFER
+        # The fresh resolver another process would use signs the same URL.
+        assert resolved == await resolver_for(Client(), lambda: clock[0]).resolve(asset, CONTEXT)
+    assert client.calls == 1  # existence is checked once; signing is local
     with pytest.raises(PermissionError):
         await resolver.resolve(replace(asset, storage_key="s3://other/images/a.png"), CONTEXT)
     with pytest.raises(PermissionError):
         await resolver.resolve(replace(asset, storage_key="private/a.png"), CONTEXT)
+    with pytest.raises(ValueError, match="buffer"):
+        await resolver.resolve(asset, replace(CONTEXT, minimum_validity_s=1700))
 
 
 @pytest.mark.parametrize(
@@ -129,7 +232,7 @@ async def test_only_explicit_missing_sdk_errors_become_notes(code: str, missing:
 
     client = Client()
     client.error = SDKError()
-    resolver = S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/")
+    resolver = resolver_for(client)
     asset = AssetReference("images/a.png", "image/png")
     if missing:
         assert isinstance(await resolver.resolve(asset, CONTEXT), MissingAsset)
@@ -141,33 +244,3 @@ async def test_only_explicit_missing_sdk_errors_become_notes(code: str, missing:
 def test_short_resolved_url_cannot_reach_provider() -> None:
     with pytest.raises(ValueError, match="budget"):
         ResolvedImage("image/png", url="https://u", expires_at=time.time() + 10).to_block(600)
-
-
-async def test_real_boto_sdk_signs_and_cache_keeps_same_request_prefix() -> None:
-    import boto3
-    from botocore.config import Config
-    from botocore.stub import Stubber
-
-    client = boto3.client(
-        "s3",
-        endpoint_url="https://storage.example",
-        region_name="us-east-1",
-        aws_access_key_id="test-key",
-        aws_secret_access_key="test-secret",
-        config=Config(signature_version="s3v4"),
-    )
-    try:
-        with Stubber(client) as stub:
-            stub.add_response(
-                "head_object", {"ContentLength": 3}, {"Bucket": "b", "Key": "images/a.png"}
-            )
-            resolver = S3AssetResolver(cast(S3Client, client), bucket="b", prefix="images/")
-            asset = AssetReference("images/a.png", "image/png")
-            first = await resolver.resolve(asset, CONTEXT)
-            assert (
-                isinstance(first, ResolvedImage) and first.url and "X-Amz-Signature=" in first.url
-            )
-            assert first == await resolver.resolve(asset, CONTEXT)
-            stub.assert_no_pending_responses()
-    finally:
-        client.close()

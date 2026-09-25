@@ -399,9 +399,10 @@ The host never signs URLs. Resolve references when preparing a model request or 
 image. `AgentRuntime(assets=...)` accepts an `AssetResolver`. Direct runner callers can use the
 same resolver. Existing URL and base64 images remain readable.
 
-`actant.storage.s3.S3AssetResolver` accepts a boto3-compatible client configured with the public
-endpoint and bounded SDK timeouts. It restricts references to its bucket/prefix, reuses signed
-URLs while they cover the model budget, and reports explicit missing-object errors as
+`actant.storage.s3.S3AssetResolver` takes a boto3-compatible client with bounded SDK timeouts,
+used to check existence, plus the public endpoint and static `SigningKeys`. It restricts references to its bucket/prefix and signs each URL at the start of a fixed window,
+so every process and restart sends the byte-identical URL for an image within that window and
+the provider's prompt cache keeps matching. It reports explicit missing-object errors as
 `MissingAsset`. Permission and transport failures propagate. Applications own per-user access
 checks and retention; Actant does not infer object lifetime from URL expiry.
 

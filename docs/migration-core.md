@@ -105,25 +105,28 @@ Implement `AssetResolver.resolve(AssetReference, AssetContext)` or use the optio
 import boto3
 from botocore.config import Config
 from actant.storage.s3 import S3AssetResolver
+from actant.storage.sigv4 import SigningKeys
 
 s3 = boto3.client(
     "s3",
     endpoint_url=public_storage_endpoint,
-    config=Config(
-        connect_timeout=5,
-        read_timeout=15,
-        retries={"max_attempts": 2},
-        signature_version="s3v4",
-    ),
+    config=Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 2}),
 )
-assets = S3AssetResolver(s3, bucket="bucket", prefix="images/", url_ttl_s=3600)
+assets = S3AssetResolver(
+    s3,
+    endpoint_url=public_storage_endpoint,
+    region=region,
+    keys=SigningKeys(access_key_id, secret_access_key),
+    bucket="bucket",
+    prefix="images/",
+)
 runtime = AgentRuntime(client=client, stores=stores, resolve_agent=resolve_agent, assets=assets)
 ```
 
-Install `actant[s3]` to obtain boto3. The adapter uses the SDK's signing implementation,
-checks object existence before signing, and caches URLs while their remaining lifetime
-covers the model activity plus a refresh margin. Credentials must remain valid for that
-lifetime; the application owns temporary-credential renewal. Per-user authorization belongs
+Install `actant[s3]` to obtain boto3, used only to check that an object exists. URLs are
+signed at the start of a fixed window (`window_s`, 6 h) and live `window_s + buffer_s`, so every
+process sends the same URL for an object within a window. Nothing is stored. Use static
+credentials: with a session token the URL changes whenever the token rotates. Per-user authorization belongs
 in the application's resolver before delegation to the bucket/prefix-scoped S3 adapter.
 
 Model preparation never mutates persisted history. It preserves message metadata and handles:
