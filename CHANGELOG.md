@@ -4,6 +4,11 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Depends on `sqlalchemy[asyncio]`: SQLAlchemy 2.1 installs greenlet only with that extra, and
+  without it importing `actant.runtime.stores` failed.
+
 ## 0.19.1
 
 - Anthropic provider: Claude models from 3.7 on run with thinking, found from the model's
