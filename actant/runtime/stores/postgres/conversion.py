@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from typing import cast
 
+from actant.blocks import PromptBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message, Role
-from actant.runtime.session import parts_to_messages
+from actant.runtime.session import parts_to_messages, tool_result_blocks
 from actant.runtime.stores.postgres.models import (
     ActantMessageModel,
     ActantMessagePartModel,
@@ -59,9 +60,9 @@ def message_from_header(row: ActantMessageModel) -> Message:
     if role == "tool":
         for part in parts:
             if part.kind is PartKind.TOOL_RESULT:
-                content: str | list[dict[str, object]]
+                content: str | list[PromptBlock]
                 if part.content_blocks:
-                    content = part.content_blocks
+                    content = list(part.content_blocks)
                 elif part.result is not None:
                     content = json.dumps(part.result)
                 else:
@@ -120,31 +121,15 @@ def tool_result_part_row(
     message_id: str, tool_call_id: str, name: str, result: object
 ) -> ActantMessagePartModel:
     """Build a tool-result part row from a tool's provider-neutral result."""
-    blocks: list[dict[str, object]] | None = None
-    if isinstance(result, dict):
-        candidate = result.get("content_blocks")
-        if isinstance(candidate, list):
-            normalized = [block for block in candidate if isinstance(block, dict)]
-            blocks = normalized or None
     return ActantMessagePartModel(
         message_id=message_id,
         part_index=0,
         kind=PartKind.TOOL_RESULT.value,
-        content_blocks=blocks,
+        content_blocks=tool_result_blocks(result),
         result=result if isinstance(result, dict) else {"value": result},
         tool_call_id=tool_call_id,
         tool_name=name,
     )
-
-
-def tool_result_content(result: object) -> str | list[dict[str, object]]:
-    if isinstance(result, dict):
-        candidate = result.get("content_blocks")
-        if isinstance(candidate, list):
-            normalized = [block for block in candidate if isinstance(block, dict)]
-            if normalized:
-                return normalized
-    return json.dumps(result)
 
 
 def tool_call_from_row(row: ActantToolCallModel) -> ToolCallRecord:

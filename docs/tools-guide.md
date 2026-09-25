@@ -178,21 +178,15 @@ Three metadata keys mean something to the runtime:
   drops `terminal`, so the model can correct it.
 - `artifacts` is written by the runtime, never by a tool.
 
-Use `content_blocks` when the tool result needs multimodal provider input or
-rich persisted blocks:
+Use `content_blocks` when the tool result needs multimodal provider input. Blocks are the
+typed models in `actant.blocks` (`TextBlock`, `AssetBlock`, `InlineImageBlock`), validated when
+stored and when read back:
 
 ```python
 return ToolResult(
     output={"image_size_bytes": len(data)},
     content_blocks=[
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": encoded_png,
-            },
-        }
+        InlineImageBlock(source=Base64Source(media_type="image/png", data=encoded_png)),
     ],
 )
 ```
@@ -391,13 +385,13 @@ so a push uploads only files changed since.
 ## Durable images
 
 A host with image storage uploads service images and returns `AssetSource(storage_key=...)`.
-`image_block(image)` produces `{type: "asset", storage_key, mime}` for persistence.
+`image_block(image)` produces an `AssetBlock(storage_key=..., mime=...)` for persistence.
 Without storage, or after a failed upload, images remain inline. Set
 `SandboxSpec(upload_images=False)` to always return bytes. Uploads have their own bounded timeout.
 
 The host never signs URLs. Resolve references when preparing a model request or displaying an
 image. `AgentRuntime(assets=...)` accepts an `AssetResolver`. Direct runner callers can use the
-same resolver. Existing URL and base64 images remain readable.
+same resolver. History never stores a URL.
 
 `actant.storage.s3.S3AssetResolver` takes a boto3-compatible client with bounded SDK timeouts,
 used to check existence, plus the public endpoint and static `SigningKeys`. It restricts references to its bucket/prefix and signs each URL at the start of a fixed window,

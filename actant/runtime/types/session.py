@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from actant.blocks import Block
 from actant.core import JSONObject
 
 
@@ -28,9 +29,8 @@ class MessagePart:
     content: str | None = None
     # Multimodal content lives here on USER_PROMPT and TOOL_RESULT parts
     # (matches pydantic-ai's UserPromptPart and ToolReturnPart). When set,
-    # supersedes ``content``. Block shape: ``{"type": "text", "text": ...}``
-    # or ``{"type": "asset", "storage_key": ..., "mime": ..., "asset_public_id": ...}``.
-    content_blocks: list[dict[str, object]] | None = None
+    # supersedes ``content``.
+    content_blocks: list[Block] | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     args: JSONObject | None = None

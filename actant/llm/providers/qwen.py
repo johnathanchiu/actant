@@ -13,11 +13,15 @@ from openai.types.chat.completion_create_params import CompletionCreateParamsBas
 
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
+from actant.blocks import AssetBlock, PromptBlock, TextBlock
 from actant.llm.providers._shared import (
+    WireBlock,
+    convert_image_source,
     env_api_key,
     normalize_json_schema,
     sanitize_tool_messages,
     split_tool_content,
+    unresolved,
 )
 
 if TYPE_CHECKING:
@@ -55,7 +59,7 @@ class QwenProvider:
             chat_messages.append({"role": "system", "content": system})
         for message in sanitize_tool_messages(messages):
             if message.role == "user":
-                chat_messages.append({"role": "user", "content": cast(object, message.content)})
+                chat_messages.append({"role": "user", "content": _user_content(message.content)})
             elif message.role == "assistant":
                 assistant: ToolSchema = {
                     "role": "assistant",
@@ -193,3 +197,19 @@ class QwenProvider:
             tool_calls=tool_calls or None,
             thought_summary=thought or None,
         )
+
+
+def _user_content(content: str | list[PromptBlock] | None) -> object:
+    """A user message's content as Chat Completions takes it."""
+    if not isinstance(content, list):
+        return content
+    parts: list[WireBlock] = []
+    for block in content:
+        if isinstance(block, TextBlock):
+            parts.append({"type": "text", "text": block.text})
+        elif isinstance(block, AssetBlock):
+            unresolved(block)
+        else:
+            image = convert_image_source(block)
+            parts.append({"type": "image_url", "image_url": {"url": image["image_url"]}})
+    return parts

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
+from actant.blocks import BLOCKS, Block, PromptBlock
 from actant.core import JSONObject, JSONValue
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.types.session import MessagePart, PartKind, WaitStatus
@@ -14,12 +15,10 @@ def message_to_parts(message: Message) -> list[MessagePart]:
     parts: list[MessagePart] = []
     if message.role == "user":
         if isinstance(message.content, list):
-            # Multimodal user message — text + asset blocks. Persist as
-            # content_blocks so the round-trip preserves the structure.
             parts.append(
                 MessagePart(
                     kind=PartKind.USER_PROMPT,
-                    content_blocks=_normalize_content_blocks(message.content),
+                    content_blocks=BLOCKS.validate_python(message.content),
                 )
             )
         else:
@@ -75,12 +74,9 @@ def parts_to_messages(parts: list[MessagePart]) -> list[Message]:
             thought_summary = None
             thinking_signature = None
             reasoning_items = None
-            # Multimodal user message: rebuild Message.content as the
-            # block list. Falls back to the text content for the
-            # legacy / string-only case.
-            user_content: str | list[dict[str, object]]
+            user_content: str | list[PromptBlock]
             if part.content_blocks:
-                user_content = part.content_blocks
+                user_content = list(part.content_blocks)
             else:
                 user_content = part.content or ""
             messages.append(Message(role="user", content=user_content))
@@ -108,7 +104,7 @@ def parts_to_messages(parts: list[MessagePart]) -> list[Message]:
                 tool_results.append(
                     Message(
                         role="tool",
-                        content=_tool_result_content(part.result),
+                        content=tool_result_content(part.result),
                         tool_call_id=part.tool_call_id,
                         name=part.tool_name,
                     )
@@ -160,33 +156,22 @@ def _flush_assistant(
     tool_results.clear()
 
 
-def _normalize_content_blocks(value: object) -> list[dict[str, object]]:
-    """Coerce list-typed Message.content into the canonical block list shape.
-
-    Each entry must be a dict (text or asset block); non-dict entries
-    get dropped so a malformed payload can't poison persistence.
-    """
-    if not isinstance(value, list):
-        return []
-    return [block for block in value if isinstance(block, dict)]
-
-
-def _tool_result_content(result: dict[str, object]) -> str | list[dict[str, object]]:
-    """Pick the right ``Message.content`` shape for a persisted tool result.
-
-    Tools that produce mixed text + asset output set a ``content_blocks``
-    key on their ``ToolResult.metadata`` (or directly on the result dict).
-    When present, surface that as a list — the LLM-layer asset resolver
-    later expands the asset refs into provider-shaped image blocks.
-    Falls back to JSON-stringifying the raw result for legacy text-only
-    tool returns.
-    """
+def tool_result_blocks(result: object) -> list[Block] | None:
+    """The blocks under a tool result's ``content_blocks`` key (:meth:`ToolResult.to_dict`),
+    validated; ``None`` when it has none."""
+    if not isinstance(result, dict):
+        return None
     blocks = result.get("content_blocks")
-    if isinstance(blocks, list):
-        normalized = _normalize_content_blocks(blocks)
-        if normalized:
-            return normalized
-    return json.dumps(result)
+    if blocks is None:
+        return None
+    return BLOCKS.validate_python(blocks) or None
+
+
+def tool_result_content(result: object) -> str | list[PromptBlock]:
+    """A persisted tool result as ``Message.content``: its blocks when it has any, which
+    :func:`~actant.assets.prepare_messages` later resolves, otherwise its JSON."""
+    blocks = tool_result_blocks(result)
+    return list(blocks) if blocks else json.dumps(result)
 
 
 def _args_to_object(arguments: str) -> JSONObject:

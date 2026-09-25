@@ -11,6 +11,8 @@ import json
 
 import pytest
 
+from actant.blocks import AssetBlock, Block, TextBlock
+from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores.in_memory import InMemoryMessageStore
 
@@ -28,14 +30,9 @@ async def test_append_user_string_round_trips() -> None:
 @pytest.mark.asyncio
 async def test_append_user_multimodal_round_trips() -> None:
     store = InMemoryMessageStore()
-    blocks: list[dict[str, object]] = [
-        {"type": "text", "text": "describe this"},
-        {
-            "type": "asset",
-            "storage_key": "user_uploads/abc/xyz",
-            "mime": "image/png",
-            "asset_public_id": "asset_xyz",
-        },
+    blocks: list[Block] = [
+        TextBlock(text="describe this"),
+        AssetBlock(storage_key="user_uploads/abc/xyz", mime="image/png"),
     ]
 
     await store.append_user("agent_1", "thread_x", blocks)
@@ -86,15 +83,11 @@ async def test_append_tool_result_string_round_trips_legacy_shape() -> None:
 @pytest.mark.asyncio
 async def test_append_tool_result_with_content_blocks_round_trips_multimodal() -> None:
     store = InMemoryMessageStore()
-    blocks: list[dict[str, object]] = [
-        {"type": "text", "text": "rendered the floorplan"},
-        {
-            "type": "asset",
-            "storage_key": "agent_artifacts/render-1.png",
-            "mime": "image/png",
-        },
+    blocks = [
+        TextBlock(text="rendered the floorplan"),
+        AssetBlock(storage_key="agent_artifacts/render-1.png", mime="image/png"),
     ]
-    result = {"content_blocks": blocks, "metadata": {"width": 1024}}
+    result = ToolResult(output="ok", metadata={"width": 1024}, content_blocks=blocks).to_dict()
 
     await store.append_tool_result("agent_1", "thread_x", "turn_1", "tc_1", "render", result)
     [message] = await store.list_for_thread("agent_1", "thread_x")

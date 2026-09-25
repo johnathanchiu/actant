@@ -11,6 +11,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
+from actant.blocks import BLOCKS, AssetBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.session import message_to_parts, parts_to_messages
 from actant.runtime.types.session import MessagePart, PartKind
@@ -28,14 +32,9 @@ def test_user_text_only_round_trip_preserves_string_shape() -> None:
 
 
 def test_user_multimodal_round_trip_preserves_block_list() -> None:
-    blocks: list[dict[str, object]] = [
-        {"type": "text", "text": "describe this"},
-        {
-            "type": "asset",
-            "storage_key": "user_uploads/abc/xyz",
-            "mime": "image/png",
-            "asset_public_id": "asset_xyz",
-        },
+    blocks: list[PromptBlock] = [
+        TextBlock(text="describe this"),
+        AssetBlock(storage_key="user_uploads/abc/xyz", mime="image/png"),
     ]
 
     parts = message_to_parts(Message(role="user", content=blocks))
@@ -49,36 +48,29 @@ def test_user_multimodal_round_trip_preserves_block_list() -> None:
     assert message.content == blocks
 
 
-def test_user_multimodal_drops_non_dict_entries() -> None:
-    """Malformed payloads (e.g. a stray string mixed into the block list)
-    shouldn't poison persistence — the bad entry is silently dropped."""
-    parts = message_to_parts(
-        Message(
-            role="user",
-            content=[
-                {"type": "text", "text": "hi"},
-                "stray-string",  # type: ignore[list-item]
-                {"type": "asset", "storage_key": "k", "mime": "image/png"},
-            ],
-        )
-    )
-    assert parts[0].content_blocks == [
-        {"type": "text", "text": "hi"},
-        {"type": "asset", "storage_key": "k", "mime": "image/png"},
-    ]
+@pytest.mark.parametrize(
+    "block",
+    [
+        UrlImageBlock(url="https://signed", media_type="image/png"),
+        {"type": "image", "source": {"type": "url", "url": "https://old", "expires_at": 1}},
+        {"type": "asset", "storage_key": "k", "mime": "image/png", "url": "https://signed"},
+        {"type": "asset", "storage_key": "", "mime": "image/png"},
+        {"type": "asset", "storage_key": "k", "mime": "application/pdf"},
+    ],
+)
+def test_history_never_stores_a_url_or_a_malformed_block(block: object) -> None:
+    message = Message(role="user", content=[TextBlock(text="hi"), block])  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValidationError):
+        message_to_parts(message)
 
 
 def test_tool_result_with_content_blocks_reconstructs_as_list() -> None:
     """When a tool's ``result`` dict carries a ``content_blocks`` key,
     the reconstructed tool message's content is a list (multimodal),
     not a JSON-stringified blob."""
-    blocks: list[dict[str, object]] = [
-        {"type": "text", "text": "rendered the floorplan"},
-        {
-            "type": "asset",
-            "storage_key": "agent_artifacts/render-1.png",
-            "mime": "image/png",
-        },
+    blocks = [
+        TextBlock(text="rendered the floorplan"),
+        AssetBlock(storage_key="agent_artifacts/render-1.png", mime="image/png"),
     ]
     parts = [
         MessagePart(kind=PartKind.USER_PROMPT, content="render"),
@@ -87,7 +79,7 @@ def test_tool_result_with_content_blocks_reconstructs_as_list() -> None:
             tool_call_id="tc_1",
             tool_name="render",
             args={"layout": "grid"},
-            result={"content_blocks": blocks, "metadata": {"width": 1024}},
+            result={"content_blocks": BLOCKS.dump_python(blocks), "metadata": {"width": 1024}},
         ),
     ]
 

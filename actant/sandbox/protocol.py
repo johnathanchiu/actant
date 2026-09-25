@@ -43,21 +43,13 @@ class CallRequest(_Message):
 class ImageSourceKind(StrEnum):
     #: The bytes, base64-encoded in the response.
     INLINE = "inline"
-    #: A presigned URL the model provider fetches from the bucket.
-    URL = "url"
+    #: A storage key in the bucket; the model call resolves it.
     ASSET = "asset"
 
 
 class InlineSource(_Message):
     kind: Literal[ImageSourceKind.INLINE] = ImageSourceKind.INLINE
     data_b64: str
-
-
-class UrlSource(_Message):
-    kind: Literal[ImageSourceKind.URL] = ImageSourceKind.URL
-    url: str
-    #: Unix time the URL stops working.
-    expires_at: float
 
 
 class AssetSource(_Message):
@@ -72,7 +64,7 @@ class Image(_Message):
 
     name: str
     media_type: str
-    source: Annotated[InlineSource | UrlSource | AssetSource, Field(discriminator="kind")]
+    source: Annotated[InlineSource | AssetSource, Field(discriminator="kind")]
 
 
 class StorageStatus(_Message):

@@ -13,7 +13,7 @@ from actant.sandbox.base import (
     SandboxSpec,
     Storage,
 )
-from actant.sandbox.protocol import Image, ImageSourceKind, InlineSource, StorageStatus, UrlSource
+from actant.sandbox.protocol import Image, ImageSourceKind, InlineSource, StorageStatus
 from actant.sandbox.local import LocalSandbox, LocalSandboxProvider
 from actant.sandbox.service import LocalRunner, RemoteRunner, Runner, SandboxRunner, call_host
 
@@ -39,6 +39,5 @@ __all__ = [
     "SandboxSpec",
     "Storage",
     "StorageStatus",
-    "UrlSource",
     "call_host",
 ]

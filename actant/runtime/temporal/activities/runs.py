@@ -8,6 +8,7 @@ from typing import cast
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from actant.blocks import BLOCKS
 from actant.assets import AssetContext, prepare_messages
 from actant.core import JSONObject, new_id
 from actant.llm.errors import StreamCancelled
@@ -104,10 +105,15 @@ class RunActivities:
         )
 
         for msg in payload.new_messages:
-            await self.context.stores.messages.append_user(
-                payload.agent_id, payload.thread_id, msg.content
+            content = (
+                BLOCKS.validate_python(msg.content)
+                if isinstance(msg.content, list)
+                else msg.content
             )
-            await events.on_user_message(msg.content)
+            await self.context.stores.messages.append_user(
+                payload.agent_id, payload.thread_id, content
+            )
+            await events.on_user_message(content)
 
         if self.context.turn_gate is not None:
             reason = await self.context.turn_gate(

@@ -8,17 +8,16 @@ Single-provider helpers live in their owning provider module:
 from __future__ import annotations
 
 import os
-import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
+from typing import NoReturn
 
+from actant.blocks import AssetBlock, InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.messages import Message, ToolCall
 
 ToolSchema = dict[str, object]
-ContentBlock = dict[str, object]
-#: A URL image expiring within this long is replaced, so the provider's fetch never races it.
-EXPIRY_MARGIN_S = 120.0
-EXPIRED_IMAGE = "[image expired: its URL is no longer valid]"
+#: A content block in a provider's own request shape.
+WireBlock = dict[str, object]
 
 
 def env_api_key(name: str, explicit: str | None = None) -> str:
@@ -49,79 +48,50 @@ def normalize_json_schema(schema: object) -> object:
     return result
 
 
-def convert_image_source(source: Mapping[str, object]) -> ContentBlock | None:
-    if source.get("type") == "base64":
-        return {
-            "type": "input_image",
-            "detail": source.get("detail", "high"),
-            "image_url": f"data:{source['media_type']};base64,{source['data']}",
-        }
-    if source.get("type") == "url":
-        return {
-            "type": "input_image",
-            "image_url": source["url"],
-            "detail": source.get("detail", "high"),
-        }
-    return None
+def unresolved(block: AssetBlock) -> NoReturn:
+    raise ValueError(
+        f"asset {block.storage_key!r} reached a provider unresolved: run prepare_messages first"
+    )
+
+
+def convert_image_source(block: InlineImageBlock | UrlImageBlock) -> WireBlock:
+    """An image as an OpenAI Responses ``input_image``."""
+    if isinstance(block, UrlImageBlock):
+        url = block.url
+    else:
+        url = f"data:{block.source.media_type};base64,{block.source.data}"
+    return {"type": "input_image", "image_url": url, "detail": "high"}
 
 
 def split_tool_content(
-    content: str | list[ContentBlock] | None,
-) -> tuple[str, list[ContentBlock]]:
+    content: str | list[PromptBlock] | None,
+) -> tuple[str, list[WireBlock]]:
     if content is None:
         return "", []
     if isinstance(content, str):
         return content, []
 
     text_parts: list[str] = []
-    image_parts: list[ContentBlock] = []
+    image_parts: list[WireBlock] = []
     for block in content:
-        if not isinstance(block, dict):
-            text_parts.append(str(block))
-        elif block.get("type") == "text":
-            text_parts.append(str(block.get("text", "")))
-        elif block.get("type") == "image":
-            source = block.get("source")
-            image = convert_image_source(source) if isinstance(source, Mapping) else None
-            if image:
-                image_parts.append(image)
-    return "\n".join(text_parts) if text_parts else "OK", image_parts
-
-
-def live_image_urls(content: list[ContentBlock], now: float) -> list[ContentBlock]:
-    """``content`` with each URL image source's ``expires_at`` removed (no provider accepts
-    it), and an image expiring before ``now + EXPIRY_MARGIN_S`` replaced by a text note: a
-    provider rejects the whole request when it cannot fetch one."""
-    live: list[ContentBlock] = []
-    for block in content:
-        source = block.get("source") if isinstance(block, dict) else None
-        if not isinstance(source, Mapping) or block.get("type") != "image":
-            live.append(block)
-            continue
-        expires_at = source.get("expires_at")
-        if source.get("type") != "url" or expires_at is None:
-            live.append(block)
-        elif isinstance(expires_at, int | float) and expires_at > now + EXPIRY_MARGIN_S:
-            kept = {key: value for key, value in source.items() if key != "expires_at"}
-            live.append({**block, "source": kept})
+        if isinstance(block, TextBlock):
+            text_parts.append(block.text)
+        elif isinstance(block, AssetBlock):
+            unresolved(block)
         else:
-            live.append({"type": "text", "text": EXPIRED_IMAGE})
-    return live
+            image_parts.append(convert_image_source(block))
+    return "\n".join(text_parts) if text_parts else "OK", image_parts
 
 
 def sanitize_tool_messages(
     messages: Sequence[Message | dict[str, object]],
 ) -> list[Message]:
-    """Messages every adapter can send: tool calls and results paired by id, and URL
-    images that would expire before the request lands replaced (:func:`live_image_urls`)."""
+    """Messages every adapter can send: tool calls and results paired by id."""
     sanitized: list[Message] = []
     pending_ids: list[str] = []
-    now = time.time()
 
     for raw_message in messages:
         message = Message.from_raw(raw_message)
-        if isinstance(message.content, list):
-            message.content = live_image_urls(message.content, now)
         if message.role == "assistant" and message.tool_calls is not None:
             normalized_tool_calls: list[ToolCall] = []
             for raw_tool_call in message.tool_calls:

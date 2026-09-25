@@ -13,6 +13,7 @@ from temporalio.client import Client
 from temporalio.testing import WorkflowEnvironment
 
 from actant import AgentDefinition, tool
+from actant.blocks import Base64Source, InlineImageBlock
 from actant.core import JSONObject
 from actant.llm.messages import ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
@@ -273,10 +274,7 @@ async def test_tool_asset_is_resolved_for_model_but_stored_as_reference() -> Non
             assert next(m for m in stored if m.role == "tool").content == [block]
             sent = next(m for m in fake.calls[1][1] if m.role == "tool")
             assert sent.content == [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/png", "data": "cG5n"},
-                }
+                InlineImageBlock(source=Base64Source(media_type="image/png", data="cG5n"))
             ]
         finally:
             await stop(polling)

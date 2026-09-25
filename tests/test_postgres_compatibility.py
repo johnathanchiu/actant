@@ -7,6 +7,7 @@ actant_core_test database. Each test uses and removes its own schema.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -14,11 +15,15 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from actant.assets import AssetReference
+from actant.cli import invalid_block_rows
+from actant.blocks import Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
+from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA, SQLAlchemyRuntimeStores
 from actant.runtime.types.threads import RunStatus
@@ -51,18 +56,15 @@ async def stores(postgres_schema: str) -> AsyncIterator[SQLAlchemyRuntimeStores]
         await engine.dispose()
 
 
-async def test_legacy_and_asset_blocks_usage_and_tool_results_round_trip(
+async def test_typed_blocks_usage_and_tool_results_round_trip(
     stores: SQLAlchemyRuntimeStores,
 ) -> None:
-    old = {"type": "image", "source": {"type": "url", "url": "https://old", "expires_at": 1}}
-    inline = {
-        "type": "image",
-        "source": {"type": "base64", "media_type": "image/png", "data": "cG5n"},
-    }
+    text = TextBlock(text="look")
+    inline = InlineImageBlock(source=Base64Source(media_type="image/png", data="cG5n"))
     asset = AssetReference("images/a.png", "image/png").to_block()
     await stores.threads.get_or_create("a", "t")
     await stores.runs.create("a", "t", run_id="r", max_turns=3)
-    await stores.messages.append_user("a", "t", [old, inline, asset])
+    await stores.messages.append_user("a", "t", [text, inline, asset])
     call = ToolCallRecord(
         id="c",
         group_id="g",
@@ -82,16 +84,68 @@ async def test_legacy_and_asset_blocks_usage_and_tool_results_round_trip(
         tool_calls=[ToolCall(id="c", function=ToolCallFunction(name="look", arguments="{}"))],
     )
     await stores.messages.append_assistant_with_tool_calls("a", "t", "turn", assistant, [call])
-    result = {"result": "picture", "content_blocks": [asset]}
+    result = ToolResult(output="picture", content_blocks=[asset]).to_dict()
     for _ in range(2):
         await stores.messages.append_tool_result("a", "t", "turn", "c", "look", result)
         await stores.runs.finish("r", RunStatus.IDLE)
     messages = await stores.messages.list_for_thread("a", "t")
     assert len(messages) == 3
-    assert messages[0].content == [old, inline, asset]
+    assert messages[0].content == [text, inline, asset]
     assert messages[1].input_tokens == 13 and messages[1].output_tokens == 7
     assert messages[2].content == [asset]
     assert (await stores.tool_calls.get("c")).turn_id == "turn"
+
+
+URL_IMAGE = {"type": "image", "source": {"type": "url", "url": "https://old", "expires_at": 1}}
+
+
+async def test_a_url_block_is_rejected_on_write_and_on_read(
+    stores: SQLAlchemyRuntimeStores, postgres_schema: str
+) -> None:
+    await stores.threads.get_or_create("a", "t")
+    with pytest.raises(ValidationError):
+        await stores.messages.append_user("a", "t", [URL_IMAGE])  # pyright: ignore[reportArgumentType]
+    signed = UrlImageBlock(url="https://signed", media_type="image/png")
+    with pytest.raises(ValidationError):
+        await stores.messages.append_user("a", "t", [signed])  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValidationError):
+        result = {"result": "picture", "content_blocks": [URL_IMAGE]}
+        await stores.messages.append_tool_result("a", "t", "turn", "c", "look", result)
+    assert await stores.messages.list_for_thread("a", "t") == []
+
+    await stores.messages.append_user("a", "t", [TextBlock(text="hi")])
+    async with stores.messages.session_factory() as session, session.begin():
+        await session.execute(
+            text(
+                f'UPDATE "{postgres_schema}".actant_message_parts SET content_blocks = '
+                "CAST(:blocks AS jsonb)"
+            ),
+            {"blocks": json.dumps([URL_IMAGE])},
+        )
+    with pytest.raises(ValidationError):
+        await stores.messages.list_for_thread("a", "t")
+
+
+async def test_validate_blocks_reports_only_the_rows_that_do_not_validate(
+    stores: SQLAlchemyRuntimeStores, postgres_schema: str
+) -> None:
+    await stores.threads.get_or_create("a", "t")
+    await stores.messages.append_user("a", "t", [TextBlock(text="good")])
+    bad = await stores.messages.append_user("a", "t", [TextBlock(text="bad")])
+    await stores.messages.append_user("a", "t", "plain text has no blocks")
+    async with stores.messages.session_factory() as session, session.begin():
+        await session.execute(
+            text(
+                f'UPDATE "{postgres_schema}".actant_message_parts SET content_blocks = '
+                "CAST(:blocks AS jsonb) WHERE message_id = :id"
+            ),
+            {"blocks": json.dumps([URL_IMAGE]), "id": bad.id},
+        )
+        engine = session.bind
+    assert isinstance(engine, AsyncEngine)
+    [(message_id, part_index, errors)] = await invalid_block_rows(engine)
+    assert (message_id, part_index) == (bad.id, 0)
+    assert "image.source.type" in errors
 
 
 async def test_claim_race_and_stale_update_preserve_single_sandbox(
