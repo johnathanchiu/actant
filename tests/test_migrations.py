@@ -30,7 +30,7 @@ def test_the_revision_directory_is_locatable_and_not_empty() -> None:
 
 
 def test_there_is_an_initial_revision_on_the_actant_branch() -> None:
-    initial = versions_path() / "0001_actant_schema.py"
+    initial = versions_path() / "0001_9bd5f854_actant_runtime_schema.py"
     source = initial.read_text()
 
     assert "down_revision: str | None = None" in source
