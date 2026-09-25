@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -32,8 +31,6 @@ WINDOW_S = 6 * 3600
 BUFFER_S = 1800
 #: Margin on top of the model call's budget, as `actant.llm.providers._shared` uses.
 EXPIRY_MARGIN_S = 120
-#: Objects already confirmed to exist, per process; keys are immutable, so this only saves calls.
-EXISTING_KEYS = 4096
 MISSING_CODES = frozenset({"NoSuchKey", "NotFound", "404"})
 
 
@@ -74,7 +71,6 @@ class S3AssetResolver:
         self.window_s, self.buffer_s = window_s, buffer_s
         self.addressing_style: AddressingStyle = addressing_style
         self.clock = clock
-        self._existing: OrderedDict[str, None] = OrderedDict()
 
     async def resolve(
         self, asset: AssetReference, context: AssetContext
@@ -111,9 +107,6 @@ class S3AssetResolver:
         return key
 
     async def _exists(self, key: str) -> bool:
-        if key in self._existing:
-            self._existing.move_to_end(key)
-            return True
         try:
             await asyncio.to_thread(self.client.head_object, Bucket=self.bucket, Key=key)
         except Exception as error:
@@ -124,7 +117,4 @@ class S3AssetResolver:
             if isinstance(detail, dict) and detail.get("Code") in MISSING_CODES:
                 return False
             raise
-        self._existing[key] = None
-        while len(self._existing) > EXISTING_KEYS:
-            self._existing.popitem(last=False)
         return True
