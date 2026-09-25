@@ -6,6 +6,8 @@ affect users.
 
 ## Unreleased
 
+## 0.20.0
+
 - Message content blocks are typed (`actant.blocks`): history stores `TextBlock`, `AssetBlock`
   (a storage key, a mime and an optional `asset_public_id`; never a URL) and `InlineImageBlock` (base64). The
   Postgres store validates `content_blocks` on every write and read; the column stays JSONB, so
@@ -18,8 +20,6 @@ affect users.
   history and their replay (`live_image_urls`, `EXPIRY_MARGIN_S`, `EXPIRED_IMAGE`); unknown
   keys on blocks.
 
-## 0.20.0
-
 - Depends on `sqlalchemy[asyncio]`: SQLAlchemy 2.1 installs greenlet only with that extra, and
   without it importing `actant.runtime.stores` failed.
 - `TemporalRuntimeConfig.max_concurrent_activities` caps the activities one runtime worker
@@ -28,7 +28,8 @@ affect users.
   fixed window, so every process and restart sends the same URL for an image and prompt caching
   keeps hitting. Nothing is stored. Breaking: pass `endpoint_url`, `region` and `keys`;
   `url_ttl_s` becomes `window_s` and `buffer_s`; the client needs only `head_object`. The `s3`
-  extra adds `awscrt`, AWS's signer (prebuilt wheels).
+  extra adds `awscrt`, AWS's signer (prebuilt wheels). The resolver keeps no per-process state:
+  it checks an object exists on every resolve.
 
 ## 0.19.1
 
