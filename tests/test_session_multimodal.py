@@ -34,7 +34,8 @@ def test_user_text_only_round_trip_preserves_string_shape() -> None:
 def test_user_multimodal_round_trip_preserves_block_list() -> None:
     blocks: list[PromptBlock] = [
         TextBlock(text="describe this"),
-        AssetBlock(storage_key="user_uploads/abc/xyz", mime="image/png"),
+        AssetBlock(storage_key="user_uploads/abc/xyz", mime="image/png", asset_public_id="a1"),
+        AssetBlock(storage_key="user_uploads/abc/spec.pdf", mime="application/pdf"),
     ]
 
     parts = message_to_parts(Message(role="user", content=blocks))
@@ -55,7 +56,7 @@ def test_user_multimodal_round_trip_preserves_block_list() -> None:
         {"type": "image", "source": {"type": "url", "url": "https://old", "expires_at": 1}},
         {"type": "asset", "storage_key": "k", "mime": "image/png", "url": "https://signed"},
         {"type": "asset", "storage_key": "", "mime": "image/png"},
-        {"type": "asset", "storage_key": "k", "mime": "application/pdf"},
+        {"type": "asset", "storage_key": "k", "mime": ""},
     ],
 )
 def test_history_never_stores_a_url_or_a_malformed_block(block: object) -> None:

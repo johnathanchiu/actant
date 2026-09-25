@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from actant.assets import AssetReference
 from actant.cli import invalid_block_rows
-from actant.blocks import Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
+from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
 from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA, SQLAlchemyRuntimeStores
@@ -62,9 +62,10 @@ async def test_typed_blocks_usage_and_tool_results_round_trip(
     text = TextBlock(text="look")
     inline = InlineImageBlock(source=Base64Source(media_type="image/png", data="cG5n"))
     asset = AssetReference("images/a.png", "image/png").to_block()
+    pdf = AssetBlock(storage_key="uploads/spec.pdf", mime="application/pdf", asset_public_id="p1")
     await stores.threads.get_or_create("a", "t")
     await stores.runs.create("a", "t", run_id="r", max_turns=3)
-    await stores.messages.append_user("a", "t", [text, inline, asset])
+    await stores.messages.append_user("a", "t", [text, inline, asset, pdf])
     call = ToolCallRecord(
         id="c",
         group_id="g",
@@ -90,7 +91,7 @@ async def test_typed_blocks_usage_and_tool_results_round_trip(
         await stores.runs.finish("r", RunStatus.IDLE)
     messages = await stores.messages.list_for_thread("a", "t")
     assert len(messages) == 3
-    assert messages[0].content == [text, inline, asset]
+    assert messages[0].content == [text, inline, asset, pdf]
     assert messages[1].input_tokens == 13 and messages[1].output_tokens == 7
     assert messages[2].content == [asset]
     assert (await stores.tool_calls.get("c")).turn_id == "turn"

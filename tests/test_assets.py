@@ -14,7 +14,7 @@ from actant.assets import (
     ResolvedImage,
     prepare_messages,
 )
-from actant.blocks import InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
+from actant.blocks import AssetBlock, InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.messages import Message
 from actant.runtime.session import message_to_parts, parts_to_messages
 from actant.storage.s3 import S3AssetResolver, S3Client
@@ -66,6 +66,14 @@ async def test_typed_blocks_resolve_in_order_and_text_passes_through() -> None:
     assert user.content == [text, image] and tool.content == [image]
     assert assistant is messages[1] and tool.tool_call_id == "c"
     assert resolver.seen == ["images/a", "images/b"]
+
+
+async def test_a_non_image_asset_becomes_a_note_without_a_resolver() -> None:
+    pdf = AssetBlock(storage_key="uploads/spec.pdf", mime="application/pdf", asset_public_id="p1")
+    [prepared] = await prepare_messages([Message(role="user", content=[pdf])], None, CONTEXT)
+    assert prepared.content == [
+        TextBlock(text="[Attached file: mime=application/pdf, asset_storage_key=uploads/spec.pdf]")
+    ]
 
 
 async def test_a_requests_references_resolve_concurrently_within_the_bound() -> None:

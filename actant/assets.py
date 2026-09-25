@@ -79,8 +79,8 @@ async def prepare_messages(
     resolver: AssetResolver | None,
     context: AssetContext,
 ) -> list[Message]:
-    """Resolve each :class:`AssetBlock` for this model call, without mutating the transcript
-    or discarding message metadata. A request's references resolve concurrently, at most
+    """Resolve each image :class:`AssetBlock` for this model call, and note any other file as
+    text, without mutating the transcript or discarding message metadata. A request's references resolve concurrently, at most
     :data:`RESOLVE_CONCURRENCY` at a time. Missing bytes are visible; resolver failures
     propagate to execution.
     """
@@ -89,15 +89,13 @@ async def prepare_messages(
         for message in messages
         if isinstance(message.content, list)
         for block in message.content
-        if isinstance(block, AssetBlock)
+        if isinstance(block, AssetBlock) and block.mime.startswith("image/")
     ]
-    if not assets:
-        return list(messages)
-    if resolver is None:
-        raise ValueError("asset references require an AssetResolver")
     limit = asyncio.Semaphore(RESOLVE_CONCURRENCY)
 
     async def resolve(block: AssetBlock) -> PromptBlock:
+        if resolver is None:
+            raise ValueError("asset references require an AssetResolver")
         async with limit:
             image = await resolver.resolve(AssetReference(block.storage_key, block.mime), context)
         if isinstance(image, MissingAsset):
@@ -111,6 +109,14 @@ async def prepare_messages(
         if not isinstance(message.content, list):
             prepared.append(message)
             continue
-        blocks = [next(resolved) if isinstance(b, AssetBlock) else b for b in message.content]
+        blocks: list[PromptBlock] = []
+        for block in message.content:
+            if not isinstance(block, AssetBlock):
+                blocks.append(block)
+            elif block.mime.startswith("image/"):
+                blocks.append(next(resolved))
+            else:
+                text = f"[Attached file: mime={block.mime}, asset_storage_key={block.storage_key}]"
+                blocks.append(TextBlock(text=text))
         prepared.append(replace(message, content=blocks))
     return prepared

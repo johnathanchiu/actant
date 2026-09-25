@@ -26,11 +26,14 @@ class TextBlock(_Block):
 
 
 class AssetBlock(_Block):
-    """An image in the product's bucket, by key; never a URL."""
+    """A file in the product's bucket, by key; never a URL. Images reach the model as
+    images; any other mime as a text note naming the file."""
 
     type: Literal["asset"] = "asset"
     storage_key: Annotated[str, Field(min_length=1)]
-    mime: Annotated[str, Field(pattern=_IMAGE_MIME)]
+    mime: Annotated[str, Field(pattern=r"^[\w.+-]+/[\w.+-]+$")]
+    #: The product's id for the attachment, for its UI; never sent to a provider.
+    asset_public_id: str | None = None
 
 
 class Base64Source(_Block):

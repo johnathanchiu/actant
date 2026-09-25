@@ -7,17 +7,16 @@ affect users.
 ## Unreleased
 
 - Message content blocks are typed (`actant.blocks`): history stores `TextBlock`, `AssetBlock`
-  (a storage key and an `image/*` mime, never a URL) and `InlineImageBlock` (base64). The
+  (a storage key, a mime and an optional `asset_public_id`; never a URL) and `InlineImageBlock` (base64). The
   Postgres store validates `content_blocks` on every write and read; the column stays JSONB, so
-  there is no migration. `prepare_messages` turns each `AssetBlock` into a `UrlImageBlock` or
-  inline image for one model call, resolving a request's references concurrently (16 at a
+  there is no migration. `prepare_messages` turns each image `AssetBlock` into a `UrlImageBlock`
+  or inline image for one model call (other files stay an "[Attached file]" note), resolving a request's references concurrently (16 at a
   time). `actant validate-blocks --database-url ...` lists stored rows that no longer validate.
   Breaking: `Message.content`, `MessagePart.content_blocks`, `ToolResult.content_blocks`,
   `append_user`, `send_message` and `ThreadHandle.send` take typed blocks; `image_block()`
   returns one. Removed: `UrlSource` and `ImageSourceKind.URL`; image URLs with `expires_at` in
-  history and their replay (`live_image_urls`, `EXPIRY_MARGIN_S`, `EXPIRED_IMAGE`); asset
-  blocks with a non-image mime (they became an "[Attached file]" note); extra keys on blocks,
-  such as `asset_public_id`.
+  history and their replay (`live_image_urls`, `EXPIRY_MARGIN_S`, `EXPIRED_IMAGE`); unknown
+  keys on blocks.
 
 ## 0.20.0
 
