@@ -15,6 +15,7 @@ from sqlalchemy import engine_from_config, pool
 
 from actant.migrations import versions_path
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA
+from actant.runtime.stores.postgres.models import BlocksJSONB
 
 # The repo's own Postgres (`just demo-db-up`), on the uncommon port the
 # compose file deliberately picks so it does not fight other projects'
@@ -51,6 +52,20 @@ def _sequential_revision_id(context, revision, directives) -> None:
     script.rev_id = f"{nxt:04d}_{script.rev_id[:8]}"
 
 
+def _render_item(type_: str, obj: object, autogen_context) -> str | bool:
+    """``BlocksJSONB`` renders as the JSONB it stores in.
+
+    Autogenerate otherwise writes the decorator's import path into the revision
+    (``actant.runtime.stores.postgres.models.BlocksJSONB``), tying a migration to
+    application code that later changes. The database only ever sees JSONB. This is
+    Alembic's documented hook for it ("Affecting the Rendering of Types Themselves").
+    """
+    if type_ == "type" and isinstance(obj, BlocksJSONB):
+        autogen_context.imports.add("from sqlalchemy.dialects import postgresql")
+        return "postgresql.JSONB(astext_type=sa.Text())"
+    return False
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
@@ -61,6 +76,7 @@ def run_migrations_offline() -> None:
         # server_default writes no migration and every consumer keeps the
         # old default silently.
         compare_server_default=True,
+        render_item=_render_item,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -78,6 +94,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_server_default=True,
             process_revision_directives=_sequential_revision_id,
+            render_item=_render_item,
         )
         with context.begin_transaction():
             context.run_migrations()
