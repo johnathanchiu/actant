@@ -11,6 +11,8 @@ affect users.
   image keeps one presigned URL across processes and restarts until it nears expiry, so the
   provider's prompt cache, which matches image URLs exactly, keeps hitting. Breaking: pass
   `urls`, and apply migration `0003_signed_urls` (table `actant_signed_urls`).
+- Depends on `sqlalchemy[asyncio]`: SQLAlchemy 2.1 installs greenlet only with that extra, and
+  without it importing `actant.runtime.stores` failed.
 
 ## 0.19.1
 
