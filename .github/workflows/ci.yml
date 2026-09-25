@@ -73,12 +73,15 @@ jobs:
           from actant import AgentDefinition
           from actant.llm import Message, llm_for_model, provider_for_model
           from actant.runtime import AgentRuntime
+          # Async SQLAlchemy needs greenlet, which 2.1 ships only with [asyncio].
+          from actant.runtime.stores import SQLAlchemyRuntimeStores
           from actant.tools import ToolRegistry
 
           assert actant.__file__ is not None
           assert AgentDefinition is not None
           assert Message is not None
           assert AgentRuntime is not None
+          assert SQLAlchemyRuntimeStores is not None
           assert ToolRegistry is not None
           assert provider_for_model("gpt-example") == "openai"
 
