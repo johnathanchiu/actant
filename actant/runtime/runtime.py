@@ -96,6 +96,7 @@ class AgentRuntime:
                 task_queue=self.config.task_queue,
                 workflows=[AgentThreadWorkflow],
                 activities=activities.all,
+                max_concurrent_activities=self.config.max_concurrent_activities,
                 graceful_shutdown_timeout=timedelta(
                     seconds=self.config.graceful_shutdown_timeout_seconds
                 ),
