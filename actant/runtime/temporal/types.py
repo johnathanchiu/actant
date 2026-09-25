@@ -26,6 +26,9 @@ class TemporalRuntimeConfig:
     max_turns_per_run: int | None = None
     # Allow active activities to finish before worker shutdown requests cancellation.
     graceful_shutdown_timeout_seconds: float = 0.0
+    # Activities (model turns, tool calls) one worker runs at once. None keeps
+    # the Temporal SDK's default of 100, which no single process should size by.
+    max_concurrent_activities: int | None = None
     # Soft threshold for triggering continue_as_new at the run boundary.
     # Replay walks every event so very long histories slow workflow tasks
     # down. 5_000 is a starting point; tune via load test.

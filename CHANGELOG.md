@@ -13,6 +13,8 @@ affect users.
   `urls`, and apply migration `0003_signed_urls` (table `actant_signed_urls`).
 - Depends on `sqlalchemy[asyncio]`: SQLAlchemy 2.1 installs greenlet only with that extra, and
   without it importing `actant.runtime.stores` failed.
+- `TemporalRuntimeConfig.max_concurrent_activities` caps the activities one runtime worker
+  runs at once; unset keeps Temporal's default of 100.
 
 ## 0.19.1
 
