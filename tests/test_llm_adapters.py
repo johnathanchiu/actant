@@ -485,7 +485,7 @@ def test_an_unresolved_asset_never_reaches_a_provider() -> None:
         AnthropicProvider.convert_messages([Message(role="user", content=[asset])])
 
 
-def test_message_from_raw_treats_null_content_as_empty() -> None:
+def test_message_from_raw_keeps_null_content() -> None:
     message = Message.from_raw(
         {
             "role": "assistant",
@@ -496,4 +496,5 @@ def test_message_from_raw_treats_null_content_as_empty() -> None:
         }
     )
 
-    assert message.content == ""
+    assert message.content is None
+    assert Message.from_raw(message.to_dict()).to_dict() == message.to_dict()

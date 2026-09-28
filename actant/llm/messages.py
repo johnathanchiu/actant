@@ -132,14 +132,14 @@ class Message:
             raise TypeError(f"Expected Message or dict, got {type(value).__name__}")
 
         raw_tool_calls = value.get("tool_calls")
-        content = value.get("content")
-        if content is None:
-            content = ""
+        content = value.get("content", "")
         raw_reasoning_items = value.get("reasoning_items")
         return cls(
             role=cast(Role, value.get("role", "user")),
             content=PROMPT_BLOCKS.validate_python(content)
             if isinstance(content, list)
+            else None
+            if content is None
             else str(content),
             tool_calls=(
                 [ToolCall.from_raw(tc) for tc in raw_tool_calls]
