@@ -132,7 +132,9 @@ class Message:
             raise TypeError(f"Expected Message or dict, got {type(value).__name__}")
 
         raw_tool_calls = value.get("tool_calls")
-        content = value.get("content", "")
+        content = value.get("content")
+        if content is None:
+            content = ""
         raw_reasoning_items = value.get("reasoning_items")
         return cls(
             role=cast(Role, value.get("role", "user")),
