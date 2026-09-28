@@ -483,3 +483,17 @@ def test_an_unresolved_asset_never_reaches_a_provider() -> None:
     asset = AssetBlock(storage_key="images/a.png", mime="image/png")
     with pytest.raises(ValueError, match="prepare_messages"):
         AnthropicProvider.convert_messages([Message(role="user", content=[asset])])
+
+
+def test_message_from_raw_treats_null_content_as_empty() -> None:
+    message = Message.from_raw(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ],
+        }
+    )
+
+    assert message.content == ""
