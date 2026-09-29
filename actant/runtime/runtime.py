@@ -157,6 +157,7 @@ class AgentRuntime:
             external_resolution_timeout_seconds=(self.config.external_resolution_timeout_seconds),
             history_size_threshold=self.config.history_size_threshold,
             parent_thread_id=parent_thread_id,
+            interleave_inbox=self.config.interleave_inbox,
         )
         await client.start_workflow(
             AgentThreadWorkflow.run,

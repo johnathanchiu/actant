@@ -252,7 +252,10 @@ using sequential labels in production.
 `send` uses Temporal signal-with-start. The first message starts the
 thread workflow; later messages signal that same workflow. Messages arriving
 while a run is active remain in the workflow inbox and are drained at the next
-run boundary.
+run boundary. Set `TemporalRuntimeConfig(interleave_inbox=True)` to hand them to
+the model on the run's next turn instead: they land after that turn's tool
+results, so the model never sees a user message between a tool call and its
+result.
 
 The call returns after delivery to Temporal. Observe completion through events,
 projections, or your application's event API rather than holding the request

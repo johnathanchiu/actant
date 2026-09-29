@@ -36,6 +36,10 @@ class TemporalRuntimeConfig:
     # How long a workflow may remain durably suspended for an external
     # tool resolution. The workflow consumes no worker compute while waiting.
     external_resolution_timeout_seconds: int = 7 * 24 * 60 * 60  # 7 days
+    # Hand a message sent to a running thread to the model on the run's next
+    # turn rather than at the next run. Copied into ``ThreadInput`` when a
+    # thread starts, so it applies to executions started after it changes.
+    interleave_inbox: bool = False
 
 
 # === Names ===
@@ -148,6 +152,11 @@ class ThreadInput:
     # Thread-level workflow state that must survive continue-as-new. The
     # per-agent-run turn budget intentionally does not carry forward.
     turn_count_total: int = 0
+    # Deliver messages that arrive mid-run on the run's next turn, after the
+    # previous turn's tool results, instead of holding them for the next run.
+    # Last and defaulted, like every field after carry_inbox: a history
+    # recorded before it existed decodes to False and replays the old path.
+    interleave_inbox: bool = False
 
 
 # === Activity I/O ===
@@ -187,7 +196,8 @@ class RunTurnInput:
     turn_id: str
     turn_index: int
     # Inbox messages to apply before the turn. Only non-empty on the first
-    # turn of a run; subsequent turns of the same run pass [].
+    # turn of a run, unless the thread sets ``interleave_inbox``: then any
+    # turn carries whatever arrived since the previous one.
     new_messages: list[InboundMessage] = field(default_factory=list)
     # How many text-only turns this run has already answered with a
     # reminder. Only meaningful for ``completion="terminal"`` agents.
