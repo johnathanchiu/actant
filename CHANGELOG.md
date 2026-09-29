@@ -6,7 +6,7 @@ affect users.
 
 ## Unreleased
 
-## 0.21.3
+## 0.22.0
 
 - `TemporalRuntimeConfig(interleave_inbox=True)` (and `ThreadInput.interleave_inbox`) hands a
   message sent to a running thread to the model on the run's next turn, after the previous
