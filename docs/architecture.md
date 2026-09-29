@@ -103,6 +103,8 @@ while True:
 
     turns_remaining = max_turns_per_run
     while turns_remaining > 0:
+        if interleave_inbox:
+            new_messages += drain_inbox()
         turn = await run_turn(new_messages)
         new_messages = []
         turns_remaining -= 1

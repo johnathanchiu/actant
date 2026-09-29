@@ -9,7 +9,9 @@ The workflow is a thin orchestrator. It:
 
 1. Receives ``inbound`` signals (user messages) into an in-memory inbox.
 2. For each agent run: drains the inbox and advances through turns until the model
-   stops emitting tool_calls or the turn budget is exhausted.
+   stops emitting tool_calls or the turn budget is exhausted. With
+   ``interleave_inbox`` it also drains before each later turn, so a message
+   sent mid-run reaches the model on the next turn.
 3. For each turn's tool_calls: admits every tool, then executes EXECUTE
    tools and durably suspends AWAIT_HUMAN tools until a person answers.
 4. Finalizes each tool group via ``finalize_tool_group`` (writes the
@@ -215,6 +217,13 @@ class AgentThreadWorkflow:
         text_only_turns = 0
 
         while turns_remaining > 0 and not self._cancelled:
+            if payload.interleave_inbox and self._inbox:
+                # Messages that arrived while the last turn's tools ran. The
+                # previous group is finalized by now, so run_turn appends
+                # them after its tool results and ahead of this model call.
+                # Without the flag this branch is never taken, and a history
+                # recorded before the flag existed replays unchanged.
+                new_messages = [*new_messages, *self._drain_inbox()]
             turn_id = workflow.uuid4().hex
             turn_index = self._turn_count_total + 1
 
@@ -458,6 +467,7 @@ class AgentThreadWorkflow:
                 carry_inbox=list(self._inbox),
                 history_size_threshold=payload.history_size_threshold,
                 turn_count_total=self._turn_count_total,
+                interleave_inbox=payload.interleave_inbox,
             )
         )
 
