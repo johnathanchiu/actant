@@ -65,5 +65,7 @@ class ThreadActivities:
         thread.active_run_id = None
         thread.status = ThreadStatus.CANCELLED
         await self.context.stores.threads.update(thread)
+        if self.context.cancel_children is not None:
+            await self.context.cancel_children(payload.thread_id)
         if self.context.sandboxes is not None:
             await self.context.sandboxes.close(payload.agent_id, payload.thread_id, forget=True)

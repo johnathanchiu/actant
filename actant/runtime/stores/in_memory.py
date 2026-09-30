@@ -72,6 +72,13 @@ class InMemoryThreadStore:
             thread.sandbox_id = sandbox_id
         return thread.sandbox_id
 
+    async def list_children(self, thread_id: str) -> list[AgentThread]:
+        return [
+            replace(thread)
+            for thread in self._threads.values()
+            if thread.parent_thread_id == thread_id
+        ]
+
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]:
         return [replace(t) for (a, _id), t in self._threads.items() if a == agent_id]
 

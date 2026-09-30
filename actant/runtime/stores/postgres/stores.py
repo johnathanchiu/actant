@@ -94,6 +94,13 @@ class SQLAlchemyThreadStore:
                 row = await session.execute(select(ActantThreadModel.sandbox_id).where(*where))
                 return row.scalar_one()
 
+    async def list_children(self, thread_id: str) -> list[AgentThread]:
+        async with self.session_factory() as session:
+            rows = await session.scalars(
+                select(ActantThreadModel).where(ActantThreadModel.parent_thread_id == thread_id)
+            )
+            return [thread_from_row(row) for row in rows]
+
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]:
         async with self.session_factory() as session:
             rows = await session.execute(

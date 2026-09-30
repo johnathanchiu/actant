@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.26.1
+
+- Cancelling a thread also cancels its persisted descendants across agents and workers.
+  Cancellation cleanup retries the cascade; finished descendants keep their status.
+  Custom thread stores must implement `list_children(thread_id)`. Parent thread IDs
+  must uniquely identify lineage across agents. Concurrent creation of new children
+  is not serialized with cancellation.
+
 ## 0.26.0
 
 - `AgentRuntime.run_worker` passes `actant` through Temporal's workflow sandbox. The sandbox
