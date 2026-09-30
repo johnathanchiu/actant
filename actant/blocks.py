@@ -58,9 +58,28 @@ class UrlImageBlock(_Block):
     media_type: str
 
 
-Block = Annotated[TextBlock | AssetBlock | InlineImageBlock, Field(discriminator="type")]
+class CompactionBlock(_Block):
+    """The content of a compaction message (``Message.kind == "compaction"``): the
+    summary that replaces the messages before it in the model's view, and the
+    message ids of the earlier messages kept verbatim. Never sent to a
+    provider; the view builder renders it as the summary's text."""
+
+    type: Literal["compaction"] = "compaction"
+    summary: str
+    kept: list[str] = Field(default_factory=list)
+    reason: str
+    tokens_before: int
+    tokens_after: int
+    images_before: int
+    images_after: int
+
+
+Block = Annotated[
+    TextBlock | AssetBlock | InlineImageBlock | CompactionBlock, Field(discriminator="type")
+]
 PromptBlock = Annotated[
-    TextBlock | AssetBlock | InlineImageBlock | UrlImageBlock, Field(discriminator="type")
+    TextBlock | AssetBlock | InlineImageBlock | UrlImageBlock | CompactionBlock,
+    Field(discriminator="type"),
 ]
 
 #: Validates and dumps stored content: ``BLOCKS.validate_python(rows)``,

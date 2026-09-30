@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import replace
 
 from actant.runtime.temporal.activities.runs import RunActivities
 from actant.runtime.temporal.activities.tools import ToolActivities
 from actant.runtime.temporal.types import (
     AdmitDecision,
     AdmitInput,
+    CompactContextInput,
+    CompactionConfig,
     ExecuteInput,
     FinalizeRunInput,
     InboundMessage,
@@ -99,18 +102,31 @@ class LocalThreadRuntime:
 
         while turns_remaining > 0:
             turn_count += 1
+            turn_input = RunTurnInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                turn_id=uuid.uuid4().hex,
+                turn_index=turn_count,
+                new_messages=new_messages,
+                text_only_turns=text_only_turns,
+                context_compaction=payload.context_compaction,
+            )
             try:
-                turn = await self._runs.run_turn(
-                    RunTurnInput(
-                        agent_id=payload.agent_id,
-                        thread_id=payload.thread_id,
-                        run_id=run_id,
-                        turn_id=uuid.uuid4().hex,
-                        turn_index=turn_count,
-                        new_messages=new_messages,
-                        text_only_turns=text_only_turns,
+                turn = await self._runs.run_turn(turn_input)
+                if turn.compaction is not None:  # compact, then the same turn again
+                    await self._runs.compact_context(
+                        CompactContextInput(
+                            agent_id=payload.agent_id,
+                            thread_id=payload.thread_id,
+                            run_id=run_id,
+                            turn_id=turn_input.turn_id,
+                            turn_index=turn_count,
+                            trigger=turn.compaction,
+                            config=payload.context_compaction or CompactionConfig(),
+                        )
                     )
-                )
+                    turn = await self._runs.run_turn(replace(turn_input, compacted=True))
             except Exception as error:  # the workflow fails the run here too
                 stop_reason = str(error.__cause__ or error)
                 outcome = RunOutcome.FAILED

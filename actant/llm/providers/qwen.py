@@ -13,7 +13,7 @@ from openai.types.chat.completion_create_params import CompletionCreateParamsBas
 
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
-from actant.blocks import AssetBlock, PromptBlock, TextBlock
+from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
 from actant.llm.providers._shared import (
     WireBlock,
     convert_image_source,
@@ -131,6 +131,7 @@ class QwenProvider:
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
     ) -> Message:
         if allowed_tools:
             raise NotImplementedError("allowed_tools is not implemented for Qwen")
@@ -138,8 +139,11 @@ class QwenProvider:
         thought = ""
         tool_call_state: dict[int, dict[str, str]] = {}
 
+        params = self._request_params(system, messages, tools)
+        if max_output_tokens is not None:
+            params["max_tokens"] = max_output_tokens
         stream = await self.client.chat.completions.create(
-            **self._request_params(system, messages, tools),
+            **params,
             stream=True,
             extra_body={"enable_thinking": True},
         )
@@ -207,7 +211,7 @@ def _user_content(content: str | list[PromptBlock] | None) -> object:
     for block in content:
         if isinstance(block, TextBlock):
             parts.append({"type": "text", "text": block.text})
-        elif isinstance(block, AssetBlock):
+        elif isinstance(block, AssetBlock | CompactionBlock):
             unresolved(block)
         else:
             image = convert_image_source(block)

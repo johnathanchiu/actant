@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from actant.blocks import Block
+from actant.blocks import Block, CompactionBlock
 from actant.agents import Agent
 from actant.core import JSONObject
 from actant.llm.messages import Message
@@ -82,7 +82,15 @@ class MessageStore(Protocol):
         agent_id: str,
         thread_id: str,
         content: str | list[Block],
+        *,
+        tag: str | None = None,
     ) -> MessageRecord: ...
+
+    async def append_compaction(
+        self, agent_id: str, thread_id: str, block: CompactionBlock
+    ) -> MessageRecord:
+        """Append a compaction row: ``kind="compaction"``, content ``[block]``."""
+        ...
 
     async def append_assistant(
         self, agent_id: str, thread_id: str, turn_id: str, message: Message
@@ -116,7 +124,15 @@ class MessageStore(Protocol):
         result: object,
     ) -> MessageRecord: ...
 
-    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[Message]: ...
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[Message]:
+        """The full transcript, compaction rows included: for viewing and replay."""
+        ...
+
+    async def list_for_model(self, agent_id: str, thread_id: str) -> list[Message]:
+        """What the model's view is built from: the latest compaction row and every
+        row after it, plus the rows it keeps, in transcript order. A thread that never
+        compacted returns every row."""
+        ...
 
 
 class ToolCallStore(Protocol):

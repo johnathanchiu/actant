@@ -22,7 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from actant.assets import AssetReference
 from actant.cli import invalid_block_rows
-from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
+from actant.blocks import (
+    AssetBlock,
+    Base64Source,
+    CompactionBlock,
+    InlineImageBlock,
+    TextBlock,
+    UrlImageBlock,
+)
 from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA, SQLAlchemyRuntimeStores
@@ -252,3 +259,41 @@ async def test_terminal_tool_transition_is_atomic(stores: SQLAlchemyRuntimeStore
     # Even a delayed admission cannot reopen the terminal call.
     assert not await stores.tool_calls.update_status("race", ToolCallStatus.WAITING)
     assert (await stores.tool_calls.get("race")).result == {"winner": winner}
+
+
+async def test_list_for_model_stops_at_the_latest_compaction_row_and_adds_its_kept_rows(
+    stores: SQLAlchemyRuntimeStores,
+) -> None:
+    def compaction(summary: str, kept: list[str]) -> CompactionBlock:
+        return CompactionBlock(
+            summary=summary,
+            kept=kept,
+            reason="tokens",
+            tokens_before=950,
+            tokens_after=40,
+            images_before=0,
+            images_after=0,
+        )
+
+    messages = stores.messages
+    brief = await messages.append_user("a", "t", "the brief", tag="brief")
+    call = ToolCall(id="c1", function=ToolCallFunction("note", "{}"))
+    await messages.append_assistant("a", "t", "turn", Message(role="assistant", tool_calls=[call]))
+    note = await messages.append_tool_result("a", "t", "turn", "c1", "note", {"ok": True})
+    await messages.append_compaction("a", "t", compaction("one", [brief.id]))
+    await messages.append_user("a", "t", "second")
+    last = await messages.append_compaction("a", "t", compaction("two", [brief.id, note.id]))
+    third = await messages.append_user("a", "t", "third")
+
+    rows = await messages.list_for_model("a", "t")
+    assert [m.id for m in rows] == [brief.id, note.id, last.id, third.id]
+    assert [(m.kind, m.tag) for m in rows] == [
+        ("message", "brief"),
+        ("message", "tool:note"),
+        ("compaction", None),
+        ("message", None),
+    ]
+    assert rows[2].content == [compaction("two", [brief.id, note.id])]
+    full = await messages.list_for_thread("a", "t")
+    assert [m.kind for m in full].count("compaction") == 2 and len(full) == 7
+    assert await messages.list_for_model("a", "other") == []

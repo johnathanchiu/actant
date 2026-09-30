@@ -27,6 +27,8 @@ class ThreadRuntime(Protocol):
         agent_id: str,
         thread_id: str,
         content: str | list[Block],
+        *,
+        tag: str | None = None,
     ) -> str: ...
 
     async def resolve_tool_call(
@@ -53,9 +55,10 @@ class ThreadHandle:
     agent_id: str
     thread_id: str
 
-    async def send(self, content: str | list[Block]) -> str:
-        """Durably submit a user message and return the Temporal workflow id."""
-        return await self.runtime.send_message(self.agent_id, self.thread_id, content)
+    async def send(self, content: str | list[Block], *, tag: str | None = None) -> str:
+        """Durably submit a user message and return the Temporal workflow id. ``tag``
+        is stored on it, for ``CompactionConfig.keep``."""
+        return await self.runtime.send_message(self.agent_id, self.thread_id, content, tag=tag)
 
     async def resolve(
         self,

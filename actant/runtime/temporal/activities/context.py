@@ -39,6 +39,7 @@ class ActivityContext:
         turn_gate: TurnGate | None = None,
         sandboxes: SandboxRegistry | None = None,
         artifact_sink: ArtifactSink | None = None,
+        compaction_instructions: str = "",
     ) -> None:
         self.stores = stores
         self.resolve_agent = resolve_agent
@@ -49,6 +50,8 @@ class ActivityContext:
         self.turn_gate = turn_gate
         self.sandboxes = sandboxes
         self.artifact_sink = artifact_sink
+        # Appended to the built-in prompt of context compaction's summary call.
+        self.compaction_instructions = compaction_instructions
 
     async def agent(self, agent_id: str, thread_id: str) -> AgentDefinition:
         if self.resolve_agent is None:

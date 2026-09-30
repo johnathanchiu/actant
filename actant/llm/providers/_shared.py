@@ -12,7 +12,14 @@ import uuid
 from collections.abc import Sequence
 from typing import NoReturn
 
-from actant.blocks import AssetBlock, InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
+from actant.blocks import (
+    AssetBlock,
+    CompactionBlock,
+    InlineImageBlock,
+    PromptBlock,
+    TextBlock,
+    UrlImageBlock,
+)
 from actant.llm.messages import Message, ToolCall
 
 ToolSchema = dict[str, object]
@@ -48,7 +55,9 @@ def normalize_json_schema(schema: object) -> object:
     return result
 
 
-def unresolved(block: AssetBlock) -> NoReturn:
+def unresolved(block: AssetBlock | CompactionBlock) -> NoReturn:
+    if isinstance(block, CompactionBlock):
+        raise ValueError("a compaction message reached a provider: build the model's view first")
     raise ValueError(
         f"asset {block.storage_key!r} reached a provider unresolved: run prepare_messages first"
     )
@@ -76,7 +85,7 @@ def split_tool_content(
     for block in content:
         if isinstance(block, TextBlock):
             text_parts.append(block.text)
-        elif isinstance(block, AssetBlock):
+        elif isinstance(block, AssetBlock | CompactionBlock):
             unresolved(block)
         else:
             image_parts.append(convert_image_source(block))

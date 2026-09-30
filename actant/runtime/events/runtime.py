@@ -1,7 +1,7 @@
 """One activity-scoped publisher for lifecycle and provider streaming events."""
 
 from typing import cast
-from actant.blocks import BLOCKS, Block
+from actant.blocks import BLOCKS, Block, CompactionBlock
 from actant.core import JSONObject, JSONValue
 from actant.llm.messages import Message
 from actant.tools.base import ToolResult
@@ -98,6 +98,12 @@ class RuntimeEvents(StreamListener):
         await self.emit(
             "complete",
             {"success": success, "reason": reason, "message": message},
+        )
+
+    async def on_context_compacted(self, message_id: str, block: CompactionBlock) -> None:
+        await self.emit(
+            "context_compacted",
+            {"message_id": message_id, **block.model_dump(mode="json", exclude={"type"})},
         )
 
     async def on_error(self, error: Exception) -> None:

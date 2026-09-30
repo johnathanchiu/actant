@@ -271,6 +271,7 @@ class GeminiProvider:
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
     ) -> Message:
         if allowed_tools:
             raise NotImplementedError("allowed_tools is not implemented for Gemini")
@@ -281,7 +282,9 @@ class GeminiProvider:
         stream = await self.client.aio.models.generate_content_stream(
             model=self.model_id,
             contents=self._build_contents(messages),
-            config=self._build_config(system, tools),
+            config=self._build_config(system, tools).model_copy(
+                update={"max_output_tokens": max_output_tokens}
+            ),
         )
         async for chunk in stream:
             if listener is not None and listener.cancel_requested():

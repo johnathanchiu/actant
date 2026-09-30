@@ -299,7 +299,10 @@ For each run, `AgentThreadWorkflow`:
 A later message starts a new execution with the same logical thread ID and persisted history.
 
 At a run boundary, sufficiently long workflow histories use Temporal
-continue-as-new. Queued inbox messages are carried into the new execution.
+continue-as-new (`history_size_threshold`). Queued inbox messages are carried
+into the new execution. This rotation concerns Temporal's event history only;
+the model's request is built from the stores and never changes because of it.
+Reducing what the model sees is [context compaction](#context-compaction).
 
 ## Hooks and streaming
 
@@ -362,6 +365,66 @@ and `on_complete(reason=...)` receive it. The next message starts a new run,
 which the gate sees again. The gate is worker configuration and never enters
 workflow payloads. An exception it raises fails the turn, and the run finalizes
 `failed`.
+
+## Context compaction
+
+Actant never truncates or rewrites a thread's context. The one reducer is a
+summarizing compaction, and it is off unless a thread opts in:
+
+```python
+from actant.runtime import AgentRuntime, CompactionConfig, TemporalRuntimeConfig
+
+config = TemporalRuntimeConfig(
+    context_compaction=CompactionConfig(
+        context_window_tokens=1_000_000,
+        max_images_per_request=50,  # Azure OpenAI rejects a request with more
+        threshold=0.9,
+        keep=["brief", "tool:read_checklist"],
+    )
+)
+runtime = AgentRuntime(client=client, stores=stores, config=config, resolve_agent=resolve_agent)
+await runtime.thread(agent_id, thread_id).send(brief, tag="brief")
+```
+
+Before each model call, the turn activity measures the request it is about to
+send: the last turn's reported input and output tokens plus an estimate of what
+was added since, and an exact count of its images. When it would pass
+`threshold` of `context_window_tokens`, or carry more than
+`max_images_per_request` images, nothing is sent or stored. The workflow runs
+`compact_context`: one call on the agent's own model, with no tools, over the
+context up to the last model reply, answering the built-in prompt (the goal,
+decisions and why, what was verified, every open item, next steps, key facts,
+and an index of notable images by id). That call carries no more than the last
+request did, so it is under the image limit, and its output is capped to the
+window's remaining margin. If it fails, the run fails; nothing is dropped.
+`compaction_instructions` on `AgentRuntime` appends to the prompt.
+
+The summary is stored as a compaction row in the transcript: a message with
+`kind="compaction"` whose content is one `CompactionBlock` (the summary, the
+message ids of the kept messages, the reason, and tokens and images before and
+after). A `context_compacted` event carries the same. The turn then runs again,
+and its new messages are stored after that row. From then on the model sees:
+
+1. the system prompt;
+2. the summary, as text;
+3. the kept messages, in transcript order: for each tag in `keep`, the latest
+   message with that tag, and the turn that was still open (an assistant tool
+   call with its results, never split);
+4. every message after the compaction row.
+
+Tool results are tagged `tool:<tool name>`; an app tags what it sends with
+`send(..., tag=...)`. A kept tool result whose call the summary replaced is
+sent as a user message labelled as retained, its content verbatim: a tool
+result without its call is rejected by providers, and replaying the old call
+out of place (with its siblings and reasoning items) is not safe either.
+
+`messages.list_for_model` reads exactly those rows: the latest compaction row,
+then the rows at or after it plus the kept ones; `list_for_thread` remains the full transcript,
+compaction rows included. Images before the row are not sent again;
+`RecallImageTool(stores.messages)` gives the agent `recall_image(id)` to attach
+one again from the asset store by the id the summary lists. Limits left `None`
+fall back to attributes of the same names on the model client (`OpenAIProvider`
+declares 50 images on an `AsyncAzureOpenAI` client and 1,500 otherwise).
 
 ## Production checklist
 

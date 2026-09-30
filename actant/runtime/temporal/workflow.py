@@ -16,6 +16,10 @@ The workflow is a thin orchestrator. It:
    tools and durably suspends AWAIT_HUMAN tools until a person answers.
 4. Finalizes each tool group via ``finalize_tool_group`` (writes the
    tool_result messages — the transcript invariant lives there).
+5. With ``context_compaction``, compacts the model's context when a turn
+   reports that its request would cross a limit, then runs that turn again.
+   This is unrelated to rotating Temporal's event history
+   (``history_size_threshold``), which never changes what the model sees.
 
 Activities report outcomes. Signals report external events. Only this workflow
 advances the agent run. Deferred waits use ``workflow.wait_condition``: no
@@ -43,6 +47,8 @@ from actant.runtime.temporal.types import (
     AdmitInput,
     AdmitOutcome,
     ApplyThreadCancellationInput,
+    CompactContextInput,
+    CompactionConfig,
     DeferredToolResolution,
     ExecuteInput,
     ExecuteOutcome,
@@ -60,6 +66,7 @@ from actant.runtime.temporal.types import (
 )
 
 _RUN_TURN_TIMEOUT = timedelta(minutes=10)
+_COMPACT_TIMEOUT = timedelta(minutes=10)
 _TOOL_TIMEOUT = timedelta(minutes=10)
 _TOOL_HEARTBEAT_TIMEOUT = timedelta(minutes=2)
 _FINALIZE_TIMEOUT = timedelta(seconds=60)
@@ -153,7 +160,7 @@ class AgentThreadWorkflow:
                 # working, so the thread keeps going without ever going idle.
                 # That is the one case where history still accumulates, and
                 # the only reason rotation survives threads that end.
-                self._compact_history_if_needed(payload)
+                self._rotate_history_if_needed(payload)
         except asyncio.CancelledError:
             await self._record_cancellation(payload)
             raise
@@ -227,21 +234,53 @@ class AgentThreadWorkflow:
             turn_id = workflow.uuid4().hex
             turn_index = self._turn_count_total + 1
 
+            turn_input = RunTurnInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                turn_index=turn_index,
+                new_messages=new_messages,
+                text_only_turns=text_only_turns,
+                context_compaction=payload.context_compaction,
+            )
             try:
                 turn = await workflow.execute_activity_method(
                     RunActivities.run_turn,
-                    RunTurnInput(
-                        agent_id=payload.agent_id,
-                        thread_id=payload.thread_id,
-                        run_id=run_id,
-                        turn_id=turn_id,
-                        turn_index=turn_index,
-                        new_messages=new_messages,
-                        text_only_turns=text_only_turns,
-                    ),
+                    turn_input,
                     start_to_close_timeout=_RUN_TURN_TIMEOUT,
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
+                if turn.compaction is not None:
+                    # The request would have crossed a context limit and
+                    # nothing was sent. Decided by the activity alone: every
+                    # history recorded without compaction has no such result
+                    # and never reaches this branch.
+                    await workflow.execute_activity_method(
+                        RunActivities.compact_context,
+                        CompactContextInput(
+                            agent_id=payload.agent_id,
+                            thread_id=payload.thread_id,
+                            run_id=run_id,
+                            turn_id=turn_id,
+                            turn_index=turn_index,
+                            trigger=turn.compaction,
+                            config=payload.context_compaction or CompactionConfig(),
+                        ),
+                        start_to_close_timeout=_COMPACT_TIMEOUT,
+                        retry_policy=RetryPolicy(maximum_attempts=1),
+                    )
+                    # The same turn, from the fresh context; it may not compact
+                    # again. Its new messages were not stored, so they land after
+                    # the compaction row, with anything that arrived meanwhile.
+                    if payload.interleave_inbox and self._inbox:
+                        new_messages = [*new_messages, *self._drain_inbox()]
+                    turn = await workflow.execute_activity_method(
+                        RunActivities.run_turn,
+                        replace(turn_input, new_messages=new_messages, compacted=True),
+                        start_to_close_timeout=_RUN_TURN_TIMEOUT,
+                        retry_policy=RetryPolicy(maximum_attempts=1),
+                    )
             except Exception as error:
                 self._stop_reason = str(error.__cause__ or error)
                 # RUN_TURN failed (LLM error, cancellation, etc.).
@@ -454,8 +493,12 @@ class AgentThreadWorkflow:
             )
         )
 
-    def _compact_history_if_needed(self, payload: ThreadInput) -> None:
-        """Rotate Temporal history between agent runs, preserving thread state."""
+    def _rotate_history_if_needed(self, payload: ThreadInput) -> None:
+        """Rotate Temporal's event history between agent runs, preserving thread state.
+
+        Not model-context compaction: the model's request is built from the
+        stores, so rotating never changes what the model sees.
+        """
         if workflow.info().get_current_history_length() <= _history_rotation_threshold(payload):
             return
         workflow.continue_as_new(
@@ -468,6 +511,7 @@ class AgentThreadWorkflow:
                 history_size_threshold=payload.history_size_threshold,
                 turn_count_total=self._turn_count_total,
                 interleave_inbox=payload.interleave_inbox,
+                context_compaction=payload.context_compaction,
             )
         )
 

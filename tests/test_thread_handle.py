@@ -39,7 +39,7 @@ async def test_thread_handle_scopes_runtime_commands() -> None:
     await handle.cancel()
 
     assert workflow_id == "workflow-id"
-    runtime.send_message.assert_awaited_once_with("assistant", "thread-id", "Hello")
+    runtime.send_message.assert_awaited_once_with("assistant", "thread-id", "Hello", tag=None)
     runtime.resolve_tool_call.assert_awaited_once_with(
         "assistant",
         "thread-id",

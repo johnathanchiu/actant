@@ -18,7 +18,7 @@ from anthropic.types.thinking_config_param import ThinkingConfigParam
 from anthropic.types.tool_union_param import ToolUnionParam
 
 from actant.core import JSONObject
-from actant.blocks import AssetBlock, PromptBlock, UrlImageBlock
+from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, UrlImageBlock
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers._shared import (
@@ -199,12 +199,22 @@ class AnthropicProvider:
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
     ) -> Message:
         if allowed_tools:
             raise NotImplementedError(
                 "Anthropic does not support allowed_tools with a stable full tool list"
             )
         params = self._request_params(system, messages, tools)
+        if max_output_tokens is not None:
+            params["max_tokens"] = max_output_tokens
+            thinking = params.get("thinking")
+            if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+                # The thinking budget must stay below max_tokens.
+                budget = min(int(thinking.get("budget_tokens", 0)), max_output_tokens // 2)
+                params["thinking"] = cast(
+                    ThinkingConfigParam, {"type": "enabled", "budget_tokens": budget}
+                )
         if self._rate_limiter is None:
             message, _ = await self._stream(params, listener)
             return message
@@ -419,7 +429,7 @@ def _content(content: str | list[PromptBlock] | None) -> str | list[WireBlock]:
         return content or ""
     blocks: list[WireBlock] = []
     for block in content:
-        if isinstance(block, AssetBlock):
+        if isinstance(block, AssetBlock | CompactionBlock):
             unresolved(block)
         elif isinstance(block, UrlImageBlock):
             blocks.append({"type": "image", "source": {"type": "url", "url": block.url}})

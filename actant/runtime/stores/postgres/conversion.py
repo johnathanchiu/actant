@@ -55,6 +55,9 @@ def message_from_header(row: ActantMessageModel) -> Message:
     def _with_usage(message: Message) -> Message:
         message.input_tokens = row.input_tokens
         message.output_tokens = row.output_tokens
+        message.kind = "compaction" if row.kind == "compaction" else "message"
+        message.tag = row.tag
+        message.id = row.message_id
         return message
 
     if role == "tool":

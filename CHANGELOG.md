@@ -6,6 +6,31 @@ affect users.
 
 ## Unreleased
 
+## 0.23.0
+
+- Model-context compaction, off by default: `TemporalRuntimeConfig(context_compaction=
+  CompactionConfig(context_window_tokens, max_images_per_request, threshold=0.9, keep=[...]))`,
+  copied into `ThreadInput.context_compaction`. Before each model call the turn measures its
+  request (the last turn's reported usage plus an estimate of what was added since; images
+  counted exactly). When it would pass the threshold or the image limit, nothing is sent: a
+  new `compact_context` activity makes one call on the agent's model, with no tools and output
+  capped to the window's margin, and appends a compaction row (`Message.kind="compaction"`,
+  one `CompactionBlock`: summary, kept message ids, reason, tokens and images before and after)
+  plus a `context_compacted` event. The model then sees system prompt, summary, kept messages
+  (the latest of each tag in `keep`, and the open tool turn), and the rows after the
+  compaction row. No stored message is truncated, rewritten or deleted; a failed summary call
+  fails the run. Threads without the setting build their requests and replay as before.
+- Messages carry `kind`, `tag`, and `id` (the stored message id, set on read). Tool results are tagged `tool:<name>`; `send_message`,
+  `ThreadHandle.send` and `InboundMessage` take `tag`. `MessageStore` gains `append_compaction`
+  and `list_for_model` (reads from the latest compaction row), and `append_user` takes
+  `tag`: breaking for custom stores.
+- `LLMClient.complete` takes `max_output_tokens`, which every provider honours; breaking for
+  custom clients. `OpenAIProvider` takes `context_window_tokens` and `max_images_per_request`
+  (50 for an `AsyncAzureOpenAI` client, else 1,500). `RecallImageTool` (`recall_image(id)`)
+  attaches a stored image again after compaction.
+- Migration `1326e6b76924` adds `actant_messages.kind` (default `message`), `.tag`, and an
+  index for `list_for_model` (run `alembic upgrade actant@head`).
+
 ## 0.22.0
 
 - `TemporalRuntimeConfig(interleave_inbox=True)` (and `ThreadInput.interleave_inbox`) hands a

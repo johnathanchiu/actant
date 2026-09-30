@@ -21,6 +21,7 @@ class TemporalRuntimeActivities:
         return [
             self.runs.start_run,
             self.runs.run_turn,
+            self.runs.compact_context,
             self.tools.admit_tool,
             self.tools.execute_tool,
             self.tools.resolve_tool,

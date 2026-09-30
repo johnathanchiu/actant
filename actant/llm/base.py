@@ -25,4 +25,7 @@ class LLMClient(Protocol):
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        # Caps this call's output below the provider's default; context
+        # compaction sets it so a summary fits the window's remaining margin.
+        max_output_tokens: int | None = None,
     ) -> Message: ...

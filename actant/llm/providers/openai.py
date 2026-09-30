@@ -21,7 +21,7 @@ from openai.types.responses.response_input_param import ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params.reasoning import Reasoning
 
-from actant.blocks import AssetBlock, PromptBlock, TextBlock
+from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
 from actant.core import JSONObject
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
@@ -70,7 +70,7 @@ def content_to_openai_user_parts(
     for block in content:
         if isinstance(block, TextBlock):
             parts.append({"type": "input_text", "text": block.text})
-        elif isinstance(block, AssetBlock):
+        elif isinstance(block, AssetBlock | CompactionBlock):
             unresolved(block)
         else:
             parts.append(convert_image_source(block))
@@ -102,8 +102,18 @@ class OpenAIProvider:
         reasoning_idle_s: float = 180.0,
         turn_s: float = 240.0,
         attempts: int = 3,
+        context_window_tokens: int | None = None,
+        max_images_per_request: int | None = None,
     ) -> None:
         self.model_id = model_id
+        # Limits for context compaction (``CompactionConfig``). The window
+        # depends on the model and deployment, so it is never guessed. Images
+        # per request are documented per service: Azure OpenAI rejects more
+        # than 50, OpenAI accepts 1,500.
+        self.context_window_tokens = context_window_tokens
+        self.max_images_per_request = max_images_per_request or (
+            50 if isinstance(client, openai.AsyncAzureOpenAI) else 1_500
+        )
         self.thinking_level = thinking_level
         # This provider owns retries; SDK retries would stack under each attempt.
         self.client = (
@@ -245,11 +255,14 @@ class OpenAIProvider:
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
     ) -> Message:
         # One budget includes every retry, backoff, and rate-limiter wait.
         # An outer activity deadline must not silently multiply by attempts.
         async with asyncio.timeout(self.turn_s):
-            return await self._complete(system, messages, tools, listener, allowed_tools)
+            return await self._complete(
+                system, messages, tools, listener, allowed_tools, max_output_tokens
+            )
 
     async def _complete(
         self,
@@ -258,8 +271,11 @@ class OpenAIProvider:
         tools: list[dict],
         listener: "StreamListener | None",
         allowed_tools: tuple[str, ...],
+        max_output_tokens: int | None = None,
     ) -> Message:
         params = self._request_params(system, messages, tools)
+        if max_output_tokens is not None:
+            params["max_output_tokens"] = max_output_tokens
         if allowed_tools:
             params["tool_choice"] = {
                 "type": "allowed_tools",

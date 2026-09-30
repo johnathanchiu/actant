@@ -64,6 +64,7 @@ class AgentRuntime:
         turn_gate: TurnGate | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
+        compaction_instructions: str = "",
     ) -> None:
         self.client = client
         self.stores = stores
@@ -79,6 +80,7 @@ class AgentRuntime:
             turn_gate=turn_gate,
             run_completion_handler=run_completion_handler,
             message_preprocessor=message_preprocessor,
+            compaction_instructions=compaction_instructions,
         )
         self._running = False
         self._worker: temporalio.worker.Worker | None = None
@@ -131,6 +133,7 @@ class AgentRuntime:
         content: str | list[Block],
         *,
         parent_thread_id: str | None = None,
+        tag: str | None = None,
     ) -> str:
         """Signal the thread workflow with a new inbound message.
 
@@ -147,7 +150,8 @@ class AgentRuntime:
         msg = InboundMessage(
             content=BLOCKS.dump_python(content, mode="json")
             if isinstance(content, list)
-            else content
+            else content,
+            tag=tag,
         )
         agent_max_turns = self.config.max_turns_per_run
         thread_input = ThreadInput(
@@ -158,6 +162,7 @@ class AgentRuntime:
             history_size_threshold=self.config.history_size_threshold,
             parent_thread_id=parent_thread_id,
             interleave_inbox=self.config.interleave_inbox,
+            context_compaction=self.config.context_compaction,
         )
         await client.start_workflow(
             AgentThreadWorkflow.run,

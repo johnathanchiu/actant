@@ -7,14 +7,15 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import literal, or_, select, tuple_, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from actant.blocks import Block
+from actant.blocks import Block, CompactionBlock
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
+from actant.runtime.compaction import compaction_of
 from actant.runtime.session import message_to_parts, tool_result_content
 from actant.runtime.stores.postgres.conversion import (
     message_from_header,
@@ -192,11 +193,19 @@ class SQLAlchemyMessageStore:
         agent_id: str,
         thread_id: str,
         content: str | list[Block],
+        *,
+        tag: str | None = None,
     ) -> MessageRecord:
         user = Message(
-            role="user", content=list(content) if isinstance(content, list) else content
+            role="user", content=list(content) if isinstance(content, list) else content, tag=tag
         )
         return await self._append(agent_id, thread_id, None, user)
+
+    async def append_compaction(
+        self, agent_id: str, thread_id: str, block: CompactionBlock
+    ) -> MessageRecord:
+        row = Message(role="user", content=[block], kind="compaction")
+        return await self._append(agent_id, thread_id, None, row)
 
     async def append_assistant(
         self, agent_id: str, thread_id: str, turn_id: str, message: Message
@@ -311,6 +320,7 @@ class SQLAlchemyMessageStore:
                         thread_id=thread_id,
                         turn_id=turn_id,
                         role="tool",
+                        tag=f"tool:{name}",
                     )
                 )
                 session.add(tool_result_part_row(message_id, tool_call_id, name, result))
@@ -341,6 +351,40 @@ class SQLAlchemyMessageStore:
             ).all()
             return [message_from_header(row) for row in rows]
 
+    async def list_for_model(self, agent_id: str, thread_id: str) -> list[Message]:
+        M = ActantMessageModel
+        thread = (M.agent_id == agent_id, M.thread_id == thread_id)
+        async with self.session_factory() as session:
+            latest = (
+                await session.scalars(
+                    select(M)
+                    .options(selectinload(M.parts))
+                    .where(*thread, M.kind == "compaction")
+                    .order_by(M.created_at.desc(), M.message_id.desc())
+                    .limit(1)
+                )
+            ).first()
+            if latest is None:
+                return await self.list_for_thread(agent_id, thread_id)
+            block = compaction_of(message_from_header(latest))
+            kept = block.kept if block is not None else []
+            rows = (
+                await session.scalars(
+                    select(M)
+                    .options(selectinload(M.parts))
+                    .where(
+                        *thread,
+                        or_(
+                            tuple_(M.created_at, M.message_id)
+                            >= tuple_(literal(latest.created_at), literal(latest.message_id)),
+                            M.message_id.in_(kept),
+                        ),
+                    )
+                    .order_by(M.created_at, M.message_id)
+                )
+            ).all()
+            return [message_from_header(row) for row in rows]
+
     async def _append(
         self, agent_id: str, thread_id: str, turn_id: str | None, message: Message
     ) -> MessageRecord:
@@ -357,6 +401,8 @@ class SQLAlchemyMessageStore:
                         role=message.role,
                         input_tokens=message.input_tokens,
                         output_tokens=message.output_tokens,
+                        kind=message.kind,
+                        tag=message.tag,
                     )
                 )
                 for index, part in enumerate(parts):

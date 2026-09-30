@@ -100,6 +100,9 @@ class ActantMessageModel(ActantRuntimeBase):
     # not as free.
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # ``compaction`` rows mark where the model's view starts; see list_for_model.
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'message'"))
+    tag: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -108,6 +111,17 @@ class ActantMessageModel(ActantRuntimeBase):
         cascade="all, delete-orphan",
         order_by="ActantMessagePartModel.part_index",
         lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_actant_messages_thread_kind",
+            "agent_id",
+            "thread_id",
+            "kind",
+            "created_at",
+            "message_id",
+        ),
     )
 
 

@@ -13,10 +13,11 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 
-from actant.blocks import BLOCKS, Block
+from actant.blocks import BLOCKS, Block, CompactionBlock
 from actant.agents import Agent
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
+from actant.runtime.compaction import compaction_of
 from actant.runtime.session import tool_result_blocks
 from actant.runtime.types.threads import (
     AgentRun,
@@ -203,12 +204,20 @@ class InMemoryMessageStore:
         agent_id: str,
         thread_id: str,
         content: str | list[Block],
+        *,
+        tag: str | None = None,
     ) -> MessageRecord:
         if isinstance(content, list):
-            user = Message(role="user", content=list(BLOCKS.validate_python(content)))
+            user = Message(role="user", content=list(BLOCKS.validate_python(content)), tag=tag)
         else:
-            user = Message(role="user", content=content)
+            user = Message(role="user", content=content, tag=tag)
         return await self._append(agent_id, thread_id, user)
+
+    async def append_compaction(
+        self, agent_id: str, thread_id: str, block: CompactionBlock
+    ) -> MessageRecord:
+        row = Message(role="user", content=[block], kind="compaction")
+        return await self._append(agent_id, thread_id, row)
 
     async def append_assistant(
         self,
@@ -263,17 +272,28 @@ class InMemoryMessageStore:
                 content=list(blocks) if blocks else _json_text(result),
                 tool_call_id=tool_call_id,
                 name=name,
+                tag=f"tool:{name}",
             ),
         )
 
     async def list_for_thread(self, agent_id: str, thread_id: str) -> list[Message]:
         return list(self._messages.get((agent_id, thread_id), []))
 
+    async def list_for_model(self, agent_id: str, thread_id: str) -> list[Message]:
+        rows = self._messages.get((agent_id, thread_id), [])
+        start = max((i for i, m in enumerate(rows) if m.kind == "compaction"), default=None)
+        if start is None:
+            return list(rows)
+        block = compaction_of(rows[start])
+        kept = block.kept if block is not None else []
+        return [m for i, m in enumerate(rows) if i >= start or m.id in kept]
+
     async def _append(self, agent_id: str, thread_id: str, message: Message) -> MessageRecord:
-        self._messages.setdefault((agent_id, thread_id), []).append(message)
         self._counter += 1
+        message.id = f"msg_{self._counter}"
+        self._messages.setdefault((agent_id, thread_id), []).append(message)
         return MessageRecord(
-            id=f"msg_{self._counter}",
+            id=message.id,
             agent_id=agent_id,
             thread_id=thread_id,
             message=message,
