@@ -378,9 +378,30 @@ JSON of an `actant.sandbox.StorageStatus` (read it with
 
 Warn when `consecutive_failures` is non-zero. The final push on shutdown is
 bounded the same way, so shutdown finishes even when storage is unreachable;
-`Sandbox.sync` and `close` never wait without bound. A restore that fails or
-exceeds 30 minutes fails startup. Restored files take their objects' mtimes,
-so a push uploads only files changed since.
+`Sandbox.sync` and `close` never wait without bound. Each pull of a restore is
+killed after `restore_attempt_timeout_s` (default 60) and run again, up to
+`restore_attempts` (default 3) runs; a retry fetches only the files still
+missing, and progress (`restore: 812/1040 objects (attempt 1/3)`) goes to the
+sandbox's stderr. A restore that still fails fails startup. Restored files take
+their objects' mtimes, so a push uploads only files changed since.
+
+A disk can be made of more than the thread's prefix. Override
+`ModalSandboxProvider.restore_plan(thread_id)` to return `Restore(source, path,
+push)` entries, with `source` a `Location(bucket, prefix)`; the provider builds
+every s5cmd call from them. Exactly one entry is pushed (the thread's workspace,
+which a seed fills), and its push skips the other entries' paths:
+
+```python
+from actant.sandbox.modal import Location, ModalSandboxProvider, Restore
+
+
+class SceneProvider(ModalSandboxProvider):
+    def restore_plan(self, thread_id: str) -> list[Restore]:
+        return [
+            Restore(Location(self.bucket, f"captures/{thread_id}/"), "capture", push=False),
+            Restore(self.thread_location(thread_id), "", push=True),
+        ]
+```
 
 ## Durable images
 

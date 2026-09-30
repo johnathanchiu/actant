@@ -247,3 +247,38 @@ def test_local_ls_cannot_leave_the_root(tmp_path) -> None:
         asyncio.run(sandbox.ls("../*"))
     with pytest.raises(ValueError, match="escapes"):
         asyncio.run(sandbox.ls("/etc/*"))
+
+
+@dataclass
+class _Hanging:
+    """A provider whose open never finishes on its own, and records being cancelled."""
+
+    started: bool = False
+    cancelled: bool = False
+
+    async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
+        self.started = True
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("unreachable")
+
+    async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
+        raise KeyError(sandbox_id)
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_an_in_flight_open_instead_of_waiting_for_it() -> None:
+    provider = _Hanging()
+    registry = SandboxRegistry({"fake": provider}, InMemoryRuntimeStores().threads)
+    opening = asyncio.ensure_future(registry.for_thread(SandboxSpec(backend="fake"), "a", "t"))
+    while not provider.started:
+        await asyncio.sleep(0)
+
+    await asyncio.wait_for(registry.close("a", "t", forget=True), 5)
+    assert provider.cancelled and registry._resolving == {}
+    # The caller that was waiting is told why, not handed a cancellation of its own.
+    with pytest.raises(RuntimeError, match="closed while opening"):
+        await opening

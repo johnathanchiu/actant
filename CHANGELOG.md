@@ -16,6 +16,24 @@ affect users.
   install plain `actant`. `host.upload_image` is replaced by `ImageUploader.upload` in
   `actant.sandbox.uploads`, and `host.upload_images` takes an `ImageUploader`.
 
+- A `disk_sync` restore no longer stalls on one slow object: each pull (the thread's prefix,
+  a seed, or another input) is killed after `SandboxSpec.restore_attempt_timeout_s` (default
+  60) and run again, up to `restore_attempts` (default 3) runs, and a retry fetches only what
+  is missing. Before, one `s5cmd sync` had 30 minutes. Progress (objects fetched of those
+  listed) goes to the sandbox's stderr every 10 s. `RestoreConfig` gains `attempt_timeout_s`,
+  `attempts` and `also`, so the sandbox image needs this release too.
+- `ModalSandboxProvider.restore_plan(thread_id)` describes a `disk_sync` disk as data:
+  `Restore(source: Location(bucket, prefix), path, push)` entries, pulled into
+  `DISK_PATH/<path>`. Exactly one entry is pushed, and its push excludes the other entries'
+  paths, so a read-only input (a capture from another prefix) is never written back. The
+  default is the thread's own prefix at the root, pushed: unchanged behaviour. Breaking:
+  `restore_argv`, `stamp_config` and `seed_config` are gone; override `restore_plan` instead.
+- `SandboxRegistry.close` cancels an open still in flight, waits at most 60 s for it to clean
+  up, and forgets it, instead of awaiting it without bound. A caller sharing that open gets a
+  `RuntimeError`, not a cancellation of its own.
+- `ModalSandboxProvider.open` terminates a sandbox whose open is cancelled before it is
+  ready, then re-raises; before, it ran on until its own timeout.
+
 ## 0.23.0
 
 - Model-context compaction, off by default: `TemporalRuntimeConfig(context_compaction=

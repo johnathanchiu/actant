@@ -71,6 +71,7 @@ from actant.sandbox.protocol import (
     EntryConfig,
     Header,
     HostConfig,
+    PullConfig,
     PushConfig,
     RestoreConfig,
     Route,
@@ -104,6 +105,38 @@ _LS = (
     "        out.append([os.path.relpath(p, root), s.st_size, s.st_mtime])\n"
     "print(json.dumps(out))\n"
 )
+
+
+@dataclass(frozen=True)
+class Location:
+    """A key prefix in a bucket: ``prefix`` is empty (the whole bucket) or ends in ``/``."""
+
+    bucket: str
+    prefix: str
+
+    def __post_init__(self) -> None:
+        if not self.bucket or (self.prefix and not self.prefix.endswith("/")):
+            raise ValueError(f"a location is a bucket and a prefix ending in '/': {self!r}")
+
+    @property
+    def url(self) -> str:
+        return f"s3://{self.bucket}/{self.prefix}"
+
+
+@dataclass(frozen=True)
+class Restore:
+    """One entry of a ``disk_sync`` restore plan: ``source`` pulled into ``path`` (relative
+    to :data:`DISK_PATH`, ``""`` for the root). Only the ``push`` entry is pushed back, and
+    its push skips the other entries' paths."""
+
+    source: Location
+    path: str
+    push: bool
+
+    def __post_init__(self) -> None:
+        parts = self.path.split("/")
+        if self.path and any(part in ("", ".", "..") for part in parts):
+            raise ValueError(f"a restore path is relative and normalized: {self.path!r}")
 
 
 @dataclass
@@ -200,6 +233,13 @@ class ModalSandboxProvider:
                 raise RuntimeError(
                     f"sandbox for thread {thread_id} never became ready: {exc}\n{detail}"
                 ) from exc
+            except asyncio.CancelledError:
+                # Not an ``Exception``: without this a sandbox cancelled before it was
+                # ready runs on, unowned, until its own timeout. Shielded, so a second
+                # cancellation still leaves the terminate running.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.shield(sandbox.terminate.aio()), API_SLACK_S)
+                raise
         return self._handle(sandbox, spec, thread_id)
 
     async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
@@ -258,11 +298,18 @@ class ModalSandboxProvider:
         disk_sync = spec.storage == Storage.DISK_SYNC
         restore = push = None
         if disk_sync:
+            pushed, others = self._plan(thread_id)
             restore = RestoreConfig(
-                argv=self.restore_argv(thread_id),
+                argv=self._pull_argv(pushed),
                 timeout_s=SYNC_TIMEOUT_S,
-                stamp=self.stamp_config(thread_id),
-                seed=None if spec.seed is None else self.seed_config(thread_id, spec.seed),
+                attempt_timeout_s=spec.restore_attempt_timeout_s,
+                attempts=spec.restore_attempts,
+                stamp=self._stamp_config(pushed),
+                seed=None if spec.seed is None else self._seed_config(pushed, spec.seed),
+                also=[
+                    PullConfig(argv=self._pull_argv(r), stamp=self._stamp_config(r))
+                    for r in others
+                ],
             )
             push = PushConfig(
                 argv=self.sync_argv(thread_id),
@@ -287,35 +334,54 @@ class ModalSandboxProvider:
         """Where a ``disk_sync`` host uploads the images its services return."""
         return ImageBucket(self.bucket, self.image_prefix, self.endpoint_url)
 
-    def _remote(self, thread_id: str) -> str:
-        return f"s3://{self.bucket}/{self.key_prefix}{thread_id}/"
+    def thread_location(self, thread_id: str) -> Location:
+        """A thread's own prefix: ``<key_prefix><thread>/`` in :attr:`bucket`."""
+        return Location(self.bucket, f"{self.key_prefix}{thread_id}/")
+
+    def restore_plan(self, thread_id: str) -> Sequence[Restore]:
+        """What a ``disk_sync`` disk is made of; override to add read-only inputs. The
+        provider builds every s5cmd call from it. Exactly one entry is pushed: the thread's
+        workspace, which a seed fills. By default, the thread's own prefix at the root."""
+        return [Restore(self.thread_location(thread_id), "", push=True)]
+
+    def _plan(self, thread_id: str) -> tuple[Restore, list[Restore]]:
+        """The plan's pushed entry and the others, checked."""
+        plan = list(self.restore_plan(thread_id))
+        pushed = [r for r in plan if r.push]
+        if len(pushed) != 1:
+            raise ValueError(f"a restore plan pushes exactly one entry, not {len(pushed)}")
+        if len({r.path for r in plan}) != len(plan):
+            raise ValueError("a restore plan's paths are distinct")
+        return pushed[0], [r for r in plan if not r.push]
 
     def _s5cmd(self, *args: str) -> list[str]:
         endpoint = ["--endpoint-url", self.endpoint_url] if self.endpoint_url else []
         return ["s5cmd", *endpoint, *args]
 
     def sync_argv(self, thread_id: str) -> list[str]:
-        """Push a ``disk_sync`` disk to its prefix. Files removed locally stay in the bucket:
-        mirroring (``--delete``) needs S3's batch DeleteObjects, which Supabase's S3 gateway
-        does not serve (``InvalidRequest: must have required property 'Body'``) and one such
-        push failure loses a finished run's last files."""
-        return self._s5cmd("sync", f"{DISK_PATH}/", self._remote(thread_id))
+        """Push the plan's pushed entry to its prefix, excluding the other entries inside it.
+        Files removed locally stay in the bucket: mirroring (``--delete``) needs S3's batch
+        DeleteObjects, which Supabase's S3 gateway does not serve (``InvalidRequest: must
+        have required property 'Body'``) and one such push failure loses a finished run's
+        last files."""
+        pushed, others = self._plan(thread_id)
+        inside = f"{pushed.path}/" if pushed.path else ""
+        # s5cmd 2.3 matches a local file's absolute path, less its leading "/".
+        excludes = [
+            arg
+            for r in others
+            if r.path.startswith(inside)
+            for arg in ("--exclude", f"{_disk(r.path).lstrip('/')}/*")
+        ]
+        return self._s5cmd("sync", *excludes, f"{_disk(pushed.path)}/", pushed.source.url)
 
-    def restore_argv(self, thread_id: str) -> list[str]:
-        """Pull a thread's prefix onto the disk (never deletes)."""
-        return self._pull_argv(self._remote(thread_id))
-
-    def stamp_config(self, thread_id: str) -> StampConfig:
-        """List a thread's prefix alongside the pull, so pulled files keep their objects' mtimes."""
-        return self._stamp_config(self._remote(thread_id))
-
-    def seed_config(self, thread_id: str, seed: str) -> SeedConfig:
+    def _seed_config(self, pushed: Restore, seed: str) -> SeedConfig:
         """Pull ``seed`` onto a new thread's disk while copying it into the thread's prefix."""
-        source = f"s3://{self.bucket}/{seed}"
-        marker = self.seed_marker(thread_id)
+        source = Restore(Location(self.bucket, seed), pushed.path, push=False)
+        marker = self._marker(pushed.source)
         return SeedConfig(
             argv=self._pull_argv(source),
-            copy_argv=self._s5cmd("cp", f"{source}*", self._remote(thread_id)),
+            copy_argv=self._s5cmd("cp", f"{source.source.url}*", pushed.source.url),
             write_marker_argv=self._s5cmd("pipe", marker),
             check_marker_argv=self._s5cmd("ls", marker),
             stamp=self._stamp_config(source),
@@ -324,14 +390,24 @@ class ModalSandboxProvider:
     def seed_marker(self, thread_id: str) -> str:
         """The object that says a thread's seed copy finished: a sibling of its prefix
         (``sandboxes/t1`` + :data:`SEED_MARKER_SUFFIX`), so no pull or push touches it."""
-        return f"s3://{self.bucket}/{self.key_prefix}{thread_id}{SEED_MARKER_SUFFIX}"
+        return self._marker(self._plan(thread_id)[0].source)
 
-    def _pull_argv(self, source: str) -> list[str]:
-        return self._s5cmd("sync", f"{source}*", f"{DISK_PATH}/")
+    @staticmethod
+    def _marker(location: Location) -> str:
+        return f"{location.url.rstrip('/')}{SEED_MARKER_SUFFIX}"
 
-    def _stamp_config(self, source: str) -> StampConfig:
-        argv = ["s5cmd", "--json", *self._s5cmd("ls", f"{source}*")[1:]]
-        return StampConfig(argv=argv, prefix=source, root=DISK_PATH)
+    def _pull_argv(self, restore: Restore) -> list[str]:
+        """Pull an entry onto the disk (never deletes)."""
+        return self._s5cmd("sync", f"{restore.source.url}*", f"{_disk(restore.path)}/")
+
+    def _stamp_config(self, restore: Restore) -> StampConfig:
+        """List an entry alongside its pull, so pulled files keep their objects' mtimes."""
+        argv = ["s5cmd", "--json", *self._s5cmd("ls", f"{restore.source.url}*")[1:]]
+        return StampConfig(argv=argv, prefix=restore.source.url, root=_disk(restore.path))
+
+
+def _disk(path: str) -> str:
+    return f"{DISK_PATH}/{path}" if path else DISK_PATH
 
 
 def with_s5cmd(image: Any) -> Any:

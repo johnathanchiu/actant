@@ -22,6 +22,8 @@ from actant.sandbox.base import Sandbox, SandboxProvider, SandboxSpec
 # was not reclaimed for idleness; attaching on every call instead put a Modal
 # poll in front of every tool call.
 VERIFIED_FOR_S = 5.0
+#: How long ``close`` waits for a cancelled in-flight resolve to clean up.
+CANCEL_WAIT_S = 60.0
 
 
 @dataclass
@@ -65,7 +67,16 @@ class SandboxRegistry:
             self._resolving[key] = task
             task.add_done_callback(lambda done: self._forget_resolve(key, done))
         # Shielded: one caller's cancellation must not fail the others sharing it.
-        return await asyncio.shield(task)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if task.cancelled() and current is not None and not current.cancelling():
+                # ``close`` cancelled the shared resolve, not this caller.
+                raise RuntimeError(
+                    f"sandbox for thread {thread_id} was closed while opening"
+                ) from None
+            raise
 
     def _forget_resolve(self, key: tuple[str, str], done: asyncio.Task[Sandbox]) -> None:
         if self._resolving.get(key) is done:
@@ -82,9 +93,14 @@ class SandboxRegistry:
                     sandbox = await provider.attach(spec, sandbox_id)
             if sandbox is None:
                 opened = await provider.open(spec, agent_id=agent_id, thread_id=thread_id)
-                winner = await self._threads.claim_sandbox(
-                    agent_id, thread_id, expected=sandbox_id, sandbox_id=opened.id
-                )
+                try:
+                    winner = await self._threads.claim_sandbox(
+                        agent_id, thread_id, expected=sandbox_id, sandbox_id=opened.id
+                    )
+                except asyncio.CancelledError:
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(opened.close())
+                    raise
                 if winner != opened.id:
                     # Another worker claimed the thread first: drop ours, attach theirs.
                     with contextlib.suppress(Exception):
@@ -99,14 +115,17 @@ class SandboxRegistry:
 
         The id is cleared first and the close never raises: a sandbox the
         backend already reclaimed must not keep a cancellation retrying. An
-        in-flight resolve is awaited first so the handle it produces is the
-        one released, not cached after the close.
+        in-flight resolve is cancelled and forgotten, and waited for at most
+        :data:`CANCEL_WAIT_S` while it terminates what it was opening: an open
+        that never finishes must not hold the close.
         """
         key = (agent_id, thread_id)
-        resolving = self._resolving.get(key)
+        resolving = self._resolving.pop(key, None)
         if resolving is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.shield(resolving)
+            resolving.cancel()
+            await asyncio.wait({resolving}, timeout=CANCEL_WAIT_S)
+            if resolving.done() and not resolving.cancelled():
+                resolving.exception()  # retrieved: its callers already saw it
         if forget:
             thread = await self._threads.get_or_create(agent_id, thread_id)
             if thread.sandbox_id is not None:
