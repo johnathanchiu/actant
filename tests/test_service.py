@@ -24,6 +24,7 @@ from actant.sandbox.protocol import (
     EntryConfig,
     Header,
     HostConfig,
+    PullConfig,
     PushConfig,
     RestoreConfig,
     Route,
@@ -602,6 +603,81 @@ def test_entry_fails_when_restore_times_out(tmp_path: Path) -> None:
     )  # fmt: skip
     assert done.returncode == 1 and "restore timed out after 0.5s" in done.stderr
     assert time.monotonic() - started < 20
+
+
+def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The first attempt fetches one object and stalls on the next; the retry, like
+    s5cmd's sync, skips what is on disk. Progress counts across attempts."""
+    from actant.sandbox import entry
+
+    monkeypatch.setattr(entry, "PROGRESS_INTERVAL_S", 0.1)
+    runs = tmp_path / "runs"
+    pull = (
+        "import os, time\n"
+        f"os.chdir({str(tmp_path)!r})\n"
+        "open('runs', 'a').write('.')\n"
+        "for name in ('a.txt', 'b.txt'):\n"
+        "    if os.path.exists(name): continue\n"
+        "    if name == 'b.txt' and len(open('runs').read()) == 1: time.sleep(60)\n"
+        "    open(name, 'w').write('abc')\n"
+        "    print(f'cp s3://b/t/{name} {name}', flush=True)\n"
+    )
+    listed = "\n".join(
+        json.dumps({"key": f"s3://b/t/{n}", "last_modified": "2026-01-02T03:04:05Z", "size": 3})
+        for n in ("a.txt", "b.txt")
+    )
+    config = RestoreConfig(
+        argv=[sys.executable, "-c", pull],
+        attempt_timeout_s=1,
+        attempts=3,
+        stamp=StampConfig(
+            argv=[sys.executable, "-c", f"print({listed!r})"],
+            prefix="s3://b/t/",
+            root=str(tmp_path),
+        ),
+    )
+    started = time.monotonic()
+    assert entry.restore(config)
+    assert time.monotonic() - started < 10
+    assert runs.read_text() == ".."
+    err = capsys.readouterr().err
+    assert "restore attempt 1/3 timed out after 1s" in err
+    assert "restore: 1/2 objects (attempt 1/3)" in err
+    assert "restore: 2/2 objects (attempt 2/3)" in err
+    assert int((tmp_path / "b.txt").stat().st_mtime) == 1767323045
+
+
+def test_a_pull_that_stalls_on_every_attempt_fails_startup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from actant.sandbox.entry import restore
+
+    runs = tmp_path / "runs"
+    stall = f"import time; open({str(runs)!r}, 'a').write('.'); time.sleep(60)"
+    config = RestoreConfig(argv=[sys.executable, "-c", stall], attempt_timeout_s=0.5, attempts=2)
+    assert not restore(config)
+    assert runs.read_text() == ".."
+    assert "restore timed out after 0.5s" in capsys.readouterr().err
+
+
+def test_restore_pulls_its_other_inputs_alongside_and_fails_if_one_fails(
+    tmp_path: Path,
+) -> None:
+    from actant.sandbox.entry import restore
+
+    capture = tmp_path / "capture"
+    pull_capture = _script(
+        f"import os; os.makedirs({str(capture)!r}); open({str(capture / 'scan.json')!r}, 'w').close()"
+    )
+    own = _script(f"open({str(tmp_path / 'room.py')!r}, 'w').close()")
+    assert restore(RestoreConfig(argv=own, also=[PullConfig(argv=pull_capture)]))
+    assert (capture / "scan.json").exists() and (tmp_path / "room.py").exists()
+    # An empty input is not a failure; a failed one is.
+    assert restore(RestoreConfig(argv=own, also=[PullConfig(argv=_EMPTY)]))
+    denied = _script("import sys; sys.exit('denied')")
+    assert not restore(RestoreConfig(argv=own, also=[PullConfig(argv=denied)]))
 
 
 def test_stamp_gives_restored_files_their_object_mtimes(tmp_path: Path) -> None:

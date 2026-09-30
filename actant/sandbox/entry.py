@@ -12,6 +12,9 @@ restore runs, so importing one must not read the restored files. A failed or
 timed-out restore exits non-zero, which ends the sandbox. An empty bucket prefix
 (a new run) is not a failure.
 
+``restore.also``: other inputs (a read-only capture from another prefix) pulled
+alongside the run's own, each an independent pull that may be empty.
+
 ``restore.seed``: when the run's prefix is empty, the seed is pulled onto the disk
 while ``copy_argv`` copies it into the run's prefix; startup waits for both, so
 the host's first push never races the copy. Once the copy finishes, a marker
@@ -26,6 +29,12 @@ object, so without this every push after a restore re-uploads the whole
 workspace. A seeded file takes the seed object's time, never later than its copy
 in the run's prefix, so a push skips it too. A stamp failure only costs that
 re-upload, so it is logged, not fatal.
+
+Each pull runs at most ``restore.attempts`` times, each bounded by
+``restore.attempt_timeout_s``: one stalled object (a slow connection to the bucket)
+fails its attempt instead of the whole startup budget, and a retry skips the files
+already pulled. Progress (objects fetched of those listed) goes to stderr every
+:data:`PROGRESS_INTERVAL_S`, so a stall shows in the sandbox's logs.
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -49,6 +59,8 @@ import actant.sandbox.host as host
 from actant.sandbox.protocol import EntryConfig, RestoreConfig, StampConfig
 
 READY_FILE = "/tmp/actant-ready"
+#: How often a running pull reports its progress.
+PROGRESS_INTERVAL_S = 10.0
 #: What s5cmd prints for a prefix with no objects.
 EMPTY_PREFIX = "no object found"
 #: Why startup fails on a run's prefix with files and a seed but no seed marker.
@@ -123,13 +135,22 @@ class Pulled(StrEnum):
 
 def restore(config: RestoreConfig) -> bool:
     """Pull the run's prefix onto the disk (a new run's seed instead, while it is copied
-    into the run's prefix), then stamp mtimes; whether startup may continue."""
+    into the run's prefix) and ``config.also`` alongside, then stamp mtimes; whether
+    startup may continue."""
+    with ThreadPoolExecutor(max(1, len(config.also))) as pool:
+        others = [pool.submit(pull, also.argv, also.stamp, config) for also in config.also]
+        own = _restore_own(config)
+        pulled = [other.result() for other in others]
+    return own and Pulled.FAILED not in pulled
+
+
+def _restore_own(config: RestoreConfig) -> bool:
     seed = config.seed
     if seed is None:
-        return pull(config.argv, config.stamp, config.timeout_s) != Pulled.FAILED
+        return pull(config.argv, config.stamp, config) != Pulled.FAILED
     with ThreadPoolExecutor(1) as pool:
         checking = pool.submit(_run, seed.check_marker_argv, config.timeout_s)
-        pulled = pull(config.argv, config.stamp, config.timeout_s)
+        pulled = pull(config.argv, config.stamp, config)
         checked = checking.result()
     if pulled == Pulled.FAILED:
         return False
@@ -144,7 +165,7 @@ def restore(config: RestoreConfig) -> bool:
     # Both finish before the host starts, so no push can race the copy.
     with ThreadPoolExecutor(1) as pool:
         copying = pool.submit(_run, seed.copy_argv, config.timeout_s)
-        pulled = pull(seed.argv, seed.stamp, config.timeout_s)
+        pulled = pull(seed.argv, seed.stamp, config)
         copied = copying.result()
     if (failed := _failure(copied)) is not None:
         print(f"seed copy {failed}", file=sys.stderr)
@@ -156,8 +177,9 @@ def restore(config: RestoreConfig) -> bool:
     return pulled != Pulled.FAILED
 
 
-def pull(argv: Sequence[str], stamp_config: StampConfig | None, timeout: float) -> Pulled:
-    """Run the pull ``argv``, with the stamp's listing alongside it (into a file: a pipe
+def pull(argv: Sequence[str], stamp_config: StampConfig | None, config: RestoreConfig) -> Pulled:
+    """Run the pull ``argv`` (again after a failed or timed-out attempt, up to
+    ``config.attempts`` runs), with the stamp's listing alongside it (into a file: a pipe
     would stall it), then apply the listing."""
     with tempfile.TemporaryFile("w+") as listing:
         lister = None
@@ -166,8 +188,16 @@ def pull(argv: Sequence[str], stamp_config: StampConfig | None, timeout: float) 
                 lister = subprocess.Popen(stamp_config.argv, stdout=listing, stderr=listing)
             except OSError as error:
                 print(f"mtime stamp skipped: could not start: {error}", file=sys.stderr)
-        done = _run(argv, timeout)
-        failed = _failure(done)
+        progress = _Progress(listing if lister is not None else None, config.attempts)
+        timeout = config.attempt_timeout_s or config.timeout_s
+        attempt = 1
+        while True:
+            done = _pull_once(argv, timeout, progress, attempt)
+            failed = _failure(done)
+            if failed is None or attempt == config.attempts:
+                break
+            print(f"restore attempt {attempt}/{config.attempts} {failed}", file=sys.stderr)
+            attempt += 1
         # s5cmd 2.3's sync exits 0 on an empty prefix, but still says so.
         empty = not isinstance(done, str) and EMPTY_PREFIX in done.stderr
         if failed is not None or empty:
@@ -179,8 +209,61 @@ def pull(argv: Sequence[str], stamp_config: StampConfig | None, timeout: float) 
             print(f"restore {failed}", file=sys.stderr)
             return Pulled.FAILED
         if lister is not None and stamp_config is not None:
-            stamp(lister, listing, stamp_config, timeout)
+            stamp(lister, listing, stamp_config, config.timeout_s)
     return Pulled.FILES
+
+
+def _pull_once(
+    argv: Sequence[str], timeout: float, progress: _Progress, attempt: int
+) -> subprocess.CompletedProcess[str] | str:
+    """One pull attempt, killed after ``timeout``, reporting progress while it runs."""
+    with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+        try:
+            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+        except OSError as error:
+            return f"could not start: {error}"
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                process.wait(max(0.0, min(PROGRESS_INTERVAL_S, deadline - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    process.wait()
+                    progress.report(out, attempt, final=True)
+                    return f"timed out after {timeout:g}s"
+                progress.report(out, attempt, final=False)
+        progress.report(out, attempt, final=True)
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(argv, process.returncode, out.read(), err.read())
+
+
+def _lines(file: IO[str]) -> list[str]:
+    """``file``'s lines so far, read without moving the offset a child process writes at."""
+    size = os.fstat(file.fileno()).st_size
+    return os.pread(file.fileno(), size, 0).decode(errors="replace").splitlines()
+
+
+class _Progress:
+    """Objects a pull fetched (s5cmd prints ``cp <source> <target>`` for each), across its
+    attempts, of those the stamp's listing has found so far."""
+
+    def __init__(self, listing: IO[str] | None, attempts: int) -> None:
+        self._listing = listing
+        self._attempts = attempts
+        self._fetched = 0  # by finished attempts
+
+    def report(self, output: IO[str], attempt: int, *, final: bool) -> None:
+        fetched = self._fetched + sum(line.startswith("cp ") for line in _lines(output))
+        if final:
+            self._fetched = fetched
+        listed = "?" if self._listing is None else str(len(_lines(self._listing)))
+        print(
+            f"restore: {fetched}/{listed} objects (attempt {attempt}/{self._attempts})",
+            file=sys.stderr,
+        )
 
 
 def stamp(

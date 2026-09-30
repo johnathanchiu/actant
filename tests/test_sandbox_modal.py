@@ -28,8 +28,10 @@ from actant.sandbox.modal import (
     DISK_PATH,
     MOUNT_PATH,
     S5CMD_URL,
+    Location,
     ModalSandbox,
     ModalSandboxProvider,
+    Restore,
     with_s5cmd,
 )
 
@@ -182,6 +184,8 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
         restore=RestoreConfig(
             argv=restore,
             timeout_s=1800,
+            attempt_timeout_s=60,
+            attempts=3,
             stamp=StampConfig(
                 argv=["s5cmd", "--json", *S5[1:], "ls", "s3://b/sandboxes/t1/*"],
                 prefix="s3://b/sandboxes/t1/",
@@ -295,6 +299,28 @@ async def test_open_fails_with_the_entrypoint_stderr_when_never_ready(
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, services={"t": "pkg:T"})
     with pytest.raises(RuntimeError, match="access denied"):
         await provider.open(spec, agent_id="a", thread_id="t1")
+    assert fake.terminated
+
+
+async def test_open_cancelled_before_ready_terminates_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
+) -> None:
+    fake = _FakeModal()
+
+    async def never_ready(timeout: int) -> None:
+        del timeout
+        await asyncio.Event().wait()
+
+    fake.sandbox.wait_until_ready = _Aio(never_ready)
+    _use(monkeypatch, fake)
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    opening = asyncio.ensure_future(provider.open(spec, agent_id="a", thread_id="t1"))
+    while not fake.created[1]:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    opening.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await opening
     assert fake.terminated
 
 
@@ -440,3 +466,46 @@ def test_seed_is_a_disk_sync_key_prefix() -> None:
         SandboxSpec(backend="modal", storage=Storage.MOUNT, seed="templates/base/")
     with pytest.raises(ValueError, match="seed"):
         SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/room")
+
+
+class _ScenePlan(ModalSandboxProvider):
+    """A scene: its own prefix at the root, and a capture from another prefix, read-only."""
+
+    def restore_plan(self, thread_id: str) -> list[Restore]:
+        return [
+            Restore(Location("b", "captures/c1/"), "capture", push=False),
+            Restore(self.thread_location(thread_id), "", push=True),
+        ]
+
+
+def test_a_restore_plan_pulls_every_entry_and_pushes_only_its_own() -> None:
+    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
+    restore = provider.entry_config(spec, "t1").restore
+    assert restore is not None and restore.seed is not None
+    assert restore.argv == [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
+    [capture] = restore.also
+    assert capture.argv == [*S5, "sync", "s3://b/captures/c1/*", f"{DISK_PATH}/capture/"]
+    assert capture.stamp is not None and capture.stamp.root == f"{DISK_PATH}/capture"
+    # The seed fills the pushed entry and is marked beside its prefix.
+    assert restore.seed.copy_argv[-1] == "s3://b/sandboxes/t1/"
+    assert provider.seed_marker("t1") == "s3://b/sandboxes/t1.actant-seeded"
+    assert provider.sync_argv("t1") == [
+        *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
+    ]  # fmt: skip
+
+
+def test_a_restore_plan_is_checked() -> None:
+    with pytest.raises(ValueError, match="prefix ending"):
+        Location("b", "captures")
+    with pytest.raises(ValueError, match="relative"):
+        Restore(Location("b", ""), "/abs", push=False)
+    with pytest.raises(ValueError, match="relative"):
+        Restore(Location("b", ""), "a/../b", push=False)
+
+    class _NoPush(ModalSandboxProvider):
+        def restore_plan(self, thread_id: str) -> list[Restore]:
+            return [Restore(self.thread_location(thread_id), "", push=False)]
+
+    with pytest.raises(ValueError, match="exactly one"):
+        _NoPush(app_name="app", bucket="b").sync_argv("t1")

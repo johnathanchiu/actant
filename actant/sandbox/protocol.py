@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
+from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt
 
 
 class Route(StrEnum):
@@ -152,14 +152,29 @@ class SeedConfig(_Message):
     stamp: StampConfig | None = None
 
 
+class PullConfig(_Message):
+    """One more pull onto the disk: ``argv``, with ``stamp`` alongside it."""
+
+    argv: list[str] = Field(min_length=1)
+    stamp: StampConfig | None = None
+
+
 class RestoreConfig(_Message):
     #: Pulls the run's prefix onto the disk; each command failing or exceeding
     #: ``timeout_s`` fails startup.
     argv: list[str] = Field(min_length=1)
     timeout_s: PositiveFloat = 1800.0
+    #: A pull (the run's or the seed's) is killed after this long (``timeout_s`` when
+    #: unset) and run again, up to ``attempts`` runs in all. A sync skips the files it
+    #: already has, so a retry fetches only what is missing.
+    attempt_timeout_s: PositiveFloat | None = None
+    attempts: PositiveInt = 1
     stamp: StampConfig | None = None
     #: Used only when the run's prefix is empty.
     seed: SeedConfig | None = None
+    #: Other inputs (read-only, never pushed), pulled alongside with the same retries;
+    #: an empty one is not a failure.
+    also: list[PullConfig] = []
 
 
 class EntryConfig(_Message):
