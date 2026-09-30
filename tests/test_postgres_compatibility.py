@@ -297,3 +297,13 @@ async def test_list_for_model_stops_at_the_latest_compaction_row_and_adds_its_ke
     full = await messages.list_for_thread("a", "t")
     assert [m.kind for m in full].count("compaction") == 2 and len(full) == 7
     assert await messages.list_for_model("a", "other") == []
+
+
+async def test_child_lineage_crosses_agents(stores: SQLAlchemyRuntimeStores) -> None:
+    child = await stores.threads.get_or_create("child-agent", "child")
+    child.parent_thread_id = "parent"
+    await stores.threads.update(child)
+    await stores.threads.get_or_create("other-agent", "unrelated")
+    children = await stores.threads.list_children("parent")
+    assert [(row.agent_id, row.id) for row in children] == [("child-agent", "child")]
+    assert await stores.threads.list_children("missing") == []

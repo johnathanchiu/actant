@@ -50,6 +50,10 @@ class ThreadStore(Protocol):
         """
         ...
 
+    async def list_children(self, thread_id: str) -> list[AgentThread]:
+        """Direct children across agents; parent thread IDs identify the lineage."""
+        ...
+
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]: ...
 
 

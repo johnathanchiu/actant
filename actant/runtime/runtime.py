@@ -91,6 +91,7 @@ class AgentRuntime:
             run_completion_handler=run_completion_handler,
             message_preprocessor=message_preprocessor,
             compaction_instructions=compaction_instructions,
+            cancel_children=self._cancel_children,
         )
         self._running = False
         self._worker: temporalio.worker.Worker | None = None
@@ -225,7 +226,7 @@ class AgentRuntime:
         )
 
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
-        """Stop a running thread. A finished one is already stopped.
+        """Stop a thread and its persisted descendants, across agents and workers.
 
         Threads end when their work is done, so cancelling is routinely
         aimed at a workflow that has already closed -- Temporal raises for
@@ -247,6 +248,16 @@ class AgentRuntime:
                 await self.stores.threads.get(agent_id, thread_id)
             except KeyError:
                 raise ThreadNotFoundError(thread_id) from error
+
+        await self._cancel_children(thread_id)
+
+    async def _cancel_children(self, thread_id: str) -> None:
+        for child in await self.stores.threads.list_children(thread_id):
+            if child.status == ThreadStatus.ACTIVE:
+                await self.cancel_thread(child.agent_id, child.id)
+            else:
+                # Finished children may themselves have running delegated work.
+                await self._cancel_children(child.id)
 
     async def get_state(self, agent_id: str, thread_id: str) -> ThreadStateView:
         """What the stores say about this thread.

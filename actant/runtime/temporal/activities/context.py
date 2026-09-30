@@ -40,7 +40,9 @@ class ActivityContext:
         sandboxes: SandboxRegistry | None = None,
         artifact_sink: ArtifactSink | None = None,
         compaction_instructions: str = "",
+        cancel_children: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
+        self.cancel_children = cancel_children
         self.stores = stores
         self.resolve_agent = resolve_agent
         self.assets = assets
