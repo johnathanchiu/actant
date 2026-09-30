@@ -6,6 +6,16 @@ affect users.
 
 ## Unreleased
 
+- A sandbox service host uploads returned images with one long-lived boto3 S3 client on its
+  own pool of 32 threads, instead of one `s5cmd pipe` process per image. Under load (about 100
+  concurrent calls in one sandbox) process startup alone took over a second and uploads often
+  hit their timeout; the key, content type, `image_upload_timeout_s` and the inline fallback
+  with `StorageStatus.image_error` are unchanged. Credentials, region and endpoint come from
+  the same `AWS_*` environment and `endpoint_url`. A host with image uploads now needs the new
+  `sandbox` extra (`actant[sandbox]`, boto3) in the sandbox image: breaking for images that
+  install plain `actant`. `host.upload_image` is replaced by `ImageUploader.upload` in
+  `actant.sandbox.uploads`, and `host.upload_images` takes an `ImageUploader`.
+
 ## 0.23.0
 
 - Model-context compaction, off by default: `TemporalRuntimeConfig(context_compaction=

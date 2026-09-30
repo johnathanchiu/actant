@@ -41,8 +41,8 @@ one; never two at once. Each is killed (its process group) after ``timeout_s``. 
 host that pushes adds a :class:`~actant.sandbox.protocol.StorageStatus` to every
 call response (``CallResponse.storage``).
 
-Image uploads (``HostConfig.images``) never fail a call either. Each returned image
-is uploaded under a key named by its content hash, so the response
+Image uploads (``HostConfig.images``, :mod:`actant.sandbox.uploads`) never fail a call
+either. Each returned image is uploaded under a key named by its content hash, so the response
 carries a durable reference; an image whose upload fails goes
 inline, and ``StorageStatus.image_error`` says why.
 """
@@ -53,7 +53,6 @@ import asyncio
 import base64
 import contextlib
 import functools
-import hashlib
 import hmac
 import importlib
 import inspect
@@ -72,6 +71,8 @@ from http.client import HTTPConnection, HTTPSConnection
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from actant.sandbox.base import Endpoint, ImageBucket, SandboxSpec
@@ -82,12 +83,14 @@ from actant.sandbox.protocol import (
     HostConfig,
     Image,
     ImageUploadConfig,
-    AssetSource,
     InlineSource,
     PushConfig,
     Route,
     StorageStatus,
 )
+
+if TYPE_CHECKING:
+    from actant.sandbox.uploads import ImageUploader
 
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
 #: The line the host prints to stdout once it accepts connections: ``<prefix> <port>``.
@@ -306,26 +309,8 @@ def image_upload_config(
     )
 
 
-def _s5cmd(endpoint_url: str | None, *args: str) -> list[str]:
-    return ["s5cmd", *(["--endpoint-url", endpoint_url] if endpoint_url else []), *args]
-
-
-async def upload_image(image: Image, config: ImageUploadConfig) -> tuple[Image, str | None]:
-    """``image`` with a durable asset source, or unchanged with the reason it could not be."""
-    if not isinstance(image.source, InlineSource):
-        return image, None
-    data = base64.b64decode(image.source.data_b64)
-    extension = mimetypes.guess_extension(image.media_type) or ""
-    key = f"{config.destination}{hashlib.sha256(data).hexdigest()}{extension}"
-    upload = _s5cmd(config.endpoint_url, "pipe", "--content-type", image.media_type, key)
-    error, _ = await run_bounded(upload, config.timeout_s, stdin=data)
-    if error is not None:
-        return image, f"{image.name}: upload {error}"
-    return image.model_copy(update={"source": AssetSource(storage_key=key)}), None
-
-
 async def upload_images(
-    response: CallResponse, config: ImageUploadConfig
+    response: CallResponse, uploader: ImageUploader
 ) -> tuple[CallResponse, str | None]:
     """``response`` with each image uploaded to durable storage where possible, and the reason
     the first that could not be stayed inline. Never raises.
@@ -344,7 +329,7 @@ async def upload_images(
             if failed:
                 return image
             try:
-                uploaded, error = await upload_image(image, config)
+                uploaded, error = await uploader.upload(image)
             except Exception as exc:  # noqa: BLE001 -- an upload failure never fails the call
                 uploaded, error = image, f"{image.name}: {type(exc).__name__}: {exc}"[:500]
             if error is not None:
@@ -448,6 +433,10 @@ class Host:
         self.token = token
         self.push = push
         self.images = images
+        # Imported here: boto3 is the ``sandbox`` extra, needed only by a host that uploads.
+        from actant.sandbox.uploads import ImageUploader
+
+        self.uploader = ImageUploader(images) if images else None
         # Futures, not instances: two parallel first calls share one ``open``.
         self.instances: dict[tuple[str, str], asyncio.Future[object]] = {}
         self._push_due = asyncio.Event()
@@ -491,8 +480,8 @@ class Host:
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
             payload = failure(error)
         image_error = None
-        if self.images:
-            payload, image_error = await upload_images(payload, self.images)
+        if self.uploader:
+            payload, image_error = await upload_images(payload, self.uploader)
         if self.push:
             self._pending = True
             self._push_due.set()

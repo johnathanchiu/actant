@@ -54,6 +54,9 @@ s3 = [
     { name = "awscrt" },
     { name = "boto3" },
 ]
+sandbox = [
+    { name = "boto3" },
+]
 
 [package.dev-dependencies]
 docs = [
@@ -70,6 +73,7 @@ requires-dist = [
     { name = "awscrt", marker = "extra == 's3'", specifier = ">=0.27" },
     { name = "boto3", marker = "extra == 'dev'", specifier = ">=1.35" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.35" },
+    { name = "boto3", marker = "extra == 'sandbox'", specifier = ">=1.35" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "google-genai", marker = "extra == 'providers'", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27" },
@@ -87,7 +91,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.8" },
 ]
-provides-extras = ["s3", "anthropic", "gemini", "openai", "qwen", "modal", "providers", "dev"]
+provides-extras = ["s3", "anthropic", "gemini", "openai", "qwen", "modal", "sandbox", "providers", "dev"]
 
 [package.metadata.requires-dev]
 docs = [{ name = "mkdocs-material", specifier = ">=9.6" }]

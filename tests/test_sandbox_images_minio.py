@@ -107,7 +107,7 @@ async def test_an_unreachable_bucket_sends_bytes_and_says_why(tmp_path: Path, bu
         )
         [image] = response.images
         assert isinstance(image.source, InlineSource)
-        assert response.storage is not None and "upload exited" in str(
+        assert response.storage is not None and "upload failed" in str(
             response.storage.image_error
         )
 
