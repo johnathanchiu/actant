@@ -9,27 +9,27 @@ affect users.
 ## 0.23.0
 
 - Model-context compaction, off by default: `TemporalRuntimeConfig(context_compaction=
-  CompactionConfig(...))` (copied into `ThreadInput.context_compaction`). Before each model
-  call the turn measures its request (the last turn's reported usage plus an estimate of what
-  was added since; images counted exactly). When it would pass `threshold` (0.9) of
-  `context_window_tokens`, or carry more than `max_images_per_request` images, nothing is
-  sent: a new `compact_context` activity runs one turn on the agent's model, with no tools, on
-  a built-in summarizing prompt (`AgentRuntime(compaction_instructions=...)` extends it), and
-  the turn runs again from system prompt, summary, pinned content, then the pending messages.
-  No stored message is truncated, rewritten or deleted; each compaction is a boundary in
-  `stores.compactions` with the reason, tokens and images before and after, and the summary,
-  and a `context_compacted` event. Unset limits fall back to the model client's
-  `context_window_tokens` / `max_images_per_request`; `OpenAIProvider` sets the image limit to
-  50 for an `AsyncAzureOpenAI` client and 1,500 otherwise. Threads without the setting build
-  their requests and replay exactly as before.
-- What must survive compaction does not rest on the summary. `CompactionConfig.pin` names
-  it, in order: app providers registered with `AgentRuntime(pin_providers={...})`, and keys of
-  the thread's pinned notes (`stores.pinned_notes`, `thread.pin(key, content)`, or the agent's
-  `PinNoteTool`), every one of which is re-injected verbatim after each summary. The
-  `on_compact` hook runs after them.
-- Migration `aedae3e341f4` adds `actant_compactions` and `actant_pinned_notes` (run `alembic
-  upgrade actant@head`). Breaking for custom stores: `RuntimeStores` gains `compactions` and
-  `pinned_notes`.
+  CompactionConfig(context_window_tokens, max_images_per_request, threshold=0.9, keep=[...]))`,
+  copied into `ThreadInput.context_compaction`. Before each model call the turn measures its
+  request (the last turn's reported usage plus an estimate of what was added since; images
+  counted exactly). When it would pass the threshold or the image limit, nothing is sent: a
+  new `compact_context` activity makes one call on the agent's model, with no tools and output
+  capped to the window's margin, and appends a compaction row (`Message.kind="compaction"`,
+  one `CompactionBlock`: summary, kept indexes, reason, tokens and images before and after)
+  plus a `context_compacted` event. The model then sees system prompt, summary, kept messages
+  (the latest of each tag in `keep`, and the open tool turn), and the rows after the
+  compaction row. No stored message is truncated, rewritten or deleted; a failed summary call
+  fails the run. Threads without the setting build their requests and replay as before.
+- Messages carry `kind` and `tag`. Tool results are tagged `tool:<name>`; `send_message`,
+  `ThreadHandle.send` and `InboundMessage` take `tag`. `MessageStore` gains `append_compaction`
+  and `list_for_model` (one read from the latest compaction row), and `append_user` takes
+  `tag`: breaking for custom stores.
+- `LLMClient.complete` takes `max_output_tokens`, which every provider honours; breaking for
+  custom clients. `OpenAIProvider` takes `context_window_tokens` and `max_images_per_request`
+  (50 for an `AsyncAzureOpenAI` client, else 1,500). `RecallImageTool` (`recall_image(id)`)
+  attaches a stored image again after compaction.
+- Migration `1326e6b76924` adds `actant_messages.kind` (default `message`), `.tag`, and an
+  index for `list_for_model` (run `alembic upgrade actant@head`).
 
 ## 0.22.0
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 
 from temporalio.exceptions import ApplicationError
 
@@ -12,7 +12,6 @@ from actant.runtime.events.publisher import EventSink
 from actant.runtime.events.publisher import ScopedEventSink
 from actant.runtime.events.runtime import RuntimeEvents
 from actant.llm.messages import Message
-from actant.runtime.compaction import CompactionHook, PinProvider
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.gate import TurnGate
 from actant.runtime.interfaces.stores import RuntimeStores
@@ -40,9 +39,7 @@ class ActivityContext:
         turn_gate: TurnGate | None = None,
         sandboxes: SandboxRegistry | None = None,
         artifact_sink: ArtifactSink | None = None,
-        on_compact: CompactionHook | None = None,
         compaction_instructions: str = "",
-        pin_providers: Mapping[str, PinProvider] | None = None,
     ) -> None:
         self.stores = stores
         self.resolve_agent = resolve_agent
@@ -53,10 +50,7 @@ class ActivityContext:
         self.turn_gate = turn_gate
         self.sandboxes = sandboxes
         self.artifact_sink = artifact_sink
-        # Model-context compaction: the providers ``CompactionConfig.pin`` names,
-        # the hook that runs after them, and what to add to the built-in prompt.
-        self.pin_providers = dict(pin_providers or {})
-        self.on_compact = on_compact
+        # Appended to the built-in prompt of context compaction's summary call.
         self.compaction_instructions = compaction_instructions
 
     async def agent(self, agent_id: str, thread_id: str) -> AgentDefinition:

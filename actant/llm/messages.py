@@ -10,6 +10,7 @@ from typing import Literal, cast
 from actant.blocks import PROMPT_BLOCKS, PromptBlock
 
 Role = Literal["system", "user", "assistant", "tool"]
+Kind = Literal["message", "compaction"]
 
 
 @dataclass
@@ -102,6 +103,12 @@ class Message:
     # not come from a provider); 0 is a real, reported zero.
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Stored, never sent to a provider. ``kind="compaction"`` marks a compaction
+    # row, whose content is one ``CompactionBlock``. ``tag`` is ``tool:<name>``
+    # on tool results, or what an app set on a message it sent; compaction
+    # keeps the latest message of each tag in ``CompactionConfig.keep``.
+    kind: Kind = "message"
+    tag: str | None = None
 
     @property
     def total_tokens(self) -> int | None:
@@ -127,6 +134,8 @@ class Message:
                 reasoning_items=deepcopy(value.reasoning_items),
                 input_tokens=value.input_tokens,
                 output_tokens=value.output_tokens,
+                kind=value.kind,
+                tag=value.tag,
             )
         if not isinstance(value, dict):
             raise TypeError(f"Expected Message or dict, got {type(value).__name__}")
@@ -155,6 +164,8 @@ class Message:
             ),
             input_tokens=_optional_int(value.get("input_tokens")),
             output_tokens=_optional_int(value.get("output_tokens")),
+            kind="compaction" if value.get("kind") == "compaction" else "message",
+            tag=cast(str | None, value.get("tag")),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -182,6 +193,10 @@ class Message:
             data["input_tokens"] = self.input_tokens
         if self.output_tokens is not None:
             data["output_tokens"] = self.output_tokens
+        if self.kind != "message":
+            data["kind"] = self.kind
+        if self.tag is not None:
+            data["tag"] = self.tag
         return data
 
 

@@ -1,26 +1,33 @@
 """Model-context compaction: the one place Actant ever reduces what the model sees.
 
-Nothing is truncated and no stored message is rewritten. When the next request
-would cross a limit (a fraction of the context window, or the provider's image
-cap per request), the workflow runs one extra turn on the same model, with no
-tools, that summarizes the conversation so far. The thread then continues in a
-fresh context:
+Nothing is truncated and no stored message is rewritten. When the next request would
+cross a limit (a fraction of the context window, or the provider's image cap), one call
+on the same model, with no tools, summarizes the conversation, and a compaction row
+(``kind="compaction"``, one :class:`~actant.blocks.CompactionBlock`) is appended. The
+model then sees:
 
-    system prompt, the summary, the app's pinned content, then what was pending
+    system prompt, the summary, the kept messages, the rows after the compaction row
 
-Every message stays in the store. A :class:`CompactionRecord` marks the
-boundary, and the model's request is built from the boundary onward.
+The kept messages are the latest one of each tag in ``CompactionConfig.keep``, and the
+turn that was still open (an assistant tool call and its results), carried whole.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from typing import cast
 
-from actant.blocks import AssetBlock, Block, InlineImageBlock, TextBlock, UrlImageBlock
+from actant.blocks import (
+    AssetBlock,
+    CompactionBlock,
+    InlineImageBlock,
+    PromptBlock,
+    TextBlock,
+    UrlImageBlock,
+)
 from actant.llm.messages import Message
 
 COMPACTION_PROMPT = """\
@@ -38,72 +45,23 @@ tool result. Do not omit any.
 5. Next steps, in order.
 6. Key facts to keep exactly: identifiers, paths, names, numbers, commands, \
 errors, and anything the user must not be asked again.
+7. Image index: images before this point will not be shown again. For each \
+notable one, its id (from the [image id=...] label before it) and a one-line \
+caption. `recall_image(id)` shows it again.
 
 Write plain prose and lists. Do not call tools. Do not address the user.
 </compaction_request>"""
 
-SUMMARY_PREFIX = "<context_summary>\nThis conversation was compacted. It continues from this summary of everything before it:\n\n"
+SUMMARY_PREFIX = (
+    "<context_summary>\nThis conversation was compacted. It continues from this "
+    "summary of everything before it:\n\n"
+)
 SUMMARY_SUFFIX = "\n</context_summary>"
 
 #: Characters per token for the part of a request no provider has counted yet.
 CHARS_PER_TOKEN = 4
-
-
-@dataclass(frozen=True)
-class Compaction:
-    """What an ``on_compact`` hook receives."""
-
-    agent_id: str
-    thread_id: str
-    run_id: str
-    reason: str
-    summary: str
-
-
-#: Returns blocks to pin after the summary, read from the app's own source of truth
-#: (a checklist, the current file, images for open items). An empty list pins nothing.
-#: Registered by name in ``pin_providers`` and named in ``CompactionConfig.pin``; the
-#: same signature serves the ``on_compact`` hook, the escape hatch that runs last.
-PinProvider = Callable[[Compaction], Awaitable[list[Block]]]
-CompactionHook = PinProvider
-
-
-def pinned_item(name: str, blocks: Sequence[Block]) -> list[Block]:
-    """One named pinned item, verbatim between two marker blocks."""
-    return [TextBlock(text=f'<pinned name="{name}">'), *blocks, TextBlock(text="</pinned>")]
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-@dataclass
-class CompactionRecord:
-    """One compaction of a thread's model context.
-
-    ``boundary`` counts the stored messages (in ``list_for_thread`` order) that
-    the summary replaces in the model's view; they stay in the store untouched.
-    ``tokens_before`` and ``images_before`` measured the request that would
-    have crossed; ``tokens_after`` (estimated) and ``images_after`` (exact)
-    measure the fresh context, before the model has reported on it.
-    """
-
-    id: str
-    agent_id: str
-    thread_id: str
-    run_id: str
-    turn_id: str
-    boundary: int
-    reason: str
-    summary: str
-    tokens_before: int
-    images_before: int
-    tokens_after: int
-    images_after: int
-    pinned: list[Block] = field(default_factory=list)
-    context_window_tokens: int | None = None
-    max_images_per_request: int | None = None
-    created_at: datetime = field(default_factory=_utcnow)
+#: The most a summary may write. Less when the window's remaining margin is smaller.
+SUMMARY_MAX_OUTPUT_TOKENS = 16_000
 
 
 @dataclass(frozen=True)
@@ -112,47 +70,90 @@ class ContextMeasure:
     images: int
 
 
+@dataclass
+class ModelView:
+    """The messages the model is sent, each with its transcript index (``None`` for
+    the rendered summary), and where reported usage describes this context."""
+
+    messages: list[Message]
+    indexes: list[int | None]
+    usage_from: int = 0
+    compaction: CompactionBlock | None = None
+
+
+def compaction_of(message: Message) -> CompactionBlock | None:
+    if message.kind != "compaction" or not isinstance(message.content, list):
+        return None
+    return cast(CompactionBlock, message.content[0])
+
+
 def summary_message(summary: str) -> Message:
     return Message(role="user", content=f"{SUMMARY_PREFIX}{summary}{SUMMARY_SUFFIX}")
 
 
-def fresh_prefix(record: CompactionRecord) -> list[Message]:
-    """What replaces the messages before the boundary: the summary, then the pinned blocks."""
-    prefix = [summary_message(record.summary)]
-    if record.pinned:
-        prefix.append(Message(role="user", content=list(record.pinned)))
-    return prefix
+def retained(message: Message) -> Message:
+    """A kept tagged message whose turn the summary replaced.
 
-
-def context_messages(
-    stored: Sequence[Message],
-    record: CompactionRecord | None,
-    *,
-    end: int | None = None,
-) -> list[Message]:
-    """The model's view of a thread: the latest compaction's prefix, then the
-    stored messages from its boundary on (up to ``end``, a stored index)."""
-    start = record.boundary if record is not None else 0
-    tail = list(stored[start:end])
-    return [*fresh_prefix(record), *tail] if record is not None else tail
-
-
-def usage_start(record: CompactionRecord | None) -> int:
-    """First view index whose reported usage describes this context.
-
-    The first kept message may be the assistant turn whose tool results were
-    pending; its usage measured the pre-compaction request, so it is skipped.
+    A user message is sent as it is. A tool result would be rejected without the
+    assistant call before it, and that call belongs to a replaced turn (with its
+    parallel siblings, reasoning items and thinking signatures), so replaying the
+    pair out of place is not safe either: the result becomes a user message that
+    says what it is, its content verbatim, images included.
     """
-    return len(fresh_prefix(record)) + 1 if record is not None else 0
+    if message.role == "user":
+        return message
+    label = TextBlock(
+        text=f'<retained tag="{message.tag}">Kept verbatim across compaction: the latest '
+        f"{message.role} message with this tag.</retained>"
+    )
+    body: list[PromptBlock] = (
+        list(message.content)
+        if isinstance(message.content, list)
+        else [TextBlock(text=message.content or "")]
+    )
+    return Message(role="user", content=[label, *body], tag=message.tag)
+
+
+def build_view(rows: Sequence[tuple[int, Message]]) -> ModelView:
+    """The model's view from ``list_for_model`` rows: the latest compaction rendered as
+    its summary, kept rows (tool results whose call is not kept, as :func:`retained`),
+    then every row after it. Compaction rows never reach a provider."""
+    at = next((i for i in range(len(rows) - 1, -1, -1) if rows[i][1].kind == "compaction"), None)
+    if at is None:
+        return ModelView([m for _, m in rows], [i for i, _ in rows])
+    boundary, row = rows[at]
+    block = compaction_of(row)
+    assert block is not None
+    view = ModelView([summary_message(block.summary)], [None], compaction=block)
+    calls = set[str]()
+    for index, message in rows:
+        if index == boundary or message.kind == "compaction":
+            continue
+        if index < boundary and message.role == "tool" and message.tool_call_id not in calls:
+            message = retained(message)
+        calls.update(c.id for c in message.tool_calls or [])
+        view.messages.append(message)
+        view.indexes.append(index)
+    # Usage reported before the compaction row measured the old context.
+    view.usage_from = next(
+        (n for n, i in enumerate(view.indexes) if i is not None and i > boundary),
+        len(view.messages),
+    )
+    return view
+
+
+def kept_indexes(history: Sequence[Message], before: int, tags: Sequence[str]) -> list[int]:
+    """The latest message of each tag before ``before``, as ascending indexes."""
+    latest = {
+        m.tag: i for i, m in enumerate(history[:before]) if m.tag in tags and m.kind == "message"
+    }
+    return sorted(latest.values())
 
 
 def pending_start(view: Sequence[Message], floor: int = 0) -> int:
-    """Where the not-yet-answered part of a view begins.
-
-    That is everything after the last assistant message, or that message
-    itself when it made tool calls, so a call is never separated from its
-    results. ``floor`` when no assistant message follows it.
-    """
+    """Where the not-yet-answered part of a view begins: after the last assistant
+    message, or at it when it made tool calls, so a call is never separated from its
+    results. ``floor`` when no assistant message follows it."""
     for index in range(len(view) - 1, floor - 1, -1):
         message = view[index]
         if message.role == "assistant":
@@ -191,10 +192,8 @@ def estimate_tokens(messages: Sequence[Message], system: str = "") -> int:
 def measure_request(
     system: str, view: Sequence[Message], *, usage_from: int = 0
 ) -> ContextMeasure:
-    """The last turn's reported usage plus an estimate of what was added since.
-
-    Without a reported turn in this context, the whole request is estimated.
-    """
+    """The last turn's reported usage plus an estimate of what was added since; the
+    whole request estimated when no turn in this context reported usage."""
     for index in range(len(view) - 1, usage_from - 1, -1):
         message = view[index]
         if message.role == "assistant" and message.input_tokens is not None:
@@ -222,27 +221,42 @@ def crossed_limits(
 
 
 def compaction_request(view: Sequence[Message], instructions: str = "") -> list[Message]:
-    """The summarizing turn's messages: the context being replaced, then the prompt."""
+    """The summary call's messages: the context being replaced, each stored image
+    labelled with its id for the image index, then the prompt."""
+    labelled: list[Message] = []
+    for message in view:
+        if isinstance(message.content, list) and any(
+            isinstance(b, AssetBlock) for b in message.content
+        ):
+            blocks: list[PromptBlock] = []
+            for block in message.content:
+                if isinstance(block, AssetBlock) and block.mime.startswith("image/"):
+                    blocks.append(TextBlock(text=f"[image id={image_id(block)}]"))
+                blocks.append(block)
+            message = replace(message, content=blocks)
+        labelled.append(message)
     prompt = COMPACTION_PROMPT if not instructions else f"{COMPACTION_PROMPT}\n\n{instructions}"
-    return [*view, Message(role="user", content=prompt)]
+    return [*labelled, Message(role="user", content=prompt)]
+
+
+def image_id(block: AssetBlock) -> str:
+    return block.asset_public_id or block.storage_key
 
 
 __all__ = [
     "COMPACTION_PROMPT",
-    "Compaction",
-    "CompactionHook",
-    "CompactionRecord",
-    "PinProvider",
     "ContextMeasure",
+    "ModelView",
+    "build_view",
+    "compaction_of",
     "compaction_request",
-    "context_messages",
     "count_images",
     "crossed_limits",
     "estimate_tokens",
-    "fresh_prefix",
+    "image_id",
+    "kept_indexes",
     "measure_request",
-    "pinned_item",
     "pending_start",
+    "retained",
     "summary_message",
-    "usage_start",
 ]

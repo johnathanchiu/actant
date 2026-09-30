@@ -126,9 +126,7 @@ class LocalThreadRuntime:
                             config=payload.context_compaction or CompactionConfig(),
                         )
                     )
-                    turn = await self._runs.run_turn(
-                        replace(turn_input, new_messages=[], compacted=True)
-                    )
+                    turn = await self._runs.run_turn(replace(turn_input, compacted=True))
             except Exception as error:  # the workflow fails the run here too
                 stop_reason = str(error.__cause__ or error)
                 outcome = RunOutcome.FAILED

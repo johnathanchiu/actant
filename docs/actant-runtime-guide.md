@@ -379,54 +379,52 @@ config = TemporalRuntimeConfig(
         context_window_tokens=1_000_000,
         max_images_per_request=50,  # Azure OpenAI rejects a request with more
         threshold=0.9,
-        pin=["checklist", "room_file"],
+        keep=["brief", "tool:read_checklist"],
     )
 )
-runtime = AgentRuntime(
-    client=client,
-    stores=stores,
-    config=config,
-    resolve_agent=resolve_agent,
-    pin_providers={"room_file": current_room_file},
-    on_compact=open_item_images,
-)
+runtime = AgentRuntime(client=client, stores=stores, config=config, resolve_agent=resolve_agent)
+await runtime.thread(agent_id, thread_id).send(brief, tag="brief")
 ```
 
 Before each model call, the turn activity measures the request it is about to
 send: the last turn's reported input and output tokens plus an estimate of what
-was added since, and an exact count of its images. When the request would pass
+was added since, and an exact count of its images. When it would pass
 `threshold` of `context_window_tokens`, or carry more than
-`max_images_per_request` images, nothing is sent. The workflow runs
-`compact_context`: one turn on the agent's own model, with no tools, that
-answers the built-in compaction prompt (the goal, decisions and why, what was
-verified, every open item, next steps, key facts). `compaction_instructions` on
-`AgentRuntime` appends to that prompt. The turn then runs again from a fresh
-context:
+`max_images_per_request` images, nothing is sent or stored. The workflow runs
+`compact_context`: one call on the agent's own model, with no tools, over the
+context up to the last model reply, answering the built-in prompt (the goal,
+decisions and why, what was verified, every open item, next steps, key facts,
+and an index of notable images by id). That call carries no more than the last
+request did, so it is under the image limit, and its output is capped to the
+window's remaining margin. If it fails, the run fails; nothing is dropped.
+`compaction_instructions` on `AgentRuntime` appends to the prompt.
+
+The summary is stored as a compaction row in the transcript: a message with
+`kind="compaction"` whose content is one `CompactionBlock` (the summary, the
+indexes of the kept messages, the reason, and tokens and images before and
+after). A `context_compacted` event carries the same. The turn then runs again,
+and its new messages are stored after that row. From then on the model sees:
 
 1. the system prompt;
-2. the summary;
-3. what is pinned (below);
-4. what was pending: the messages after the last model reply, or that reply
-   and its tool results when it made tool calls.
+2. the summary, as text;
+3. the kept messages, in transcript order: for each tag in `keep`, the latest
+   message with that tag, and the turn that was still open (an assistant tool
+   call with its results, never split);
+4. every message after the compaction row.
 
-Every earlier message stays in the store, untouched. The compaction is a record
-in `stores.compactions` (the boundary, the reason, tokens and images before and
-after, the summary and the pinned blocks), and a `context_compacted` event
-carries the same. Each later request is built from the latest boundary onward,
-and a second compaction summarizes the first summary and what followed it.
-Limits left `None` fall back to attributes of the same names on the model
-client (`OpenAIProvider` declares 50 images on an `AsyncAzureOpenAI` client and
-1,500 otherwise); a limit neither sets is not checked.
+Tool results are tagged `tool:<tool name>`; an app tags what it sends with
+`send(..., tag=...)`. A kept tool result whose call the summary replaced is
+sent as a user message labelled as retained, its content verbatim: a tool
+result without its call is rejected by providers, and replaying the old call
+out of place (with its siblings and reasoning items) is not safe either.
 
-State that must survive compaction must not depend on the summary. `pin` names
-it, in order, after the summary: a name in the worker's `pin_providers` calls
-that provider, which reads the app's own source of truth; any other name is a
-key of the thread's pinned notes. Pinned notes are durable per-thread text or
-blocks, written with `thread.pin(key, content)` or by the agent through
-`PinNoteTool(stores.pinned_notes)`, and every one of them is re-injected
-verbatim after every summary, named in `pin` or not. The `on_compact` hook runs
-last, for anything the declarative list cannot express. A thread that compacts
-without the hook logs a warning saying what, if anything, was pinned.
+`messages.list_for_model` reads exactly those rows, in one query that starts at
+the latest compaction row; `list_for_thread` remains the full transcript,
+compaction rows included. Images before the row are not sent again;
+`RecallImageTool(stores.messages)` gives the agent `recall_image(id)` to attach
+one again from the asset store by the id the summary lists. Limits left `None`
+fall back to attributes of the same names on the model client (`OpenAIProvider`
+declares 50 images on an `AsyncAzureOpenAI` client and 1,500 otherwise).
 
 ## Production checklist
 

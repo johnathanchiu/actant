@@ -17,42 +17,32 @@ from typing import Any
 
 @dataclass(frozen=True)
 class CompactionConfig:
-    """When to compact the model's context: the one place Actant reduces it.
+    """When to compact the model's context, and what survives it verbatim.
 
-    Compaction runs one summarizing turn on the agent's own model, then
-    continues the thread from the summary. It never truncates or rewrites a
-    stored message. It fires only when the next model request would pass
-    ``threshold`` of the context window or carry more images than the provider
-    accepts, whichever comes first.
-
-    ``None`` limits fall back to the provider (``LLMClient`` attributes of the
-    same names, when it declares them); a limit neither sets is never checked.
-    This is unrelated to ``history_size_threshold``, which rotates Temporal's
-    event history and never touches what the model sees.
-
-    ``pin`` names what must survive compaction without relying on the summary,
-    in the order it is placed after it: a name registered in the worker's
-    ``pin_providers`` runs that provider (the app reads its own source of
-    truth), and any other name is a key of the thread's pinned notes. Every
-    pinned note is re-injected either way; naming one fixes its place and logs
-    a warning when it is missing. For example::
+    Compaction is one summarizing call on the agent's own model, with no tools,
+    made when the next request would pass ``threshold`` of the context window
+    or carry more images than allowed. It never truncates, rewrites or deletes
+    a stored message. The model then sees the system prompt, the summary, the
+    latest message of each tag in ``keep`` (in transcript order), and the
+    messages from the boundary on. Tool results are tagged ``tool:<name>``;
+    an app tags what it sends (``send_message(..., tag="brief")``)::
 
         CompactionConfig(
             context_window_tokens=1_000_000,
             max_images_per_request=50,
-            threshold=0.9,
-            pin=["checklist", "room_file", "constraints"],
+            keep=["brief", "tool:read_checklist"],
         )
+
+    ``None`` limits fall back to the model client's attributes of the same
+    names; a limit neither sets is not checked. Unrelated to
+    ``history_size_threshold``, which rotates Temporal's event history.
     """
 
-    #: The model's context window in tokens.
     context_window_tokens: int | None = None
-    #: The most images one request may carry (Azure OpenAI: 50; OpenAI: 1,500).
+    #: Azure OpenAI rejects more than 50 images in one request; OpenAI, 1,500.
     max_images_per_request: int | None = None
-    #: Fraction of the context window the next request may reach.
     threshold: float = 0.9
-    #: Registered pin providers and pinned-note keys, in the order they follow the summary.
-    pin: list[str] = field(default_factory=list)
+    keep: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -177,6 +167,8 @@ class InboundMessage:
     content: str | list[dict[str, Any]]
     source: str = "user"
     correlation_id: str | None = None
+    # Stored on the message; ``CompactionConfig.keep`` names tags to keep.
+    tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -261,18 +253,16 @@ class RunTurnInput:
 class CompactionTrigger:
     """``run_turn``'s measurement of a request that would cross a limit.
 
-    ``boundary`` counts the stored messages the summary replaces (in
-    ``list_for_thread`` order); everything from it on is kept verbatim.
     ``tokens`` is the last turn's reported usage plus an estimate of what was
-    added since; ``images`` is exact.
+    added since; ``images`` is exact. ``carried`` indexes the stored messages of
+    the turn still open (an assistant tool call and its results), which the
+    summary does not replace and the compaction keeps whole.
     """
 
     reason: str
     tokens: int
     images: int
-    boundary: int
-    context_window_tokens: int | None = None
-    max_images_per_request: int | None = None
+    carried: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -288,7 +278,7 @@ class CompactContextInput:
 
 @dataclass(frozen=True)
 class CompactionOutcome:
-    compaction_id: str
+    message_id: str
     tokens_after: int
     images_after: int
 

@@ -100,6 +100,9 @@ class ActantMessageModel(ActantRuntimeBase):
     # not as free.
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # ``compaction`` rows mark where the model's view starts; see list_for_model.
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'message'"))
+    tag: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -108,6 +111,17 @@ class ActantMessageModel(ActantRuntimeBase):
         cascade="all, delete-orphan",
         order_by="ActantMessagePartModel.part_index",
         lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_actant_messages_thread_kind",
+            "agent_id",
+            "thread_id",
+            "kind",
+            "created_at",
+            "message_id",
+        ),
     )
 
 
@@ -162,58 +176,8 @@ class ActantToolCallModel(ActantRuntimeBase):
     )
 
 
-class ActantCompactionModel(ActantRuntimeBase):
-    """One compaction of a thread's model context: a boundary, never an edit.
-
-    ``boundary`` counts the thread's messages, in transcript order, that the
-    summary replaces in the model's view. The messages themselves stay.
-    """
-
-    __tablename__ = "actant_compactions"
-
-    compaction_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
-    run_id: Mapped[str] = mapped_column(Text, nullable=False)
-    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
-    boundary: Mapped[int] = mapped_column(Integer, nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    pinned_blocks: Mapped[list[Block]] = mapped_column(BlocksJSONB, nullable=False)
-    tokens_before: Mapped[int] = mapped_column(Integer, nullable=False)
-    images_before: Mapped[int] = mapped_column(Integer, nullable=False)
-    tokens_after: Mapped[int] = mapped_column(Integer, nullable=False)
-    images_after: Mapped[int] = mapped_column(Integer, nullable=False)
-    context_window_tokens: Mapped[int | None] = mapped_column(Integer)
-    max_images_per_request: Mapped[int | None] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    __table_args__ = (Index("ix_actant_compactions_thread", "agent_id", "thread_id", "boundary"),)
-
-
-class ActantPinnedNoteModel(ActantRuntimeBase):
-    """A thread's durable note, re-injected verbatim after every compaction summary."""
-
-    __tablename__ = "actant_pinned_notes"
-
-    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    key: Mapped[str] = mapped_column(Text, primary_key=True)
-    content_blocks: Mapped[list[Block]] = mapped_column(BlocksJSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
 __all__ = [
     "ACTANT_RUNTIME_METADATA",
-    "ActantCompactionModel",
-    "ActantPinnedNoteModel",
     "ActantMessageModel",
     "ActantMessagePartModel",
     "ActantRunModel",

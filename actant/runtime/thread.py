@@ -27,6 +27,8 @@ class ThreadRuntime(Protocol):
         agent_id: str,
         thread_id: str,
         content: str | list[Block],
+        *,
+        tag: str | None = None,
     ) -> str: ...
 
     async def resolve_tool_call(
@@ -53,9 +55,10 @@ class ThreadHandle:
     agent_id: str
     thread_id: str
 
-    async def send(self, content: str | list[Block]) -> str:
-        """Durably submit a user message and return the Temporal workflow id."""
-        return await self.runtime.send_message(self.agent_id, self.thread_id, content)
+    async def send(self, content: str | list[Block], *, tag: str | None = None) -> str:
+        """Durably submit a user message and return the Temporal workflow id. ``tag``
+        is stored on it, for ``CompactionConfig.keep``."""
+        return await self.runtime.send_message(self.agent_id, self.thread_id, content, tag=tag)
 
     async def resolve(
         self,
@@ -73,18 +76,6 @@ class ThreadHandle:
             approved=approved,
             answer=answer,
             payload=payload,
-        )
-
-    async def pin(self, key: str, content: str | list[Block]) -> None:
-        """Pin a durable note: re-injected verbatim after every compaction summary."""
-        await self.runtime.stores.pinned_notes.pin(self.agent_id, self.thread_id, key, content)
-
-    async def unpin(self, key: str) -> None:
-        await self.runtime.stores.pinned_notes.unpin(self.agent_id, self.thread_id, key)
-
-    async def pinned_notes(self) -> dict[str, list[Block]]:
-        return await self.runtime.stores.pinned_notes.list_for_thread(
-            self.agent_id, self.thread_id
         )
 
     async def cancel(self) -> None:

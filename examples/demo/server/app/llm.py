@@ -27,10 +27,11 @@ class DemoLLM:
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
     ) -> Message:
         if allowed_tools:
             raise NotImplementedError("DemoLLM does not generate constrained final turns")
-        del tools
+        del tools, max_output_tokens
         latest = messages[-1] if messages else Message(role="user", content="")
         text = latest.content if isinstance(latest.content, str) else ""
         lowered = text.lower()

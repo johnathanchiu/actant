@@ -21,7 +21,7 @@ from openai.types.responses.response_input_param import ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params.reasoning import Reasoning
 
-from actant.blocks import AssetBlock, PromptBlock, TextBlock
+from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
 from actant.core import JSONObject
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
@@ -70,7 +70,7 @@ def content_to_openai_user_parts(
     for block in content:
         if isinstance(block, TextBlock):
             parts.append({"type": "input_text", "text": block.text})
-        elif isinstance(block, AssetBlock):
+        elif isinstance(block, AssetBlock | CompactionBlock):
             unresolved(block)
         else:
             parts.append(convert_image_source(block))
@@ -255,11 +255,14 @@ class OpenAIProvider:
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
     ) -> Message:
         # One budget includes every retry, backoff, and rate-limiter wait.
         # An outer activity deadline must not silently multiply by attempts.
         async with asyncio.timeout(self.turn_s):
-            return await self._complete(system, messages, tools, listener, allowed_tools)
+            return await self._complete(
+                system, messages, tools, listener, allowed_tools, max_output_tokens
+            )
 
     async def _complete(
         self,
@@ -268,8 +271,11 @@ class OpenAIProvider:
         tools: list[dict],
         listener: "StreamListener | None",
         allowed_tools: tuple[str, ...],
+        max_output_tokens: int | None = None,
     ) -> Message:
         params = self._request_params(system, messages, tools)
+        if max_output_tokens is not None:
+            params["max_output_tokens"] = max_output_tokens
         if allowed_tools:
             params["tool_choice"] = {
                 "type": "allowed_tools",

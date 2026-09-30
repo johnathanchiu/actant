@@ -21,7 +21,7 @@ from actant.tools.base import (
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 from actant.tools.finish import FinishTool
 from actant.tools.function import FunctionTool, FunctionToolInvocation, ToolArguments, tool
-from actant.tools.pinned import PinNoteTool
+from actant.tools.recall import RecallImageTool
 from actant.tools.registry import ToolRegistry
 from actant.tools.supervise import SubagentSupervisor, supervision_tools
 from actant.tools.service import image_block, tool_schemas, tools
@@ -34,7 +34,7 @@ from actant.tools.task import (
 
 __all__ = [
     "InMemorySubagentRegistry",
-    "PinNoteTool",
+    "RecallImageTool",
     "BaseDeclarativeTool",
     "BaseToolInvocation",
     "CallContext",

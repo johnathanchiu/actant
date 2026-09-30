@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import timedelta
 from uuid import UUID
 import temporalio.client
@@ -11,7 +10,6 @@ import temporalio.service
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
-from actant.runtime.compaction import CompactionHook, PinProvider
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.publisher import EventSink, EventSource
 from actant.runtime.gate import TurnGate
@@ -66,9 +64,7 @@ class AgentRuntime:
         turn_gate: TurnGate | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
-        on_compact: CompactionHook | None = None,
         compaction_instructions: str = "",
-        pin_providers: Mapping[str, PinProvider] | None = None,
     ) -> None:
         self.client = client
         self.stores = stores
@@ -84,9 +80,7 @@ class AgentRuntime:
             turn_gate=turn_gate,
             run_completion_handler=run_completion_handler,
             message_preprocessor=message_preprocessor,
-            on_compact=on_compact,
             compaction_instructions=compaction_instructions,
-            pin_providers=pin_providers,
         )
         self._running = False
         self._worker: temporalio.worker.Worker | None = None
@@ -139,6 +133,7 @@ class AgentRuntime:
         content: str | list[Block],
         *,
         parent_thread_id: str | None = None,
+        tag: str | None = None,
     ) -> str:
         """Signal the thread workflow with a new inbound message.
 
@@ -155,7 +150,8 @@ class AgentRuntime:
         msg = InboundMessage(
             content=BLOCKS.dump_python(content, mode="json")
             if isinstance(content, list)
-            else content
+            else content,
+            tag=tag,
         )
         agent_max_turns = self.config.max_turns_per_run
         thread_input = ThreadInput(

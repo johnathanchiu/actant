@@ -22,10 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from actant.assets import AssetReference
 from actant.cli import invalid_block_rows
-from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
+from actant.blocks import (
+    AssetBlock,
+    Base64Source,
+    CompactionBlock,
+    InlineImageBlock,
+    TextBlock,
+    UrlImageBlock,
+)
 from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
-from actant.runtime.compaction import CompactionRecord
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA, SQLAlchemyRuntimeStores
 from actant.runtime.types.threads import RunStatus
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
@@ -255,55 +261,39 @@ async def test_terminal_tool_transition_is_atomic(stores: SQLAlchemyRuntimeStore
     assert (await stores.tool_calls.get("race")).result == {"winner": winner}
 
 
-async def test_compactions_round_trip_and_the_latest_is_the_furthest_boundary(
+async def test_list_for_model_stops_at_the_latest_compaction_row_and_adds_its_kept_rows(
     stores: SQLAlchemyRuntimeStores,
 ) -> None:
-    assert await stores.compactions.latest("a", "t") is None
-    pinned = [
-        TextBlock(text="checklist"),
-        InlineImageBlock(source=Base64Source(media_type="image/png", data="AA==")),
-    ]
-
-    def record(id: str, boundary: int) -> CompactionRecord:
-        return CompactionRecord(
-            id=id,
-            agent_id="a",
-            thread_id="t",
-            run_id="r",
-            turn_id=f"turn-{id}",
-            boundary=boundary,
-            reason="images",
-            summary=f"summary {id}",
-            tokens_before=900,
-            images_before=51,
+    def compaction(summary: str, kept: list[int]) -> CompactionBlock:
+        return CompactionBlock(
+            summary=summary,
+            kept=kept,
+            reason="tokens",
+            tokens_before=950,
             tokens_after=40,
-            images_after=2,
-            pinned=list(pinned),
-            max_images_per_request=50,
+            images_before=0,
+            images_after=0,
         )
 
-    await stores.compactions.append(record("c1", 4))
-    await stores.compactions.append(record("c2", 9))
+    messages = stores.messages
+    await messages.append_user("a", "t", "the brief", tag="brief")  # 0
+    call = ToolCall(id="c1", function=ToolCallFunction("note", "{}"))
+    await messages.append_assistant("a", "t", "turn", Message(role="assistant", tool_calls=[call]))
+    await messages.append_tool_result("a", "t", "turn", "c1", "note", {"ok": True})  # 2
+    await messages.append_compaction("a", "t", compaction("one", [0]))  # 3
+    await messages.append_user("a", "t", "second")  # 4
+    await messages.append_compaction("a", "t", compaction("two", [0, 2]))  # 5
+    await messages.append_user("a", "t", "third")  # 6
 
-    latest = await stores.compactions.latest("a", "t")
-    assert latest is not None
-    assert (latest.id, latest.boundary, latest.pinned) == ("c2", 9, pinned)
-    assert latest.context_window_tokens is None and latest.max_images_per_request == 50
-    assert [r.id for r in await stores.compactions.list_for_thread("a", "t")] == ["c1", "c2"]
-    assert await stores.compactions.latest("a", "other") is None
-
-
-async def test_pinned_notes_upsert_by_key_and_list_in_key_order(
-    stores: SQLAlchemyRuntimeStores,
-) -> None:
-    image = InlineImageBlock(source=Base64Source(media_type="image/png", data="AA=="))
-    await stores.pinned_notes.pin("a", "t", "room", [TextBlock(text="v1"), image])
-    await stores.pinned_notes.pin("a", "t", "checklist", "- [ ] one")
-    await stores.pinned_notes.pin("a", "t", "room", [TextBlock(text="v2")])
-    assert await stores.pinned_notes.list_for_thread("a", "t") == {
-        "checklist": [TextBlock(text="- [ ] one")],
-        "room": [TextBlock(text="v2")],
-    }
-    await stores.pinned_notes.unpin("a", "t", "checklist")
-    assert list(await stores.pinned_notes.list_for_thread("a", "t")) == ["room"]
-    assert await stores.pinned_notes.list_for_thread("a", "other") == {}
+    rows = await messages.list_for_model("a", "t")
+    assert [i for i, _ in rows] == [0, 2, 5, 6]
+    assert [(m.kind, m.tag) for _, m in rows] == [
+        ("message", "brief"),
+        ("message", "tool:note"),
+        ("compaction", None),
+        ("message", None),
+    ]
+    assert rows[2][1].content == [compaction("two", [0, 2])]
+    full = await messages.list_for_thread("a", "t")
+    assert [m.kind for m in full].count("compaction") == 2 and len(full) == 7
+    assert await messages.list_for_model("a", "other") == []

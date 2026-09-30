@@ -270,11 +270,14 @@ class AgentThreadWorkflow:
                         start_to_close_timeout=_COMPACT_TIMEOUT,
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
-                    # The same turn, from the fresh context. Its new messages
-                    # are already stored, and it may not compact again.
+                    # The same turn, from the fresh context; it may not compact
+                    # again. Its new messages were not stored, so they land after
+                    # the compaction row, with anything that arrived meanwhile.
+                    if payload.interleave_inbox and self._inbox:
+                        new_messages = [*new_messages, *self._drain_inbox()]
                     turn = await workflow.execute_activity_method(
                         RunActivities.run_turn,
-                        replace(turn_input, new_messages=[], compacted=True),
+                        replace(turn_input, new_messages=new_messages, compacted=True),
                         start_to_close_timeout=_RUN_TURN_TIMEOUT,
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )

@@ -41,6 +41,7 @@ class FakeLLM:
         self.max_images_per_request = max_images_per_request
         self.calls: list[tuple[str, list[Message], list[dict]]] = []
         self.allowed_tools: list[tuple[str, ...]] = []
+        self.max_output_tokens: list[int | None] = []
 
     async def complete(
         self,
@@ -50,9 +51,11 @@ class FakeLLM:
         listener: "StreamListener | None" = None,
         *,
         allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
     ) -> Message:
         self.calls.append((system, list(messages), tools))
         self.allowed_tools.append(allowed_tools)
+        self.max_output_tokens.append(max_output_tokens)
         if not self._responses:
             raise RuntimeError("FakeLLM has no queued responses")
         response = self._responses.pop(0)
