@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.26.0
 
 - `AgentRuntime.run_worker` passes `actant` through Temporal's workflow sandbox. The sandbox
   imported `actant.runtime` again for every thread workflow it started, about 5.5 s of CPU each.
