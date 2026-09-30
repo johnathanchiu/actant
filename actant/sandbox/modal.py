@@ -19,7 +19,7 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     ``SandboxSpec.upload_images`` is enabled. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
-    needs s5cmd (:func:`with_s5cmd`).
+    needs s5cmd (:func:`with_s5cmd`), and ``actant[sandbox]`` (boto3) to upload images.
 
 Either way a dead sandbox reopens on the same prefix. ``secret_name`` names a
 Modal secret holding ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` (plus

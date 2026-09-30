@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import base64
-import json
-import os
-import stat
-import sys
+import threading
 import time
-from pathlib import Path
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 
 import pytest
+from botocore.exceptions import ClientError
 
-from actant.sandbox import ImageBucket, SandboxSpec, host
+from actant.sandbox import ImageBucket, SandboxSpec, host, uploads
 from actant.sandbox.protocol import (
     CallRequest,
     CallResponse,
@@ -21,6 +20,7 @@ from actant.sandbox.protocol import (
     InlineSource,
     AssetSource,
 )
+from actant.sandbox.uploads import ImageUploader
 from actant.blocks import AssetBlock, Base64Source, InlineImageBlock
 from actant.tools import image_block
 from actant.tools.base import MetadataKey
@@ -29,46 +29,46 @@ from service_fixtures import Counter
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
 
-# Records its argv and stdin; ``FAKE_S5CMD_FAIL`` names the subcommand that fails.
-FAKE_S5CMD = f"""#!{sys.executable}
-import json, os, sys
-args = sys.argv[1:]
-log = os.environ["FAKE_S5CMD_LOG"]
-command = next(a for a in args if a in ("pipe", "presign"))
-import time
-time.sleep(float(os.environ.get("FAKE_S5CMD_SLEEP_" + command.upper(), "0")))
-data = sys.stdin.buffer.read() if command == "pipe" else b""
-with open(log, "a") as out:
-    out.write(json.dumps({{"argv": args, "stdin": len(data)}}) + "\\n")
-if os.environ.get("FAKE_S5CMD_FAIL") == command:
-    sys.stderr.write("denied\\n")
-    sys.exit(1)
-if command == "presign":
-    endpoint = args[1] if args[0] == "--endpoint-url" else "https://s3.amazonaws.com"
-    print(os.environ.get("FAKE_S5CMD_URL") or endpoint + "/" + args[-1][5:] + "?X-Amz-Signature=s")
-"""
-
 CONFIG = ImageUploadConfig(
     destination="s3://b/actant-images/t1/",
     endpoint_url="http://minio:9000",
 )
 
 
-def _inline(name: str = "image-0", data: bytes = PNG) -> Image:
-    source = InlineSource(data_b64=base64.b64encode(data).decode())
-    return Image(name=name, media_type="image/png", source=source)
+@dataclass
+class FakeS3:
+    """Records each ``put_object``; ``fail`` refuses it, ``hang`` blocks it until released."""
+
+    puts: list[dict[str, object]] = field(default_factory=list)
+    threads: list[str] = field(default_factory=list)
+    fail: bool = False
+    hang: bool = False
+    release: threading.Event = field(default_factory=threading.Event)
+
+    def put_object(
+        self, *, Bucket: str, Key: str, Body: bytes, ContentType: str
+    ) -> Mapping[str, object]:
+        self.puts.append({"Bucket": Bucket, "Key": Key, "Body": Body, "ContentType": ContentType})
+        self.threads.append(threading.current_thread().name)
+        if self.hang:
+            self.release.wait(30)
+        if self.fail:
+            error = {"Error": {"Code": "AccessDenied", "Message": "denied"}}
+            raise ClientError(error, "PutObject")
+        return {}
 
 
 @pytest.fixture
-def s5cmd_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    fake = tmp_path / "bin" / "s5cmd"
-    fake.parent.mkdir()
-    fake.write_text(FAKE_S5CMD)
-    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
-    log = tmp_path / "s5cmd.log"
-    monkeypatch.setenv("FAKE_S5CMD_LOG", str(log))
-    return log
+def s3(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeS3]:
+    fake = FakeS3()
+    monkeypatch.setattr(uploads, "s3_client", lambda endpoint_url, timeout_s: fake)
+    yield fake
+    fake.release.set()
+
+
+def _inline(name: str = "image-0", data: bytes = PNG) -> Image:
+    source = InlineSource(data_b64=base64.b64encode(data).decode())
+    return Image(name=name, media_type="image/png", source=source)
 
 
 def test_inline_and_asset_sources_round_trip() -> None:
@@ -83,38 +83,33 @@ def test_inline_and_asset_sources_round_trip() -> None:
     assert CallResponse.model_validate_json(response.to_json()) == response
 
 
-async def test_upload_is_content_addressed_and_never_presigns(s5cmd_log: Path) -> None:
-    uploaded, error = await host.upload_images(CallResponse(text="t", images=[_inline()]), CONFIG)
+async def test_upload_is_content_addressed_and_never_presigns(s3: FakeS3) -> None:
+    uploader = ImageUploader(CONFIG, s3)
+    uploaded, error = await host.upload_images(
+        CallResponse(text="t", images=[_inline()]), uploader
+    )
     assert error is None and uploaded.text == "t"
     [image] = uploaded.images
     assert isinstance(image.source, AssetSource)
     assert image.source.storage_key.startswith(CONFIG.destination)
-    [command] = [json.loads(line) for line in s5cmd_log.read_text().splitlines()]
-    assert command["argv"][:3] == ["--endpoint-url", "http://minio:9000", "pipe"]
-    assert command["argv"][-1] == image.source.storage_key
-    again, _ = await host.upload_images(CallResponse(images=[_inline()]), CONFIG)
+    [put] = s3.puts
+    assert f"s3://{put['Bucket']}/{put['Key']}" == image.source.storage_key
+    assert put["Body"] == PNG and put["ContentType"] == "image/png"
+    assert image.source.storage_key.endswith(".png")
+    again, _ = await host.upload_images(CallResponse(images=[_inline()]), uploader)
     assert again.images[0].source == image.source
 
 
-async def test_failed_upload_preserves_bytes_and_reports_reason(
-    s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("FAKE_S5CMD_FAIL", "pipe")
+async def test_failed_upload_preserves_bytes_and_reports_reason(s3: FakeS3) -> None:
+    s3.fail = True
     response = CallResponse(images=[_inline("a.png")])
-    kept, error = await host.upload_images(response, CONFIG)
+    kept, error = await host.upload_images(response, ImageUploader(CONFIG, s3))
     assert kept == response
-    assert error and error.startswith("a.png: upload exited 1") and "denied" in error
-
-
-async def test_missing_upload_binary_preserves_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PATH", "/nonexistent")
-    kept, error = await host.upload_images(CallResponse(images=[_inline()]), CONFIG)
-    assert isinstance(kept.images[0].source, InlineSource)
-    assert error and "could not start" in error
+    assert error and error.startswith("a.png: upload failed") and "denied" in error
 
 
 async def test_host_tool_result_uses_durable_reference_and_reports_upload_failure(
-    s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
+    s3: FakeS3,
 ) -> None:
     uploading = host.Host({"counter": Counter}, images=CONFIG)
     request = CallRequest(service="counter", key="k", method="picture", args={"size": 4})
@@ -125,10 +120,10 @@ async def test_host_tool_result_uses_durable_reference_and_reports_upload_failur
     assert result.content_blocks and result.content_blocks[-1] == AssetBlock(
         storage_key=source.storage_key, mime="image/png"
     )
-    monkeypatch.setenv("FAKE_S5CMD_FAIL", "pipe")
+    s3.fail = True
     _, fallback = await uploading.call(request)
     assert isinstance(fallback.images[0].source, InlineSource)
-    assert "upload exited 1" in str(to_tool_result(fallback).metadata[MetadataKey.STORAGE])
+    assert "upload failed" in str(to_tool_result(fallback).metadata[MetadataKey.STORAGE])
     _, plain = await uploading.call(
         CallRequest(service="counter", key="k", method="length", args={"text": "ab"})
     )
@@ -147,32 +142,49 @@ def test_upload_configuration_has_no_signing_or_retention_policy() -> None:
 
 
 async def test_after_failure_unstarted_images_stay_inline(
-    s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
+    s3: FakeS3, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(host, "UPLOAD_CONCURRENCY", 1)
-    monkeypatch.setenv("FAKE_S5CMD_FAIL", "pipe")
+    s3.fail = True
     images = [_inline(f"i{n}.png", PNG + bytes([n])) for n in range(3)]
-    kept, error = await host.upload_images(CallResponse(images=images), CONFIG)
+    kept, error = await host.upload_images(CallResponse(images=images), ImageUploader(CONFIG, s3))
     assert kept.images == images and error and error.startswith("i0.png: upload")
-    assert len(s5cmd_log.read_text().splitlines()) == 1
+    assert len(s3.puts) == 1
 
 
-async def test_default_upload_endpoint_uses_aws(s5cmd_log: Path) -> None:
-    uploaded, error = await host.upload_images(
-        CallResponse(images=[_inline()]), ImageUploadConfig(destination="s3://b/p/")
-    )
-    assert error is None and isinstance(uploaded.images[0].source, AssetSource)
-    [command] = [json.loads(line)["argv"] for line in s5cmd_log.read_text().splitlines()]
-    assert command[0] == "pipe"
-
-
-async def test_hung_upload_is_bounded_and_preserves_bytes(
-    s5cmd_log: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("FAKE_S5CMD_SLEEP_PIPE", "30")
+async def test_hung_upload_is_bounded_and_preserves_bytes(s3: FakeS3) -> None:
+    s3.hang = True
+    uploader = ImageUploader(CONFIG.model_copy(update={"timeout_s": 0.5}), s3)
     started = time.monotonic()
-    kept, error = await host.upload_images(
-        CallResponse(images=[_inline()]), CONFIG.model_copy(update={"timeout_s": 0.5})
-    )
+    kept, error = await host.upload_images(CallResponse(images=[_inline()]), uploader)
     assert time.monotonic() - started < 5
-    assert isinstance(kept.images[0].source, InlineSource) and error and "timed out" in error
+    assert isinstance(kept.images[0].source, InlineSource)
+    assert error == "image-0: upload timed out after 0.5s"
+
+
+async def test_uploads_share_one_client_on_their_own_threads(s3: FakeS3) -> None:
+    uploading = host.Host({"counter": Counter}, images=CONFIG)
+    assert uploading.uploader is not None and uploading.uploader.client is s3
+    request = CallRequest(service="counter", key="k", method="picture", args={"size": 4})
+    for _ in range(3):
+        await uploading.call(request)
+    assert len(s3.threads) == 3 and all(name.startswith("actant-upload") for name in s3.threads)
+
+
+def test_client_reads_the_environment_and_uses_path_style_for_an_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/nonexistent")
+    monkeypatch.setenv("AWS_REGION", "auto")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "k")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s")
+    meta = uploads.s3_client("http://minio:9000", 7.0).meta  # pyright: ignore[reportAttributeAccessIssue]
+    config = meta.config
+    assert meta.region_name == "auto" and meta.endpoint_url == "http://minio:9000"
+    assert config.s3 == {"addressing_style": "path"}
+    assert config.max_pool_connections == uploads.UPLOAD_THREADS
+    assert config.read_timeout == 7.0 and config.connect_timeout == 7.0
+    monkeypatch.delenv("AWS_REGION")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+    default = uploads.s3_client(None, 10.0).meta  # pyright: ignore[reportAttributeAccessIssue]
+    assert default.region_name == "eu-west-1" and default.config.s3 is None
