@@ -60,13 +60,13 @@ class UrlImageBlock(_Block):
 
 class CompactionBlock(_Block):
     """The content of a compaction message (``Message.kind == "compaction"``): the
-    summary that replaces the messages before it in the model's view, and the indexes
-    (in transcript order) of the earlier messages kept verbatim. Never sent to a
+    summary that replaces the messages before it in the model's view, and the
+    message ids of the earlier messages kept verbatim. Never sent to a
     provider; the view builder renders it as the summary's text."""
 
     type: Literal["compaction"] = "compaction"
     summary: str
-    kept: list[int] = Field(default_factory=list)
+    kept: list[str] = Field(default_factory=list)
     reason: str
     tokens_before: int
     tokens_after: int

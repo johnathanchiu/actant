@@ -23,7 +23,7 @@ from actant.runtime.compaction import (
     compaction_request,
     count_images,
     crossed_limits,
-    kept_indexes,
+    kept_ids,
     measure_request,
     pending_start,
 )
@@ -290,7 +290,7 @@ class RunActivities:
         view = build_view(
             await self.context.stores.messages.list_for_model(payload.agent_id, payload.thread_id)
         )
-        cut = view.indexes.index(trigger.carried[0]) if trigger.carried else len(view.messages)
+        cut = view.ids.index(trigger.carried[0]) if trigger.carried else len(view.messages)
         request = await self._prepare(
             compaction_request(view.messages[:cut], self.context.compaction_instructions),
             payload.agent_id,
@@ -324,8 +324,10 @@ class RunActivities:
         history = await self.context.stores.messages.list_for_thread(
             payload.agent_id, payload.thread_id
         )
-        before = trigger.carried[0] if trigger.carried else len(history)
-        kept = sorted({*kept_indexes(history, before, payload.config.keep), *trigger.carried})
+        ids = [m.id for m in history]
+        before = ids.index(trigger.carried[0]) if trigger.carried else len(history)
+        chosen = {*kept_ids(history, before, payload.config.keep), *trigger.carried}
+        kept = sorted(chosen, key=ids.index)
         block = CompactionBlock(
             summary=summary,
             kept=kept,
@@ -336,7 +338,7 @@ class RunActivities:
             images_after=0,
         )
         row = Message(role="user", content=[block], kind="compaction")
-        fresh = build_view([*((i, history[i]) for i in kept), (len(history), row)])
+        fresh = build_view([*(m for m in history if m.id in chosen), row])
         prepared = await self._prepare(
             fresh.messages, payload.agent_id, payload.thread_id, payload.run_id, payload.turn_id
         )
@@ -504,7 +506,7 @@ def _compaction_trigger(
             measure.images,
         )
         return None
-    carried = [i for i in model_view.indexes[start:] if i is not None]
+    carried = [i for i in model_view.ids[start:] if i is not None]
     return CompactionTrigger(
         reason=reason, tokens=measure.tokens, images=measure.images, carried=carried
     )

@@ -7,8 +7,7 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import Integer, cast as sql_cast, func, or_, select, type_coerce, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import literal, or_, select, tuple_, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -16,6 +15,7 @@ from sqlalchemy.orm import selectinload
 from actant.blocks import Block, CompactionBlock
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
+from actant.runtime.compaction import compaction_of
 from actant.runtime.session import message_to_parts, tool_result_content
 from actant.runtime.stores.postgres.conversion import (
     message_from_header,
@@ -351,44 +351,39 @@ class SQLAlchemyMessageStore:
             ).all()
             return [message_from_header(row) for row in rows]
 
-    async def list_for_model(self, agent_id: str, thread_id: str) -> list[tuple[int, Message]]:
-        # Positions come from the headers alone; parts load only for the rows chosen:
-        # the latest compaction row, every row after it, and the rows it keeps.
-        M, P = ActantMessageModel, ActantMessagePartModel
-        ordered = (
-            select(
-                M.message_id,
-                M.kind,
-                (func.row_number().over(order_by=(M.created_at, M.message_id)) - 1).label("idx"),
-            )
-            .where(M.agent_id == agent_id, M.thread_id == thread_id)
-            .cte("ordered")
-        )
-        latest = (
-            select(ordered.c.message_id, ordered.c.idx)
-            .where(ordered.c.kind == "compaction")
-            .order_by(ordered.c.idx.desc())
-            .limit(1)
-            .cte("latest")
-        )
-        kept = select(
-            sql_cast(
-                func.jsonb_array_elements_text(type_coerce(P.content_blocks, JSONB)[0]["kept"]),
-                Integer,
-            ).label("idx")
-        ).join(latest, P.message_id == latest.c.message_id)
-        start = func.coalesce(select(latest.c.idx).scalar_subquery(), 0)
+    async def list_for_model(self, agent_id: str, thread_id: str) -> list[Message]:
+        M = ActantMessageModel
+        thread = (M.agent_id == agent_id, M.thread_id == thread_id)
         async with self.session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(M, ordered.c.idx)
-                    .join(ordered, ordered.c.message_id == M.message_id)
+            latest = (
+                await session.scalars(
+                    select(M)
                     .options(selectinload(M.parts))
-                    .where(or_(ordered.c.idx >= start, ordered.c.idx.in_(kept)))
-                    .order_by(ordered.c.idx)
+                    .where(*thread, M.kind == "compaction")
+                    .order_by(M.created_at.desc(), M.message_id.desc())
+                    .limit(1)
+                )
+            ).first()
+            if latest is None:
+                return await self.list_for_thread(agent_id, thread_id)
+            block = compaction_of(message_from_header(latest))
+            kept = block.kept if block is not None else []
+            rows = (
+                await session.scalars(
+                    select(M)
+                    .options(selectinload(M.parts))
+                    .where(
+                        *thread,
+                        or_(
+                            tuple_(M.created_at, M.message_id)
+                            >= tuple_(literal(latest.created_at), literal(latest.message_id)),
+                            M.message_id.in_(kept),
+                        ),
+                    )
+                    .order_by(M.created_at, M.message_id)
                 )
             ).all()
-            return [(idx, message_from_header(row)) for row, idx in rows]
+            return [message_from_header(row) for row in rows]
 
     async def _append(
         self, agent_id: str, thread_id: str, turn_id: str | None, message: Message

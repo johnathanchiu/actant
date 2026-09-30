@@ -401,7 +401,7 @@ window's remaining margin. If it fails, the run fails; nothing is dropped.
 
 The summary is stored as a compaction row in the transcript: a message with
 `kind="compaction"` whose content is one `CompactionBlock` (the summary, the
-indexes of the kept messages, the reason, and tokens and images before and
+message ids of the kept messages, the reason, and tokens and images before and
 after). A `context_compacted` event carries the same. The turn then runs again,
 and its new messages are stored after that row. From then on the model sees:
 
@@ -418,8 +418,8 @@ sent as a user message labelled as retained, its content verbatim: a tool
 result without its call is rejected by providers, and replaying the old call
 out of place (with its siblings and reasoning items) is not safe either.
 
-`messages.list_for_model` reads exactly those rows, in one query that starts at
-the latest compaction row; `list_for_thread` remains the full transcript,
+`messages.list_for_model` reads exactly those rows: the latest compaction row,
+then the rows at or after it plus the kept ones; `list_for_thread` remains the full transcript,
 compaction rows included. Images before the row are not sent again;
 `RecallImageTool(stores.messages)` gives the agent `recall_image(id)` to attach
 one again from the asset store by the id the summary lists. Limits left `None`

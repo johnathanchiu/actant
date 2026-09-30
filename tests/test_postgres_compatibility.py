@@ -264,7 +264,7 @@ async def test_terminal_tool_transition_is_atomic(stores: SQLAlchemyRuntimeStore
 async def test_list_for_model_stops_at_the_latest_compaction_row_and_adds_its_kept_rows(
     stores: SQLAlchemyRuntimeStores,
 ) -> None:
-    def compaction(summary: str, kept: list[int]) -> CompactionBlock:
+    def compaction(summary: str, kept: list[str]) -> CompactionBlock:
         return CompactionBlock(
             summary=summary,
             kept=kept,
@@ -276,24 +276,24 @@ async def test_list_for_model_stops_at_the_latest_compaction_row_and_adds_its_ke
         )
 
     messages = stores.messages
-    await messages.append_user("a", "t", "the brief", tag="brief")  # 0
+    brief = await messages.append_user("a", "t", "the brief", tag="brief")
     call = ToolCall(id="c1", function=ToolCallFunction("note", "{}"))
     await messages.append_assistant("a", "t", "turn", Message(role="assistant", tool_calls=[call]))
-    await messages.append_tool_result("a", "t", "turn", "c1", "note", {"ok": True})  # 2
-    await messages.append_compaction("a", "t", compaction("one", [0]))  # 3
-    await messages.append_user("a", "t", "second")  # 4
-    await messages.append_compaction("a", "t", compaction("two", [0, 2]))  # 5
-    await messages.append_user("a", "t", "third")  # 6
+    note = await messages.append_tool_result("a", "t", "turn", "c1", "note", {"ok": True})
+    await messages.append_compaction("a", "t", compaction("one", [brief.id]))
+    await messages.append_user("a", "t", "second")
+    last = await messages.append_compaction("a", "t", compaction("two", [brief.id, note.id]))
+    third = await messages.append_user("a", "t", "third")
 
     rows = await messages.list_for_model("a", "t")
-    assert [i for i, _ in rows] == [0, 2, 5, 6]
-    assert [(m.kind, m.tag) for _, m in rows] == [
+    assert [m.id for m in rows] == [brief.id, note.id, last.id, third.id]
+    assert [(m.kind, m.tag) for m in rows] == [
         ("message", "brief"),
         ("message", "tool:note"),
         ("compaction", None),
         ("message", None),
     ]
-    assert rows[2][1].content == [compaction("two", [0, 2])]
+    assert rows[2].content == [compaction("two", [brief.id, note.id])]
     full = await messages.list_for_thread("a", "t")
     assert [m.kind for m in full].count("compaction") == 2 and len(full) == 7
     assert await messages.list_for_model("a", "other") == []

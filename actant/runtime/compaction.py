@@ -72,11 +72,11 @@ class ContextMeasure:
 
 @dataclass
 class ModelView:
-    """The messages the model is sent, each with its transcript index (``None`` for
+    """The messages the model is sent, each with its stored message id (``None`` for
     the rendered summary), and where reported usage describes this context."""
 
     messages: list[Message]
-    indexes: list[int | None]
+    ids: list[str | None]
     usage_from: int = 0
     compaction: CompactionBlock | None = None
 
@@ -114,40 +114,38 @@ def retained(message: Message) -> Message:
     return Message(role="user", content=[label, *body], tag=message.tag)
 
 
-def build_view(rows: Sequence[tuple[int, Message]]) -> ModelView:
+def build_view(rows: Sequence[Message]) -> ModelView:
     """The model's view from ``list_for_model`` rows: the latest compaction rendered as
     its summary, kept rows (tool results whose call is not kept, as :func:`retained`),
     then every row after it. Compaction rows never reach a provider."""
-    at = next((i for i in range(len(rows) - 1, -1, -1) if rows[i][1].kind == "compaction"), None)
+    at = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].kind == "compaction"), None)
     if at is None:
-        return ModelView([m for _, m in rows], [i for i, _ in rows])
-    boundary, row = rows[at]
-    block = compaction_of(row)
+        return ModelView(list(rows), [m.id for m in rows])
+    block = compaction_of(rows[at])
     assert block is not None
     view = ModelView([summary_message(block.summary)], [None], compaction=block)
     calls = set[str]()
-    for index, message in rows:
-        if index == boundary or message.kind == "compaction":
+    for position, message in enumerate(rows):
+        if message.kind == "compaction":
             continue
-        if index < boundary and message.role == "tool" and message.tool_call_id not in calls:
+        if position < at and message.role == "tool" and message.tool_call_id not in calls:
             message = retained(message)
         calls.update(c.id for c in message.tool_calls or [])
         view.messages.append(message)
-        view.indexes.append(index)
+        view.ids.append(rows[position].id)
     # Usage reported before the compaction row measured the old context.
-    view.usage_from = next(
-        (n for n, i in enumerate(view.indexes) if i is not None and i > boundary),
-        len(view.messages),
-    )
+    view.usage_from = len(view.messages) - (len(rows) - 1 - at)
     return view
 
 
-def kept_indexes(history: Sequence[Message], before: int, tags: Sequence[str]) -> list[int]:
-    """The latest message of each tag before ``before``, as ascending indexes."""
+def kept_ids(history: Sequence[Message], before: int, tags: Sequence[str]) -> list[str]:
+    """The ids of the latest message of each tag before position ``before``."""
     latest = {
-        m.tag: i for i, m in enumerate(history[:before]) if m.tag in tags and m.kind == "message"
+        m.tag: m.id
+        for m in history[:before]
+        if m.tag in tags and m.kind == "message" and m.id is not None
     }
-    return sorted(latest.values())
+    return list(latest.values())
 
 
 def pending_start(view: Sequence[Message], floor: int = 0) -> int:
@@ -254,7 +252,7 @@ __all__ = [
     "crossed_limits",
     "estimate_tokens",
     "image_id",
-    "kept_indexes",
+    "kept_ids",
     "measure_request",
     "pending_start",
     "retained",

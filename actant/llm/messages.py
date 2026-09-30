@@ -109,6 +109,8 @@ class Message:
     # keeps the latest message of each tag in ``CompactionConfig.keep``.
     kind: Kind = "message"
     tag: str | None = None
+    # The stored row's message_id, set by the store on read; not part of equality.
+    id: str | None = field(default=None, compare=False)
 
     @property
     def total_tokens(self) -> int | None:
@@ -136,6 +138,7 @@ class Message:
                 output_tokens=value.output_tokens,
                 kind=value.kind,
                 tag=value.tag,
+                id=value.id,
             )
         if not isinstance(value, dict):
             raise TypeError(f"Expected Message or dict, got {type(value).__name__}")

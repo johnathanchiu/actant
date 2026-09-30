@@ -128,10 +128,9 @@ class MessageStore(Protocol):
         """The full transcript, compaction rows included: for viewing and replay."""
         ...
 
-    async def list_for_model(self, agent_id: str, thread_id: str) -> list[tuple[int, Message]]:
-        """What the model's view is built from, in one read that stops at the latest
-        compaction row: that row and every row after it, plus the rows it keeps, each
-        with its index in the transcript, in transcript order. A thread that never
+    async def list_for_model(self, agent_id: str, thread_id: str) -> list[Message]:
+        """What the model's view is built from: the latest compaction row and every
+        row after it, plus the rows it keeps, in transcript order. A thread that never
         compacted returns every row."""
         ...
 

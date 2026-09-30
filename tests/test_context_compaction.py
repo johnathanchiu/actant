@@ -252,7 +252,7 @@ async def test_the_view_is_summary_then_the_latest_of_each_kept_tag_then_the_res
     assert [m.tag for m in stored[:6]] == ["brief", None, "tool:note", None, "tool:note", None]
     [(index, block)] = await s.compactions()
     # tool:note is kept at its latest version (note b), not the first.
-    assert (index, block.kept) == (6, [0, 4])
+    assert (index, block.kept) == (6, [stored[0].id, stored[4].id])
     system, fresh, _ = s.llm.calls[4]
     assert system == _PERSONA
     assert fresh == [summary_message("SUMMARY"), stored[0], retained(stored[4]), stored[7]]
@@ -269,7 +269,7 @@ async def test_the_boundary_never_splits_a_tool_call_from_its_result() -> None:
     _, request, _ = s.llm.calls[1]
     assert not any(m.tool_calls for m in request)
     [(index, block)] = await s.compactions()
-    assert (index, block.kept) == (3, [1, 2])
+    assert (index, block.kept) == (3, [stored[1].id, stored[2].id])
     _, fresh, _ = s.llm.calls[2]
     assert fresh == [summary_message("SUMMARY"), stored[1], stored[2]]
     assert [m.role for m in fresh[1:]] == ["assistant", "tool"]
@@ -320,8 +320,9 @@ async def test_list_for_model_reads_from_the_latest_compaction_row_plus_its_kept
     await s.run("third", keep)
 
     rows = await s.stores.messages.list_for_model(_AGENT, _THREAD)
-    assert [i for i, _ in rows] == [0, 5, 6, 7]
-    assert compaction_of(rows[1][1]) == (await s.compactions())[1][1]
+    stored = await s.stored()
+    assert [m.id for m in rows] == [stored[i].id for i in (0, 5, 6, 7)]
+    assert compaction_of(rows[1]) == (await s.compactions())[1][1]
 
 
 async def test_a_rejected_summary_call_fails_the_run_and_drops_nothing() -> None:

@@ -15,14 +15,14 @@ affect users.
   counted exactly). When it would pass the threshold or the image limit, nothing is sent: a
   new `compact_context` activity makes one call on the agent's model, with no tools and output
   capped to the window's margin, and appends a compaction row (`Message.kind="compaction"`,
-  one `CompactionBlock`: summary, kept indexes, reason, tokens and images before and after)
+  one `CompactionBlock`: summary, kept message ids, reason, tokens and images before and after)
   plus a `context_compacted` event. The model then sees system prompt, summary, kept messages
   (the latest of each tag in `keep`, and the open tool turn), and the rows after the
   compaction row. No stored message is truncated, rewritten or deleted; a failed summary call
   fails the run. Threads without the setting build their requests and replay as before.
-- Messages carry `kind` and `tag`. Tool results are tagged `tool:<name>`; `send_message`,
+- Messages carry `kind`, `tag`, and `id` (the stored message id, set on read). Tool results are tagged `tool:<name>`; `send_message`,
   `ThreadHandle.send` and `InboundMessage` take `tag`. `MessageStore` gains `append_compaction`
-  and `list_for_model` (one read from the latest compaction row), and `append_user` takes
+  and `list_for_model` (reads from the latest compaction row), and `append_user` takes
   `tag`: breaking for custom stores.
 - `LLMClient.complete` takes `max_output_tokens`, which every provider honours; breaking for
   custom clients. `OpenAIProvider` takes `context_window_tokens` and `max_images_per_request`

@@ -254,7 +254,7 @@ class CompactionTrigger:
     """``run_turn``'s measurement of a request that would cross a limit.
 
     ``tokens`` is the last turn's reported usage plus an estimate of what was
-    added since; ``images`` is exact. ``carried`` indexes the stored messages of
+    added since; ``images`` is exact. ``carried`` names the stored messages (by id) of
     the turn still open (an assistant tool call and its results), which the
     summary does not replace and the compaction keeps whole.
     """
@@ -262,7 +262,7 @@ class CompactionTrigger:
     reason: str
     tokens: int
     images: int
-    carried: list[int] = field(default_factory=list)
+    carried: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
