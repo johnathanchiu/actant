@@ -16,7 +16,9 @@ under a per-thread prefix, in one of two ways (``SandboxSpec.storage``):
     pushes once more. Restored files get their objects' mtimes, so a push
     uploads only what changed. Images a service returns are uploaded at once under
     ``image_prefix`` and returned as durable asset references when
-    ``SandboxSpec.upload_images`` is enabled. The tradeoff: s5cmd
+    ``SandboxSpec.upload_images`` is enabled. A read-only input too large to pull
+    (a capture) can be mounted into the disk instead (:meth:`ModalSandboxProvider.bucket_mounts`);
+    no pull or push touches a mount's path. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
     needs s5cmd (:func:`with_s5cmd`), and ``actant[sandbox]`` (boto3) to upload images.
@@ -123,6 +125,16 @@ class Location:
         return f"s3://{self.bucket}/{self.prefix}"
 
 
+def _check_path(path: str, what: str) -> None:
+    if path and any(part in ("", ".", "..") for part in path.split("/")):
+        raise ValueError(f"a {what} path is relative and normalized: {path!r}")
+
+
+def _inside(path: str, parent: str) -> bool:
+    """Whether ``path`` is ``parent`` or under it (both relative to :data:`DISK_PATH`)."""
+    return not parent or path == parent or path.startswith(f"{parent}/")
+
+
 @dataclass(frozen=True)
 class Restore:
     """One entry of a ``disk_sync`` restore plan: ``source`` pulled into ``path`` (relative
@@ -134,9 +146,23 @@ class Restore:
     push: bool
 
     def __post_init__(self) -> None:
-        parts = self.path.split("/")
-        if self.path and any(part in ("", ".", "..") for part in parts):
-            raise ValueError(f"a restore path is relative and normalized: {self.path!r}")
+        _check_path(self.path, "restore")
+
+
+@dataclass(frozen=True)
+class Mount:
+    """A read-only bucket prefix mounted at ``path`` (relative to :data:`DISK_PATH`, never
+    the root) of a ``disk_sync`` disk, with ``CloudBucketMount``: files are fetched when
+    read, so opening costs nothing however large ``source`` is. No pull, push or mtime
+    stamp touches ``path``."""
+
+    source: Location
+    path: str
+
+    def __post_init__(self) -> None:
+        if not self.path:
+            raise ValueError("a mount path is not the disk's root")
+        _check_path(self.path, "mount")
 
 
 @dataclass
@@ -180,7 +206,17 @@ class ModalSandboxProvider:
         secrets = [modal.Secret.from_name(name) for name in spec.secrets]
         disk_sync = spec.storage == Storage.DISK_SYNC
         if disk_sync:
-            root, volumes = DISK_PATH, {}
+            root = DISK_PATH
+            volumes = {
+                _disk(m.path): modal.CloudBucketMount(
+                    m.source.bucket,
+                    key_prefix=m.source.prefix or None,
+                    bucket_endpoint_url=self.endpoint_url,
+                    secret=bucket_secret,
+                    read_only=True,
+                )
+                for m in self._plan(thread_id).mounts
+            }
             if bucket_secret is not None:
                 secrets.append(bucket_secret)
         else:  # Storage.MOUNT; SandboxSpec rejects anything else
@@ -298,16 +334,19 @@ class ModalSandboxProvider:
         disk_sync = spec.storage == Storage.DISK_SYNC
         restore = push = None
         if disk_sync:
-            pushed, others = self._plan(thread_id)
+            plan = self._plan(thread_id)
+            pushed, others, mounts = plan.pushed, plan.others, plan.mounts
             restore = RestoreConfig(
-                argv=self._pull_argv(pushed),
+                argv=self._pull_argv(pushed, mounts),
                 timeout_s=SYNC_TIMEOUT_S,
                 attempt_timeout_s=spec.restore_attempt_timeout_s,
                 attempts=spec.restore_attempts,
-                stamp=self._stamp_config(pushed),
-                seed=None if spec.seed is None else self._seed_config(pushed, spec.seed),
+                stamp=self._stamp_config(pushed, mounts),
+                seed=None if spec.seed is None else self._seed_config(pushed, spec.seed, mounts),
                 also=[
-                    PullConfig(argv=self._pull_argv(r), stamp=self._stamp_config(r))
+                    PullConfig(
+                        argv=self._pull_argv(r, mounts), stamp=self._stamp_config(r, mounts)
+                    )
                     for r in others
                 ],
             )
@@ -344,15 +383,28 @@ class ModalSandboxProvider:
         workspace, which a seed fills. By default, the thread's own prefix at the root."""
         return [Restore(self.thread_location(thread_id), "", push=True)]
 
-    def _plan(self, thread_id: str) -> tuple[Restore, list[Restore]]:
-        """The plan's pushed entry and the others, checked."""
+    def bucket_mounts(self, thread_id: str) -> Sequence[Mount]:
+        """Read-only prefixes mounted into a ``disk_sync`` disk; override to add inputs too
+        large to pull. A mount's path is inside no other mount's, and no restore entry's
+        path is at or under it. By default, none."""
+        del thread_id
+        return []
+
+    def _plan(self, thread_id: str) -> _Plan:
+        """The restore plan's pushed entry, the other entries and the mounts, checked."""
         plan = list(self.restore_plan(thread_id))
+        mounts = list(self.bucket_mounts(thread_id))
         pushed = [r for r in plan if r.push]
         if len(pushed) != 1:
             raise ValueError(f"a restore plan pushes exactly one entry, not {len(pushed)}")
         if len({r.path for r in plan}) != len(plan):
             raise ValueError("a restore plan's paths are distinct")
-        return pushed[0], [r for r in plan if not r.push]
+        for i, mount in enumerate(mounts):
+            if any(_inside(r.path, mount.path) for r in plan):
+                raise ValueError(f"a restore entry is at or under mount {mount.path!r}")
+            if any(_inside(mount.path, m.path) or _inside(m.path, mount.path) for m in mounts[:i]):
+                raise ValueError(f"mount {mount.path!r} overlaps another mount")
+        return _Plan(pushed[0], [r for r in plan if not r.push], mounts)
 
     def _s5cmd(self, *args: str) -> list[str]:
         endpoint = ["--endpoint-url", self.endpoint_url] if self.endpoint_url else []
@@ -364,46 +416,71 @@ class ModalSandboxProvider:
         DeleteObjects, which Supabase's S3 gateway does not serve (``InvalidRequest: must
         have required property 'Body'``) and one such push failure loses a finished run's
         last files."""
-        pushed, others = self._plan(thread_id)
-        inside = f"{pushed.path}/" if pushed.path else ""
+        plan = self._plan(thread_id)
+        pushed = plan.pushed
+        skipped = [r.path for r in plan.others] + [m.path for m in plan.mounts]
         # s5cmd 2.3 matches a local file's absolute path, less its leading "/".
         excludes = [
             arg
-            for r in others
-            if r.path.startswith(inside)
-            for arg in ("--exclude", f"{_disk(r.path).lstrip('/')}/*")
+            for path in skipped
+            if _inside(path, pushed.path)
+            for arg in ("--exclude", f"{_disk(path).lstrip('/')}/*")
         ]
         return self._s5cmd("sync", *excludes, f"{_disk(pushed.path)}/", pushed.source.url)
 
-    def _seed_config(self, pushed: Restore, seed: str) -> SeedConfig:
+    def _seed_config(self, pushed: Restore, seed: str, mounts: Sequence[Mount]) -> SeedConfig:
         """Pull ``seed`` onto a new thread's disk while copying it into the thread's prefix."""
         source = Restore(Location(self.bucket, seed), pushed.path, push=False)
         marker = self._marker(pushed.source)
         return SeedConfig(
-            argv=self._pull_argv(source),
+            argv=self._pull_argv(source, mounts),
             copy_argv=self._s5cmd("cp", f"{source.source.url}*", pushed.source.url),
             write_marker_argv=self._s5cmd("pipe", marker),
             check_marker_argv=self._s5cmd("ls", marker),
-            stamp=self._stamp_config(source),
+            stamp=self._stamp_config(source, mounts),
         )
 
     def seed_marker(self, thread_id: str) -> str:
         """The object that says a thread's seed copy finished: a sibling of its prefix
         (``sandboxes/t1`` + :data:`SEED_MARKER_SUFFIX`), so no pull or push touches it."""
-        return self._marker(self._plan(thread_id)[0].source)
+        return self._marker(self._plan(thread_id).pushed.source)
 
     @staticmethod
     def _marker(location: Location) -> str:
         return f"{location.url.rstrip('/')}{SEED_MARKER_SUFFIX}"
 
-    def _pull_argv(self, restore: Restore) -> list[str]:
-        """Pull an entry onto the disk (never deletes)."""
-        return self._s5cmd("sync", f"{restore.source.url}*", f"{_disk(restore.path)}/")
+    def _pull_argv(self, restore: Restore, mounts: Sequence[Mount]) -> list[str]:
+        """Pull an entry onto the disk (never deletes), skipping the mounts inside it."""
+        # For a bucket source, s5cmd 2.3 matches an object's whole key.
+        excludes = [
+            arg
+            for relative in _mounted(restore, mounts)
+            for arg in ("--exclude", f"{restore.source.prefix}{relative}/*")
+        ]
+        return self._s5cmd("sync", *excludes, f"{restore.source.url}*", f"{_disk(restore.path)}/")
 
-    def _stamp_config(self, restore: Restore) -> StampConfig:
+    def _stamp_config(self, restore: Restore, mounts: Sequence[Mount]) -> StampConfig:
         """List an entry alongside its pull, so pulled files keep their objects' mtimes."""
         argv = ["s5cmd", "--json", *self._s5cmd("ls", f"{restore.source.url}*")[1:]]
-        return StampConfig(argv=argv, prefix=restore.source.url, root=_disk(restore.path))
+        return StampConfig(
+            argv=argv,
+            prefix=restore.source.url,
+            root=_disk(restore.path),
+            skip=[f"{restore.source.url}{relative}/" for relative in _mounted(restore, mounts)],
+        )
+
+
+@dataclass(frozen=True)
+class _Plan:
+    pushed: Restore
+    others: list[Restore]
+    mounts: list[Mount]
+
+
+def _mounted(restore: Restore, mounts: Sequence[Mount]) -> list[str]:
+    """The paths of the mounts inside ``restore``'s, relative to it."""
+    start = len(restore.path) + 1 if restore.path else 0
+    return [m.path[start:] for m in mounts if _inside(m.path, restore.path)]
 
 
 def _disk(path: str) -> str:

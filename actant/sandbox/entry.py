@@ -78,16 +78,17 @@ class ListedObject(BaseModel):
     size: int = 0
 
 
-def stamp_mtimes(listing: Iterable[str], prefix: str, root: Path) -> int:
+def stamp_mtimes(listing: Iterable[str], prefix: str, root: Path, skip: Sequence[str] = ()) -> int:
     """Set each local file's mtime to its object's ``last_modified`` when the sizes match;
-    how many were stamped. ``listing`` is ``s5cmd --json ls`` output, one object per line."""
+    how many were stamped. ``listing`` is ``s5cmd --json ls`` output, one object per line.
+    Keys under a ``skip`` prefix (a read-only mount) are left alone."""
     stamped = 0
     for line in listing:
         try:
             item = ListedObject.model_validate_json(line)
         except ValidationError:
             continue
-        if not item.key.startswith(prefix):
+        if not item.key.startswith(prefix) or item.key.startswith(tuple(skip)):
             continue
         when = item.last_modified  # parsing floors to the microsecond
         # Integer nanoseconds: a float can round a stamp past its object's time, and
@@ -284,7 +285,7 @@ def stamp(
         if EMPTY_PREFIX not in output:  # an empty prefix is a new thread: nothing to stamp
             print(f"mtime stamp skipped: {output[-1000:]}", file=sys.stderr)
         return
-    stamp_mtimes(lines, config.prefix, Path(config.root))
+    stamp_mtimes(lines, config.prefix, Path(config.root), config.skip)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

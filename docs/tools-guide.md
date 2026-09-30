@@ -403,6 +403,23 @@ class SceneProvider(ModalSandboxProvider):
         ]
 ```
 
+An input too large to pull at every open (thousands of frames) can be mounted
+instead: override `bucket_mounts(thread_id)` to return `Mount(source, path)`
+entries. Each is a read-only `CloudBucketMount` at `DISK_PATH/<path>` (never the
+root), with the provider's endpoint and bucket secret; files are fetched as they
+are read. No pull, push or mtime stamp touches a mount's path, so a thread prefix
+that still holds an old copy of the input restores without it. A restore entry
+may not sit at or under a mount, and mounts may not overlap:
+
+```python
+from actant.sandbox.modal import Location, ModalSandboxProvider, Mount
+
+
+class MountedSceneProvider(ModalSandboxProvider):
+    def bucket_mounts(self, thread_id: str) -> list[Mount]:
+        return [Mount(Location(self.bucket, f"captures/{thread_id}/"), "capture")]
+```
+
 ## Durable images
 
 A host with image storage uploads service images and returns `AssetSource(storage_key=...)`.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,7 +13,7 @@ import pytest
 
 from actant.sandbox import Endpoint, SandboxSpec, Storage
 from actant.sandbox import host
-from actant.sandbox.entry import READY_FILE
+from actant.sandbox.entry import READY_FILE, stamp_mtimes
 import actant.sandbox.modal as modal_backend
 from actant.sandbox.protocol import (
     EntryConfig,
@@ -31,6 +32,7 @@ from actant.sandbox.modal import (
     Location,
     ModalSandbox,
     ModalSandboxProvider,
+    Mount,
     Restore,
     with_s5cmd,
 )
@@ -509,3 +511,94 @@ def test_a_restore_plan_is_checked() -> None:
 
     with pytest.raises(ValueError, match="exactly one"):
         _NoPush(app_name="app", bucket="b").sync_argv("t1")
+
+
+class _MountedScene(ModalSandboxProvider):
+    """A scene: its own prefix at the root, and a capture mounted read-only inside it."""
+
+    def bucket_mounts(self, thread_id: str) -> list[Mount]:
+        return [Mount(Location("b", f"captures/{thread_id}/"), "capture")]
+
+
+async def test_a_mount_is_read_only_and_no_pull_push_or_stamp_touches_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeModal()
+    _use(monkeypatch, fake)
+    provider = _MountedScene(
+        app_name="app", bucket="b", endpoint_url="https://r2.example", secret_name="r2"
+    )
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
+    await provider.open(spec, agent_id="a", thread_id="t1")
+    args, kw = fake.created
+    assert kw["volumes"] == {
+        f"{DISK_PATH}/capture": (
+            "mount",
+            "b",
+            {
+                "key_prefix": "captures/t1/",
+                "bucket_endpoint_url": "https://r2.example",
+                "secret": "secret:r2",
+                "read_only": True,
+            },
+        )
+    }
+    restore = EntryConfig.model_validate_json(args[3]).restore
+    assert restore is not None and restore.seed is not None and restore.stamp is not None
+    assert restore.argv == [
+        *S5, "sync", "--exclude", "sandboxes/t1/capture/*", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"
+    ]  # fmt: skip
+    assert restore.seed.argv == [
+        *S5, "sync", "--exclude", "templates/base/capture/*", "s3://b/templates/base/*",
+        f"{DISK_PATH}/",
+    ]  # fmt: skip
+    assert restore.stamp.skip == ["s3://b/sandboxes/t1/capture/"]
+    assert provider.sync_argv("t1") == [
+        *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
+    ]  # fmt: skip
+
+
+def test_a_mount_skips_stamping_its_keys(tmp_path: Path) -> None:
+    (tmp_path / "capture").mkdir()
+    for name in ("room.py", "capture/f.jpg"):
+        (tmp_path / name).write_text("x")
+    listing = [
+        f'{{"key": "s3://b/t/{name}", "size": 1, "last_modified": "2020-01-01T00:00:00Z"}}'
+        for name in ("room.py", "capture/f.jpg")
+    ]
+    assert stamp_mtimes(listing, "s3://b/t/", tmp_path, ["s3://b/t/capture/"]) == 1
+
+
+def test_mounts_are_checked_against_the_plan_and_each_other() -> None:
+    with pytest.raises(ValueError, match="root"):
+        Mount(Location("b", "c/"), "")
+    with pytest.raises(ValueError, match="relative"):
+        Mount(Location("b", "c/"), "a/../b")
+
+    @dataclass
+    class _Over(ModalSandboxProvider):
+        mounts: tuple[str, ...] = ()
+        restores: tuple[str, ...] = ()
+
+        def restore_plan(self, thread_id: str) -> list[Restore]:
+            others = [
+                Restore(Location("b", f"r{i}/"), p, push=False)
+                for i, p in enumerate(self.restores)
+            ]
+            return [Restore(self.thread_location(thread_id), "", push=True), *others]
+
+        def bucket_mounts(self, thread_id: str) -> list[Mount]:
+            del thread_id
+            return [Mount(Location("b", f"m{i}/"), p) for i, p in enumerate(self.mounts)]
+
+    for mounts, restores, match in [
+        (("capture",), ("capture",), "under mount"),
+        (("capture",), ("capture/x",), "under mount"),
+        (("capture", "capture/x"), (), "overlaps"),
+        (("capture/x", "capture"), (), "overlaps"),
+    ]:
+        provider = _Over(app_name="app", bucket="b", mounts=mounts, restores=restores)
+        with pytest.raises(ValueError, match=match):
+            provider.sync_argv("t1")
+    fine = _Over(app_name="app", bucket="b", mounts=("capture",), restores=("inputs",))
+    assert "root/sandbox/capture/*" in fine.sync_argv("t1")

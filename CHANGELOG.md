@@ -4,7 +4,19 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.25.0
+
+- A `disk_sync` disk can mount read-only inputs instead of pulling them: override
+  `ModalSandboxProvider.bucket_mounts(thread_id)` to return `Mount(source: Location, path)`
+  entries, each a read-only `CloudBucketMount` at `DISK_PATH/<path>` with the provider's
+  endpoint and bucket secret. Opening costs nothing however large the input is; files are
+  fetched as they are read. The pushed entry's push, every pull (the seed's too) and the
+  mtime stamp skip each mount's path, so a thread prefix holding an old copy of the input
+  neither restores it nor has the mount's files pushed back into it. A restore entry at or
+  under a mount, or two overlapping mounts, is rejected. `StampConfig` gains `skip`, so the
+  sandbox image needs this release too.
+
+## 0.24.0
 
 - A sandbox service host uploads returned images with one long-lived boto3 S3 client on its
   own pool of 32 threads, instead of one `s5cmd pipe` process per image. Under load (about 100
