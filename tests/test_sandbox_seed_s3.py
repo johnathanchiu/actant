@@ -17,7 +17,7 @@ import pytest
 
 from actant.sandbox import SandboxSpec, Storage
 from actant.sandbox.entry import INCOMPLETE_SEED, restore
-from actant.sandbox.modal import DISK_PATH, Location, ModalSandboxProvider, Restore
+from actant.sandbox.modal import DISK_PATH, Location, ModalSandboxProvider, Mount, Restore
 from actant.sandbox.protocol import EntryConfig, RestoreConfig
 
 if shutil.which("s5cmd") is None:
@@ -165,3 +165,38 @@ def test_a_two_entry_plan_restores_both_and_pushes_only_its_own(
     subprocess.run(push, capture_output=True, text=True, check=True)
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == ["new.txt", "room.py"]
     assert _keys(endpoint, f"s3://{bucket}/captures/c1/*") == ["scan.json"]
+
+
+def test_a_mount_is_neither_restored_nor_pushed(endpoint: str, tmp_path: Path) -> None:
+    """A scene whose prefix still holds an old copy of its capture: with the capture
+    mounted at ``capture``, the restore leaves that path to the mount and a push never
+    uploads what the mount shows."""
+    bucket = f"mount-{uuid.uuid4().hex[:12]}"
+    assert _s5(endpoint, "mb", f"s3://{bucket}").returncode == 0
+    (tmp_path / "src" / "capture").mkdir(parents=True)
+    (tmp_path / "src" / "room.py").write_text("room")
+    (tmp_path / "src" / "capture" / "f.jpg").write_text("old")
+    assert _s5(endpoint, "cp", f"{tmp_path}/src/*", f"s3://{bucket}/sandboxes/t1/").returncode == 0
+
+    class Scene(ModalSandboxProvider):
+        def bucket_mounts(self, thread_id: str) -> list[Mount]:
+            return [Mount(Location(bucket, "captures/c1/"), "capture")]
+
+    provider = Scene(app_name="x", bucket=bucket, endpoint_url=endpoint)
+    disk = tmp_path / "disk"
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    local = DISK_PATH[1:], str(disk)[1:]
+    raw = provider.entry_config(spec, "t1").model_dump_json().replace(*local)
+    config = EntryConfig.model_validate_json(raw).restore
+    assert config is not None and restore(config)
+    assert _files(disk) == ["room.py"]
+
+    # What the mount would show, plus the scene's own new file.
+    (disk / "capture").mkdir()
+    (disk / "capture" / "g.jpg").write_text("mounted")
+    (disk / "new.txt").write_text("new")
+    push = [arg.replace(*local) for arg in provider.sync_argv("t1")]
+    subprocess.run(push, capture_output=True, text=True, check=True)
+    assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == [
+        "capture/f.jpg", "new.txt", "room.py"
+    ]  # fmt: skip

@@ -131,11 +131,13 @@ class HostConfig(_Message):
 
 class StampConfig(_Message):
     """Alongside a pull, list ``prefix`` with ``argv`` (``s5cmd --json ls``) and give each
-    restored file under ``root`` its object's mtime."""
+    restored file under ``root`` its object's mtime, except under the ``skip`` prefixes
+    (read-only mounts)."""
 
     argv: list[str] = Field(min_length=1)
     prefix: str
     root: str
+    skip: list[str] = Field(default_factory=list)
 
 
 class SeedConfig(_Message):
