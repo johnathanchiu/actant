@@ -4,6 +4,11 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `AgentRuntime.run_worker` passes `actant` through Temporal's workflow sandbox. The sandbox
+  imported `actant.runtime` again for every thread workflow it started, about 5.5 s of CPU each.
+
 ## 0.25.0
 
 - A `disk_sync` disk can mount read-only inputs instead of pulling them: override

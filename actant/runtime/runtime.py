@@ -7,6 +7,7 @@ from uuid import UUID
 import temporalio.client
 import temporalio.worker
 import temporalio.service
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
@@ -40,6 +41,15 @@ from actant.tools.calls import ToolCallStatus
 from actant.sandbox.base import ArtifactSink
 from actant.sandbox.registry import SandboxRegistry
 from actant.assets import AssetResolver
+
+
+#: Temporal's sandbox imports again, for every workflow it starts, each module it does not pass
+#: through. Importing ``AgentThreadWorkflow`` imports ``actant.runtime`` as its package, which
+#: took about 5.5 s of CPU per thread workflow. actant keeps no module state a workflow could
+#: read nondeterministically, so it is imported once.
+WORKFLOW_RUNNER = SandboxedWorkflowRunner(
+    restrictions=SandboxRestrictions.default.with_passthrough_modules("actant")
+)
 
 
 class AgentRuntime:
@@ -98,6 +108,7 @@ class AgentRuntime:
                 self.client,
                 task_queue=self.config.task_queue,
                 workflows=[AgentThreadWorkflow],
+                workflow_runner=WORKFLOW_RUNNER,
                 activities=activities.all,
                 max_concurrent_activities=self.config.max_concurrent_activities,
                 graceful_shutdown_timeout=timedelta(
