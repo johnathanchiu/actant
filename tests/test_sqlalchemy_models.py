@@ -24,6 +24,8 @@ def test_sqlalchemy_metadata_declares_runtime_tables() -> None:
         "actant_messages",
         "actant_message_parts",
         "actant_tool_calls",
+        "actant_compactions",
+        "actant_pinned_notes",
     }
 
 

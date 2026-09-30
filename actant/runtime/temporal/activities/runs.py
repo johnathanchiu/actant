@@ -3,21 +3,41 @@
 from __future__ import annotations
 
 import json
+import logging
+from dataclasses import replace
 from typing import cast
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from actant.blocks import BLOCKS
+from actant.agents import AgentDefinition
+from actant.blocks import BLOCKS, Block
 from actant.assets import AssetContext, prepare_messages
 from actant.core import JSONObject, new_id
 from actant.llm.errors import StreamCancelled
-from actant.llm.messages import ToolCall as LLMToolCall
+from actant.llm.messages import Message, ToolCall as LLMToolCall
+from actant.runtime.compaction import (
+    Compaction,
+    CompactionRecord,
+    compaction_request,
+    context_messages,
+    count_images,
+    crossed_limits,
+    fresh_prefix,
+    measure_request,
+    pending_start,
+    pinned_item,
+    usage_start,
+)
 from actant.runtime.completion import RunCompletion
 from actant.runtime.gate import TurnStart
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
     ActivityName,
+    CompactContextInput,
+    CompactionOutcome,
+    CompactionTrigger,
+    CompactionConfig,
     FinalizeRunInput,
     RunOutcome,
     RunTurnInput,
@@ -38,6 +58,8 @@ FINISH_REMINDER = (
     "</finish_required>"
 )
 STOPPED_WITHOUT_FINISHING = "stopped without finishing"
+
+logger = logging.getLogger(__name__)
 
 
 class RunActivities:
@@ -115,7 +137,8 @@ class RunActivities:
             )
             await events.on_user_message(content)
 
-        if self.context.turn_gate is not None:
+        # A turn run again after compaction was already admitted.
+        if self.context.turn_gate is not None and not payload.compacted:
             reason = await self.context.turn_gate(
                 TurnStart(
                     agent_id=payload.agent_id,
@@ -132,21 +155,30 @@ class RunActivities:
                     stop_reason=reason,
                 )
 
-        messages = await self.context.stores.messages.list_for_thread(
+        stored = await self.context.stores.messages.list_for_thread(
             payload.agent_id, payload.thread_id
         )
-        if self.context.message_preprocessor is not None:
-            messages = await self.context.message_preprocessor(messages)
-        messages = await prepare_messages(
-            messages,
-            self.context.assets,
-            AssetContext(
-                payload.agent_id,
-                payload.thread_id,
-                payload.run_id,
-                payload.turn_id,
-            ),
+        # Only a thread that compacts reads its boundary; any other builds
+        # its request from the whole transcript, exactly as before.
+        compaction = payload.context_compaction
+        record = (
+            await self.context.stores.compactions.latest(payload.agent_id, payload.thread_id)
+            if compaction is not None
+            else None
         )
+        view = context_messages(stored, record)
+        messages = await self._prepare(
+            view, payload.agent_id, payload.thread_id, payload.run_id, payload.turn_id
+        )
+        if compaction is not None and not payload.compacted:
+            trigger = _compaction_trigger(agent, compaction, record, view, messages)
+            if trigger is not None:
+                # Nothing is sent: the workflow compacts, then runs this turn again.
+                return TurnResult(
+                    turn_id=payload.turn_id,
+                    turn_index=payload.turn_index,
+                    compaction=trigger,
+                )
         context = TurnContext(
             agent=agent,
             system_prompt=agent.persona,
@@ -233,6 +265,149 @@ class RunActivities:
             ],
         )
 
+    @activity.defn(name=ActivityName.COMPACT_CONTEXT)
+    async def compact_context(self, payload: CompactContextInput) -> CompactionOutcome:
+        """Summarize the context before a boundary on the agent's own model, with no tools.
+
+        Records the boundary, the summary and the app's pinned blocks; no
+        stored message changes. From then on the model's request is the system
+        prompt, the summary, the pinned blocks, and the messages from the
+        boundary on.
+        """
+        trigger = payload.trigger
+        agent = await self.context.agent(payload.agent_id, payload.thread_id)
+        previous = await self.context.stores.compactions.latest(
+            payload.agent_id, payload.thread_id
+        )
+        if (
+            previous is not None
+            and previous.turn_id == payload.turn_id
+            and previous.boundary == trigger.boundary
+        ):
+            # Already recorded by an earlier attempt of this activity.
+            return CompactionOutcome(previous.id, previous.tokens_after, previous.images_after)
+
+        stored = await self.context.stores.messages.list_for_thread(
+            payload.agent_id, payload.thread_id
+        )
+        replaced = context_messages(stored, previous, end=trigger.boundary)
+        request = await self._prepare(
+            compaction_request(replaced, self.context.compaction_instructions),
+            payload.agent_id,
+            payload.thread_id,
+            payload.run_id,
+            payload.turn_id,
+        )
+        try:
+            response = await agent.llm.complete(agent.persona, request, [], None)
+        except StreamCancelled as exc:
+            raise ApplicationError("compaction cancelled", non_retryable=True) from exc
+        summary = response.content.strip() if isinstance(response.content, str) else ""
+        if not summary:
+            # Carrying on without a summary would drop the context silently.
+            raise ApplicationError("the compaction turn returned no summary", non_retryable=True)
+
+        pinned = await self._pinned(
+            payload,
+            Compaction(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=payload.run_id,
+                reason=trigger.reason,
+                summary=summary,
+            ),
+        )
+        record = CompactionRecord(
+            id=new_id("compaction"),
+            agent_id=payload.agent_id,
+            thread_id=payload.thread_id,
+            run_id=payload.run_id,
+            turn_id=payload.turn_id,
+            boundary=trigger.boundary,
+            reason=trigger.reason,
+            summary=summary,
+            pinned=pinned,
+            tokens_before=trigger.tokens,
+            images_before=trigger.images,
+            tokens_after=0,
+            images_after=0,
+            context_window_tokens=trigger.context_window_tokens,
+            max_images_per_request=trigger.max_images_per_request,
+        )
+        fresh = context_messages(stored, record)
+        prepared = await self._prepare(
+            fresh, payload.agent_id, payload.thread_id, payload.run_id, payload.turn_id
+        )
+        after = measure_request(agent.persona, fresh, usage_from=usage_start(record))
+        record = replace(record, tokens_after=after.tokens, images_after=count_images(prepared))
+        await self.context.stores.compactions.append(record)
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
+        events = self.context.events(
+            thread, run_id=payload.run_id, turn_id=payload.turn_id, turn_index=payload.turn_index
+        )
+        await events.on_context_compacted(record)
+        return CompactionOutcome(record.id, record.tokens_after, record.images_after)
+
+    async def _pinned(self, payload: CompactContextInput, compaction: Compaction) -> list[Block]:
+        """What follows the summary, verbatim: ``pin`` in order, every other
+        pinned note by key, then the ``on_compact`` hook's blocks."""
+        notes = await self.context.stores.pinned_notes.list_for_thread(
+            payload.agent_id, payload.thread_id
+        )
+        pinned: list[Block] = []
+        for name in payload.config.pin:
+            provider = self.context.pin_providers.get(name)
+            if provider is not None:
+                pinned.extend(
+                    pinned_item(name, BLOCKS.validate_python(await provider(compaction)))
+                )
+            elif name in notes:
+                pinned.extend(pinned_item(name, notes.pop(name)))
+            else:
+                logger.warning(
+                    "actant.compaction.pin_missing agent=%s thread=%s name=%s: no provider "
+                    "is registered and no note is pinned under this name",
+                    payload.agent_id,
+                    payload.thread_id,
+                    name,
+                )
+        for key, blocks in notes.items():
+            pinned.extend(pinned_item(key, blocks))
+        if self.context.on_compact is not None:
+            pinned.extend(BLOCKS.validate_python(await self.context.on_compact(compaction)))
+        else:
+            # State that must survive compaction cannot rest on the summary.
+            logger.warning(
+                "actant.compaction.no_hook agent=%s thread=%s pinned_blocks=%s: no "
+                "on_compact hook, so %s",
+                payload.agent_id,
+                payload.thread_id,
+                len(pinned),
+                "only pin providers and pinned notes follow the summary"
+                if pinned
+                else "nothing is pinned after the summary",
+            )
+        return pinned
+
+    async def _prepare(
+        self,
+        messages: list[Message],
+        agent_id: str,
+        thread_id: str,
+        run_id: str,
+        turn_id: str,
+    ) -> list[Message]:
+        """The app's preprocessor, then assets resolved for one model call."""
+        if self.context.message_preprocessor is not None:
+            messages = await self.context.message_preprocessor(messages)
+        return await prepare_messages(
+            messages,
+            self.context.assets,
+            AssetContext(agent_id, thread_id, run_id, turn_id),
+        )
+
     @activity.defn(name=ActivityName.FINALIZE_RUN)
     async def finalize_run(self, payload: FinalizeRunInput) -> None:
         """Close a run, repair cancelled calls, and notify observers."""
@@ -305,6 +480,58 @@ class RunActivities:
             reason=payload.stop_reason or payload.outcome,
             message="",
         )
+
+
+def _provider_limit(agent: AgentDefinition, name: str) -> int | None:
+    """A limit the model client declares, when it does (``LLMClient`` does not require it)."""
+    value = getattr(agent.llm, name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _compaction_trigger(
+    agent: AgentDefinition,
+    config: CompactionConfig,
+    record: CompactionRecord | None,
+    view: list[Message],
+    prepared: list[Message],
+) -> CompactionTrigger | None:
+    """Whether the request about to be sent crosses a limit, and where to cut if so."""
+    window = config.context_window_tokens or _provider_limit(agent, "context_window_tokens")
+    max_images = config.max_images_per_request or _provider_limit(agent, "max_images_per_request")
+    if window is None and max_images is None:
+        return None
+    measure = measure_request(agent.persona, view, usage_from=usage_start(record))
+    measure = replace(measure, images=count_images(prepared))
+    reason = crossed_limits(
+        measure,
+        context_window_tokens=window,
+        max_images_per_request=max_images,
+        threshold=config.threshold,
+    )
+    if reason is None:
+        return None
+    first = len(fresh_prefix(record)) if record is not None else 0
+    start = pending_start(view, floor=first)
+    if start <= first:
+        # Everything in the request is still pending (one huge message, or
+        # results of the call right after the last compaction). A summary
+        # could replace nothing, and dropping content is not allowed.
+        logger.warning(
+            "actant.compaction.nothing_to_summarize agent=%s reason=%s tokens=%s images=%s",
+            agent.id,
+            reason,
+            measure.tokens,
+            measure.images,
+        )
+        return None
+    return CompactionTrigger(
+        reason=reason,
+        tokens=measure.tokens,
+        images=measure.images,
+        boundary=(record.boundary if record is not None else 0) + start - first,
+        context_window_tokens=window,
+        max_images_per_request=max_images,
+    )
 
 
 def _parse_tool_args(tool_call: LLMToolCall) -> JSONObject:

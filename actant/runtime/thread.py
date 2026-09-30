@@ -75,6 +75,18 @@ class ThreadHandle:
             payload=payload,
         )
 
+    async def pin(self, key: str, content: str | list[Block]) -> None:
+        """Pin a durable note: re-injected verbatim after every compaction summary."""
+        await self.runtime.stores.pinned_notes.pin(self.agent_id, self.thread_id, key, content)
+
+    async def unpin(self, key: str) -> None:
+        await self.runtime.stores.pinned_notes.unpin(self.agent_id, self.thread_id, key)
+
+    async def pinned_notes(self) -> dict[str, list[Block]]:
+        return await self.runtime.stores.pinned_notes.list_for_thread(
+            self.agent_id, self.thread_id
+        )
+
     async def cancel(self) -> None:
         """Cancel the thread's Temporal workflow."""
         await self.runtime.cancel_thread(self.agent_id, self.thread_id)

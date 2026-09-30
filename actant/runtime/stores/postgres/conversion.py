@@ -8,8 +8,10 @@ from typing import cast
 from actant.blocks import PromptBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message, Role
+from actant.runtime.compaction import CompactionRecord
 from actant.runtime.session import parts_to_messages, tool_result_blocks
 from actant.runtime.stores.postgres.models import (
+    ActantCompactionModel,
     ActantMessageModel,
     ActantMessagePartModel,
     ActantRunModel,
@@ -19,6 +21,48 @@ from actant.runtime.stores.postgres.models import (
 from actant.runtime.types.session import MessagePart, PartKind, WaitStatus
 from actant.runtime.types.threads import AgentRun, AgentThread, RunStatus, ThreadStatus
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
+
+
+def compaction_row(record: CompactionRecord) -> ActantCompactionModel:
+    return ActantCompactionModel(
+        compaction_id=record.id,
+        agent_id=record.agent_id,
+        thread_id=record.thread_id,
+        run_id=record.run_id,
+        turn_id=record.turn_id,
+        boundary=record.boundary,
+        reason=record.reason,
+        summary=record.summary,
+        pinned_blocks=list(record.pinned),
+        tokens_before=record.tokens_before,
+        images_before=record.images_before,
+        tokens_after=record.tokens_after,
+        images_after=record.images_after,
+        context_window_tokens=record.context_window_tokens,
+        max_images_per_request=record.max_images_per_request,
+        created_at=record.created_at,
+    )
+
+
+def compaction_from_row(row: ActantCompactionModel) -> CompactionRecord:
+    return CompactionRecord(
+        id=row.compaction_id,
+        agent_id=row.agent_id,
+        thread_id=row.thread_id,
+        run_id=row.run_id,
+        turn_id=row.turn_id,
+        boundary=row.boundary,
+        reason=row.reason,
+        summary=row.summary,
+        pinned=list(row.pinned_blocks),
+        tokens_before=row.tokens_before,
+        images_before=row.images_before,
+        tokens_after=row.tokens_after,
+        images_after=row.images_after,
+        context_window_tokens=row.context_window_tokens,
+        max_images_per_request=row.max_images_per_request,
+        created_at=row.created_at,
+    )
 
 
 def thread_from_row(row: ActantThreadModel) -> AgentThread:

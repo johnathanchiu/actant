@@ -102,8 +102,18 @@ class OpenAIProvider:
         reasoning_idle_s: float = 180.0,
         turn_s: float = 240.0,
         attempts: int = 3,
+        context_window_tokens: int | None = None,
+        max_images_per_request: int | None = None,
     ) -> None:
         self.model_id = model_id
+        # Limits for context compaction (``CompactionConfig``). The window
+        # depends on the model and deployment, so it is never guessed. Images
+        # per request are documented per service: Azure OpenAI rejects more
+        # than 50, OpenAI accepts 1,500.
+        self.context_window_tokens = context_window_tokens
+        self.max_images_per_request = max_images_per_request or (
+            50 if isinstance(client, openai.AsyncAzureOpenAI) else 1_500
+        )
         self.thinking_level = thinking_level
         # This provider owns retries; SDK retries would stack under each attempt.
         self.client = (

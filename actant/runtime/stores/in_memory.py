@@ -13,10 +13,11 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 
-from actant.blocks import BLOCKS, Block
+from actant.blocks import BLOCKS, Block, TextBlock
 from actant.agents import Agent
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
+from actant.runtime.compaction import CompactionRecord
 from actant.runtime.session import tool_result_blocks
 from actant.runtime.types.threads import (
     AgentRun,
@@ -280,6 +281,45 @@ class InMemoryMessageStore:
         )
 
 
+class InMemoryCompactionStore:
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, str], list[CompactionRecord]] = {}
+
+    async def append(self, record: CompactionRecord) -> None:
+        self._records.setdefault((record.agent_id, record.thread_id), []).append(
+            replace(record, pinned=list(record.pinned))
+        )
+
+    async def latest(self, agent_id: str, thread_id: str) -> CompactionRecord | None:
+        records = self._records.get((agent_id, thread_id))
+        return replace(records[-1]) if records else None
+
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[CompactionRecord]:
+        return [replace(r) for r in self._records.get((agent_id, thread_id), [])]
+
+
+class InMemoryPinnedNoteStore:
+    def __init__(self) -> None:
+        self._notes: dict[tuple[str, str], dict[str, list[Block]]] = {}
+
+    async def pin(
+        self, agent_id: str, thread_id: str, key: str, content: str | list[Block]
+    ) -> None:
+        blocks: list[Block] = (
+            [TextBlock(text=content)]
+            if isinstance(content, str)
+            else list(BLOCKS.validate_python(content))
+        )
+        self._notes.setdefault((agent_id, thread_id), {})[key] = blocks
+
+    async def unpin(self, agent_id: str, thread_id: str, key: str) -> None:
+        self._notes.get((agent_id, thread_id), {}).pop(key, None)
+
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> dict[str, list[Block]]:
+        notes = self._notes.get((agent_id, thread_id), {})
+        return {key: list(notes[key]) for key in sorted(notes)}
+
+
 class InMemoryEventPublisher:
     def __init__(self) -> None:
         self.events: dict[str, list[JSONObject]] = {}
@@ -307,6 +347,8 @@ class InMemoryRuntimeStores:
     runs: InMemoryRunStore = field(default_factory=InMemoryRunStore)
     messages: InMemoryMessageStore = field(default_factory=InMemoryMessageStore)
     tool_calls: InMemoryToolCallStore = field(default_factory=InMemoryToolCallStore)
+    compactions: InMemoryCompactionStore = field(default_factory=InMemoryCompactionStore)
+    pinned_notes: InMemoryPinnedNoteStore = field(default_factory=InMemoryPinnedNoteStore)
     publisher: InMemoryEventPublisher = field(default_factory=InMemoryEventPublisher)
 
     def __post_init__(self) -> None:

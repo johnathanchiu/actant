@@ -16,6 +16,46 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class CompactionConfig:
+    """When to compact the model's context: the one place Actant reduces it.
+
+    Compaction runs one summarizing turn on the agent's own model, then
+    continues the thread from the summary. It never truncates or rewrites a
+    stored message. It fires only when the next model request would pass
+    ``threshold`` of the context window or carry more images than the provider
+    accepts, whichever comes first.
+
+    ``None`` limits fall back to the provider (``LLMClient`` attributes of the
+    same names, when it declares them); a limit neither sets is never checked.
+    This is unrelated to ``history_size_threshold``, which rotates Temporal's
+    event history and never touches what the model sees.
+
+    ``pin`` names what must survive compaction without relying on the summary,
+    in the order it is placed after it: a name registered in the worker's
+    ``pin_providers`` runs that provider (the app reads its own source of
+    truth), and any other name is a key of the thread's pinned notes. Every
+    pinned note is re-injected either way; naming one fixes its place and logs
+    a warning when it is missing. For example::
+
+        CompactionConfig(
+            context_window_tokens=1_000_000,
+            max_images_per_request=50,
+            threshold=0.9,
+            pin=["checklist", "room_file", "constraints"],
+        )
+    """
+
+    #: The model's context window in tokens.
+    context_window_tokens: int | None = None
+    #: The most images one request may carry (Azure OpenAI: 50; OpenAI: 1,500).
+    max_images_per_request: int | None = None
+    #: Fraction of the context window the next request may reach.
+    threshold: float = 0.9
+    #: Registered pin providers and pinned-note keys, in the order they follow the summary.
+    pin: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class TemporalRuntimeConfig:
     """Connection and lifecycle configuration for Actant's Temporal runtime."""
 
@@ -40,6 +80,10 @@ class TemporalRuntimeConfig:
     # turn rather than at the next run. Copied into ``ThreadInput`` when a
     # thread starts, so it applies to executions started after it changes.
     interleave_inbox: bool = False
+    # Summarize the model's context near its real limits. ``None`` (the
+    # default) never compacts. Copied into ``ThreadInput`` like
+    # ``interleave_inbox``.
+    context_compaction: CompactionConfig | None = None
 
 
 # === Names ===
@@ -56,6 +100,7 @@ class ActivityName(StrEnum):
 
     START_RUN = "start_run"
     RUN_TURN = "run_turn"
+    COMPACT_CONTEXT = "compact_context"
     ADMIT_TOOL = "admit_tool"
     EXECUTE_TOOL = "execute_tool"
     RESOLVE_TOOL = "resolve_tool"
@@ -157,6 +202,9 @@ class ThreadInput:
     # Last and defaulted, like every field after carry_inbox: a history
     # recorded before it existed decodes to False and replays the old path.
     interleave_inbox: bool = False
+    # Model-context compaction for this thread; ``None`` never compacts. Last
+    # and defaulted for the same reason as ``interleave_inbox``.
+    context_compaction: CompactionConfig | None = None
 
 
 # === Activity I/O ===
@@ -202,6 +250,47 @@ class RunTurnInput:
     # How many text-only turns this run has already answered with a
     # reminder. Only meaningful for ``completion="terminal"`` agents.
     text_only_turns: int = 0
+    # The thread's compaction limits; ``None`` never measures the request.
+    context_compaction: CompactionConfig | None = None
+    # Set when the workflow calls this turn again after compacting for it:
+    # the turn gate already admitted it, and it must not ask to compact twice.
+    compacted: bool = False
+
+
+@dataclass(frozen=True)
+class CompactionTrigger:
+    """``run_turn``'s measurement of a request that would cross a limit.
+
+    ``boundary`` counts the stored messages the summary replaces (in
+    ``list_for_thread`` order); everything from it on is kept verbatim.
+    ``tokens`` is the last turn's reported usage plus an estimate of what was
+    added since; ``images`` is exact.
+    """
+
+    reason: str
+    tokens: int
+    images: int
+    boundary: int
+    context_window_tokens: int | None = None
+    max_images_per_request: int | None = None
+
+
+@dataclass(frozen=True)
+class CompactContextInput:
+    agent_id: str
+    thread_id: str
+    run_id: str
+    turn_id: str
+    turn_index: int
+    trigger: CompactionTrigger
+    config: CompactionConfig = field(default_factory=CompactionConfig)
+
+
+@dataclass(frozen=True)
+class CompactionOutcome:
+    compaction_id: str
+    tokens_after: int
+    images_after: int
 
 
 @dataclass(frozen=True)
@@ -231,6 +320,9 @@ class TurnResult:
     # tool calls twice, or the worker's turn gate refused the turn.
     reminded: bool = False
     stop_reason: str | None = None
+    # The request this turn would send crosses a compaction limit. Nothing
+    # was sent: the workflow compacts, then runs the turn again.
+    compaction: CompactionTrigger | None = None
 
 
 @dataclass(frozen=True)

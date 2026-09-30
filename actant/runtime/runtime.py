@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from uuid import UUID
 import temporalio.client
@@ -10,6 +11,7 @@ import temporalio.service
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
+from actant.runtime.compaction import CompactionHook, PinProvider
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.publisher import EventSink, EventSource
 from actant.runtime.gate import TurnGate
@@ -64,6 +66,9 @@ class AgentRuntime:
         turn_gate: TurnGate | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
+        on_compact: CompactionHook | None = None,
+        compaction_instructions: str = "",
+        pin_providers: Mapping[str, PinProvider] | None = None,
     ) -> None:
         self.client = client
         self.stores = stores
@@ -79,6 +84,9 @@ class AgentRuntime:
             turn_gate=turn_gate,
             run_completion_handler=run_completion_handler,
             message_preprocessor=message_preprocessor,
+            on_compact=on_compact,
+            compaction_instructions=compaction_instructions,
+            pin_providers=pin_providers,
         )
         self._running = False
         self._worker: temporalio.worker.Worker | None = None
@@ -158,6 +166,7 @@ class AgentRuntime:
             history_size_threshold=self.config.history_size_threshold,
             parent_thread_id=parent_thread_id,
             interleave_inbox=self.config.interleave_inbox,
+            context_compaction=self.config.context_compaction,
         )
         await client.start_workflow(
             AgentThreadWorkflow.run,

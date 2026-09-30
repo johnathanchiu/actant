@@ -25,6 +25,7 @@ from actant.cli import invalid_block_rows
 from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
 from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
+from actant.runtime.compaction import CompactionRecord
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA, SQLAlchemyRuntimeStores
 from actant.runtime.types.threads import RunStatus
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
@@ -252,3 +253,57 @@ async def test_terminal_tool_transition_is_atomic(stores: SQLAlchemyRuntimeStore
     # Even a delayed admission cannot reopen the terminal call.
     assert not await stores.tool_calls.update_status("race", ToolCallStatus.WAITING)
     assert (await stores.tool_calls.get("race")).result == {"winner": winner}
+
+
+async def test_compactions_round_trip_and_the_latest_is_the_furthest_boundary(
+    stores: SQLAlchemyRuntimeStores,
+) -> None:
+    assert await stores.compactions.latest("a", "t") is None
+    pinned = [
+        TextBlock(text="checklist"),
+        InlineImageBlock(source=Base64Source(media_type="image/png", data="AA==")),
+    ]
+
+    def record(id: str, boundary: int) -> CompactionRecord:
+        return CompactionRecord(
+            id=id,
+            agent_id="a",
+            thread_id="t",
+            run_id="r",
+            turn_id=f"turn-{id}",
+            boundary=boundary,
+            reason="images",
+            summary=f"summary {id}",
+            tokens_before=900,
+            images_before=51,
+            tokens_after=40,
+            images_after=2,
+            pinned=list(pinned),
+            max_images_per_request=50,
+        )
+
+    await stores.compactions.append(record("c1", 4))
+    await stores.compactions.append(record("c2", 9))
+
+    latest = await stores.compactions.latest("a", "t")
+    assert latest is not None
+    assert (latest.id, latest.boundary, latest.pinned) == ("c2", 9, pinned)
+    assert latest.context_window_tokens is None and latest.max_images_per_request == 50
+    assert [r.id for r in await stores.compactions.list_for_thread("a", "t")] == ["c1", "c2"]
+    assert await stores.compactions.latest("a", "other") is None
+
+
+async def test_pinned_notes_upsert_by_key_and_list_in_key_order(
+    stores: SQLAlchemyRuntimeStores,
+) -> None:
+    image = InlineImageBlock(source=Base64Source(media_type="image/png", data="AA=="))
+    await stores.pinned_notes.pin("a", "t", "room", [TextBlock(text="v1"), image])
+    await stores.pinned_notes.pin("a", "t", "checklist", "- [ ] one")
+    await stores.pinned_notes.pin("a", "t", "room", [TextBlock(text="v2")])
+    assert await stores.pinned_notes.list_for_thread("a", "t") == {
+        "checklist": [TextBlock(text="- [ ] one")],
+        "room": [TextBlock(text="v2")],
+    }
+    await stores.pinned_notes.unpin("a", "t", "checklist")
+    assert list(await stores.pinned_notes.list_for_thread("a", "t")) == ["room"]
+    assert await stores.pinned_notes.list_for_thread("a", "other") == {}

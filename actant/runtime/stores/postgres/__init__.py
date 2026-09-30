@@ -9,6 +9,8 @@ separate modules so migration code does not depend on query implementation.
 
 from actant.runtime.stores.postgres.models import (
     ACTANT_RUNTIME_METADATA,
+    ActantCompactionModel,
+    ActantPinnedNoteModel,
     ActantMessageModel,
     ActantMessagePartModel,
     ActantRunModel,
@@ -18,8 +20,10 @@ from actant.runtime.stores.postgres.models import (
     create_schema,
 )
 from actant.runtime.stores.postgres.stores import (
+    SQLAlchemyCompactionStore,
     SQLAlchemyEventPublisher,
     SQLAlchemyMessageStore,
+    SQLAlchemyPinnedNoteStore,
     SQLAlchemyRunStore,
     SQLAlchemyRuntimeStores,
     SQLAlchemyThreadStore,
@@ -28,14 +32,18 @@ from actant.runtime.stores.postgres.stores import (
 
 __all__ = [
     "ACTANT_RUNTIME_METADATA",
+    "ActantCompactionModel",
+    "ActantPinnedNoteModel",
     "ActantMessageModel",
     "ActantMessagePartModel",
     "ActantRunModel",
     "ActantRuntimeBase",
     "ActantThreadModel",
     "ActantToolCallModel",
+    "SQLAlchemyCompactionStore",
     "SQLAlchemyEventPublisher",
     "SQLAlchemyMessageStore",
+    "SQLAlchemyPinnedNoteStore",
     "SQLAlchemyRunStore",
     "SQLAlchemyRuntimeStores",
     "SQLAlchemyThreadStore",

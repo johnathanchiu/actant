@@ -299,7 +299,10 @@ For each run, `AgentThreadWorkflow`:
 A later message starts a new execution with the same logical thread ID and persisted history.
 
 At a run boundary, sufficiently long workflow histories use Temporal
-continue-as-new. Queued inbox messages are carried into the new execution.
+continue-as-new (`history_size_threshold`). Queued inbox messages are carried
+into the new execution. This rotation concerns Temporal's event history only;
+the model's request is built from the stores and never changes because of it.
+Reducing what the model sees is [context compaction](#context-compaction).
 
 ## Hooks and streaming
 
@@ -362,6 +365,68 @@ and `on_complete(reason=...)` receive it. The next message starts a new run,
 which the gate sees again. The gate is worker configuration and never enters
 workflow payloads. An exception it raises fails the turn, and the run finalizes
 `failed`.
+
+## Context compaction
+
+Actant never truncates or rewrites a thread's context. The one reducer is a
+summarizing compaction, and it is off unless a thread opts in:
+
+```python
+from actant.runtime import AgentRuntime, CompactionConfig, TemporalRuntimeConfig
+
+config = TemporalRuntimeConfig(
+    context_compaction=CompactionConfig(
+        context_window_tokens=1_000_000,
+        max_images_per_request=50,  # Azure OpenAI rejects a request with more
+        threshold=0.9,
+        pin=["checklist", "room_file"],
+    )
+)
+runtime = AgentRuntime(
+    client=client,
+    stores=stores,
+    config=config,
+    resolve_agent=resolve_agent,
+    pin_providers={"room_file": current_room_file},
+    on_compact=open_item_images,
+)
+```
+
+Before each model call, the turn activity measures the request it is about to
+send: the last turn's reported input and output tokens plus an estimate of what
+was added since, and an exact count of its images. When the request would pass
+`threshold` of `context_window_tokens`, or carry more than
+`max_images_per_request` images, nothing is sent. The workflow runs
+`compact_context`: one turn on the agent's own model, with no tools, that
+answers the built-in compaction prompt (the goal, decisions and why, what was
+verified, every open item, next steps, key facts). `compaction_instructions` on
+`AgentRuntime` appends to that prompt. The turn then runs again from a fresh
+context:
+
+1. the system prompt;
+2. the summary;
+3. what is pinned (below);
+4. what was pending: the messages after the last model reply, or that reply
+   and its tool results when it made tool calls.
+
+Every earlier message stays in the store, untouched. The compaction is a record
+in `stores.compactions` (the boundary, the reason, tokens and images before and
+after, the summary and the pinned blocks), and a `context_compacted` event
+carries the same. Each later request is built from the latest boundary onward,
+and a second compaction summarizes the first summary and what followed it.
+Limits left `None` fall back to attributes of the same names on the model
+client (`OpenAIProvider` declares 50 images on an `AsyncAzureOpenAI` client and
+1,500 otherwise); a limit neither sets is not checked.
+
+State that must survive compaction must not depend on the summary. `pin` names
+it, in order, after the summary: a name in the worker's `pin_providers` calls
+that provider, which reads the app's own source of truth; any other name is a
+key of the thread's pinned notes. Pinned notes are durable per-thread text or
+blocks, written with `thread.pin(key, content)` or by the agent through
+`PinNoteTool(stores.pinned_notes)`, and every one of them is re-injected
+verbatim after every summary, named in `pin` or not. The `on_compact` hook runs
+last, for anything the declarative list cannot express. A thread that compacts
+without the hook logs a warning saying what, if anything, was pinned.
 
 ## Production checklist
 

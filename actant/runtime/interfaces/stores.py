@@ -13,6 +13,7 @@ from actant.blocks import Block
 from actant.agents import Agent
 from actant.core import JSONObject
 from actant.llm.messages import Message
+from actant.runtime.compaction import CompactionRecord
 from actant.runtime.events.publisher import EventPublisher
 from actant.runtime.types.threads import (
     AgentRun,
@@ -157,6 +158,39 @@ class ToolCallStore(Protocol):
     async def get_open_for_thread(self, agent_id: str, thread_id: str) -> list[ToolCallRecord]: ...
 
 
+class CompactionStore(Protocol):
+    """Where a thread's model context was compacted. Append-only: a record
+    marks a boundary in the transcript and never changes a message."""
+
+    async def append(self, record: CompactionRecord) -> None: ...
+
+    async def latest(self, agent_id: str, thread_id: str) -> CompactionRecord | None:
+        """The compaction the model's view is built from, or ``None``."""
+        ...
+
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[CompactionRecord]:
+        """Every compaction of a thread, oldest first."""
+        ...
+
+
+class PinnedNoteStore(Protocol):
+    """A thread's durable notes, keyed by name, re-injected verbatim after every
+    compaction summary. What must survive compaction lives here (or comes from a
+    pin provider), never only in the model's summary."""
+
+    async def pin(
+        self, agent_id: str, thread_id: str, key: str, content: str | list[Block]
+    ) -> None:
+        """Write the note under ``key``, replacing any earlier one."""
+        ...
+
+    async def unpin(self, agent_id: str, thread_id: str, key: str) -> None: ...
+
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> dict[str, list[Block]]:
+        """Every note of the thread, ordered by key."""
+        ...
+
+
 class RuntimeStores(Protocol):
     @property
     def threads(self) -> ThreadStore: ...
@@ -169,6 +203,12 @@ class RuntimeStores(Protocol):
 
     @property
     def tool_calls(self) -> ToolCallStore: ...
+
+    @property
+    def compactions(self) -> CompactionStore: ...
+
+    @property
+    def pinned_notes(self) -> PinnedNoteStore: ...
 
     @property
     def publisher(self) -> EventPublisher: ...

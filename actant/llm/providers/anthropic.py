@@ -69,8 +69,13 @@ class AnthropicProvider:
         thinking_level: str = "med",
         client: anthropic.AsyncAnthropic | None = None,
         rate_limiter: RateLimiter | None = None,
+        context_window_tokens: int | None = None,
+        max_images_per_request: int | None = None,
     ) -> None:
         self.model_id = model_id
+        # Limits for context compaction (``CompactionConfig``); unset is unchecked.
+        self.context_window_tokens = context_window_tokens
+        self.max_images_per_request = max_images_per_request
         self.thinking_level = thinking_level
         self.client = client or anthropic.AsyncAnthropic(
             api_key=env_api_key("ANTHROPIC_API_KEY", api_key)

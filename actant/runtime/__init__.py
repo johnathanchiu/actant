@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from actant.runtime.temporal.activities.context import AgentResolver
+    from actant.runtime.compaction import Compaction, CompactionRecord, PinProvider
     from actant.runtime.completion import RunCompletion, RunCompletionHandler
     from actant.runtime.gate import TurnGate, TurnStart
-    from actant.runtime.temporal.types import TemporalRuntimeConfig
+    from actant.runtime.temporal.types import CompactionConfig, TemporalRuntimeConfig
     from actant.runtime.thread import ThreadHandle
     from actant.runtime.local import LocalRun, LocalThreadRuntime
 from actant.runtime.runtime import AgentRuntime
@@ -18,6 +19,10 @@ __all__ = [
     "LocalThreadRuntime",
     "AgentRuntime",
     "AgentResolver",
+    "Compaction",
+    "CompactionConfig",
+    "CompactionRecord",
+    "PinProvider",
     "RunCompletion",
     "RunCompletionHandler",
     "TemporalRuntimeConfig",
@@ -48,10 +53,14 @@ def __getattr__(name: str) -> Any:
         from actant.runtime import gate
 
         return getattr(gate, name)
-    if name == "TemporalRuntimeConfig":
-        from actant.runtime.temporal.types import TemporalRuntimeConfig
+    if name in {"Compaction", "CompactionRecord", "PinProvider"}:
+        from actant.runtime import compaction
 
-        return TemporalRuntimeConfig
+        return getattr(compaction, name)
+    if name in {"CompactionConfig", "TemporalRuntimeConfig"}:
+        from actant.runtime.temporal import types
+
+        return getattr(types, name)
     if name == "ThreadHandle":
         from actant.runtime.thread import ThreadHandle
 

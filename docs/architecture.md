@@ -106,6 +106,9 @@ while True:
         if interleave_inbox:
             new_messages += drain_inbox()
         turn = await run_turn(new_messages)
+        if turn.compaction:
+            await compact_context(turn.compaction)
+            turn = await run_turn([], compacted=True)
         new_messages = []
         turns_remaining -= 1
 
@@ -127,6 +130,11 @@ streams provider output, and persists the resulting assistant message. The
 workflow sees only its durable `TurnResult`. When the worker has a `TurnGate`,
 `run_turn` consults it before the model call; a refusal returns a `TurnResult`
 with a `stop_reason` and no model call, which ends the run as exhausted.
+With `context_compaction`, `run_turn` also measures the request before sending
+it; one that would cross a limit returns a `TurnResult` with `compaction` set
+and no model call, and the workflow summarizes (`compact_context`) and runs the
+same turn again. The branch is taken only on that activity result, so a history
+recorded without compaction replays unchanged.
 
 ### Tool-group algorithm
 

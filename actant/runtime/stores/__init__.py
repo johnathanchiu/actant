@@ -7,8 +7,10 @@ contracts in ``actant.runtime.interfaces.stores``.
 
 from actant.runtime.interfaces.stores import (
     AgentStore,
+    CompactionStore,
     EventPublisher,
     MessageStore,
+    PinnedNoteStore,
     RunStore,
     RuntimeStores,
     ThreadStore,
@@ -16,8 +18,10 @@ from actant.runtime.interfaces.stores import (
 )
 from actant.runtime.stores.in_memory import (
     InMemoryAgentStore,
+    InMemoryCompactionStore,
     InMemoryEventPublisher,
     InMemoryMessageStore,
+    InMemoryPinnedNoteStore,
     InMemoryRunStore,
     InMemoryRuntimeStores,
     InMemoryThreadStore,
@@ -30,15 +34,19 @@ from actant.runtime.stores.postgres import (
 
 __all__ = [
     "AgentStore",
+    "CompactionStore",
     "EventPublisher",
     "InMemoryAgentStore",
+    "InMemoryCompactionStore",
     "InMemoryEventPublisher",
     "InMemoryMessageStore",
+    "InMemoryPinnedNoteStore",
     "InMemoryRunStore",
     "InMemoryRuntimeStores",
     "InMemoryThreadStore",
     "InMemoryToolCallStore",
     "MessageStore",
+    "PinnedNoteStore",
     "RunStore",
     "RuntimeStores",
     "SQLAlchemyRuntimeStores",

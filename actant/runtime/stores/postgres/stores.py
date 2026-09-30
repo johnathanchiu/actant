@@ -7,16 +7,20 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from actant.blocks import Block
+from actant.blocks import BLOCKS, Block, TextBlock
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
+from actant.runtime.compaction import CompactionRecord
 from actant.runtime.session import message_to_parts, tool_result_content
 from actant.runtime.stores.postgres.conversion import (
+    compaction_from_row,
+    compaction_row,
     message_from_header,
     message_part_row,
     run_from_row,
@@ -25,6 +29,8 @@ from actant.runtime.stores.postgres.conversion import (
     tool_result_part_row,
 )
 from actant.runtime.stores.postgres.models import (
+    ActantCompactionModel,
+    ActantPinnedNoteModel,
     ActantMessageModel,
     ActantMessagePartModel,
     ActantRunModel,
@@ -518,6 +524,103 @@ class SQLAlchemyToolCallStore:
             return [tool_call_from_row(row) for row in rows]
 
 
+class SQLAlchemyCompactionStore:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self.session_factory = session_factory
+
+    async def append(self, record: CompactionRecord) -> None:
+        async with self.session_factory() as session:
+            async with session.begin():
+                session.add(compaction_row(record))
+
+    async def latest(self, agent_id: str, thread_id: str) -> CompactionRecord | None:
+        async with self.session_factory() as session:
+            row = (
+                await session.scalars(
+                    select(ActantCompactionModel)
+                    .where(
+                        ActantCompactionModel.agent_id == agent_id,
+                        ActantCompactionModel.thread_id == thread_id,
+                    )
+                    .order_by(
+                        ActantCompactionModel.boundary.desc(),
+                        ActantCompactionModel.created_at.desc(),
+                    )
+                    .limit(1)
+                )
+            ).first()
+            return compaction_from_row(row) if row is not None else None
+
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> list[CompactionRecord]:
+        async with self.session_factory() as session:
+            rows = await session.scalars(
+                select(ActantCompactionModel)
+                .where(
+                    ActantCompactionModel.agent_id == agent_id,
+                    ActantCompactionModel.thread_id == thread_id,
+                )
+                .order_by(ActantCompactionModel.boundary, ActantCompactionModel.created_at)
+            )
+            return [compaction_from_row(row) for row in rows.all()]
+
+
+class SQLAlchemyPinnedNoteStore:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self.session_factory = session_factory
+
+    async def pin(
+        self, agent_id: str, thread_id: str, key: str, content: str | list[Block]
+    ) -> None:
+        blocks: list[Block] = (
+            [TextBlock(text=content)]
+            if isinstance(content, str)
+            else list(BLOCKS.validate_python(content))
+        )
+        now = datetime.now(UTC)
+        async with self.session_factory() as session:
+            async with session.begin():
+                # BlocksJSONB validates and dumps the blocks on bind.
+                statement = insert(ActantPinnedNoteModel).values(
+                    agent_id=agent_id,
+                    thread_id=thread_id,
+                    key=key,
+                    content_blocks=blocks,
+                    updated_at=now,
+                )
+                await session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=["agent_id", "thread_id", "key"],
+                        set_={
+                            "content_blocks": statement.excluded.content_blocks,
+                            "updated_at": now,
+                        },
+                    )
+                )
+
+    async def unpin(self, agent_id: str, thread_id: str, key: str) -> None:
+        async with self.session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(ActantPinnedNoteModel).where(
+                        ActantPinnedNoteModel.agent_id == agent_id,
+                        ActantPinnedNoteModel.thread_id == thread_id,
+                        ActantPinnedNoteModel.key == key,
+                    )
+                )
+
+    async def list_for_thread(self, agent_id: str, thread_id: str) -> dict[str, list[Block]]:
+        async with self.session_factory() as session:
+            rows = await session.scalars(
+                select(ActantPinnedNoteModel)
+                .where(
+                    ActantPinnedNoteModel.agent_id == agent_id,
+                    ActantPinnedNoteModel.thread_id == thread_id,
+                )
+                .order_by(ActantPinnedNoteModel.key)
+            )
+            return {row.key: list(row.content_blocks) for row in rows.all()}
+
+
 class SQLAlchemyEventPublisher:
     async def publish(self, channel: str, event: JSONObject) -> None:
         del channel, event
@@ -534,6 +637,8 @@ class SQLAlchemyRuntimeStores:
         self.runs = SQLAlchemyRunStore(session_factory)
         self.messages = SQLAlchemyMessageStore(session_factory)
         self.tool_calls = SQLAlchemyToolCallStore(session_factory)
+        self.compactions = SQLAlchemyCompactionStore(session_factory)
+        self.pinned_notes = SQLAlchemyPinnedNoteStore(session_factory)
         self.publisher = SQLAlchemyEventPublisher()
 
 
@@ -564,8 +669,10 @@ async def _get_or_create_thread(
 
 
 __all__ = [
+    "SQLAlchemyCompactionStore",
     "SQLAlchemyEventPublisher",
     "SQLAlchemyMessageStore",
+    "SQLAlchemyPinnedNoteStore",
     "SQLAlchemyRunStore",
     "SQLAlchemyRuntimeStores",
     "SQLAlchemyThreadStore",

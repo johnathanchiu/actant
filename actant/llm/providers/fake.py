@@ -19,6 +19,9 @@ class FakeResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     text_chunks: list[str] | None = None
     thinking_chunks: list[str] | None = None
+    #: Usage to report, as a provider would on the assistant message.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class FakeLLM:
@@ -28,9 +31,14 @@ class FakeLLM:
         self,
         responses: list[FakeResponse],
         model_id: str = "fake",
+        *,
+        context_window_tokens: int | None = None,
+        max_images_per_request: int | None = None,
     ) -> None:
         self._responses = list(responses)
         self.model_id = model_id
+        self.context_window_tokens = context_window_tokens
+        self.max_images_per_request = max_images_per_request
         self.calls: list[tuple[str, list[Message], list[dict]]] = []
         self.allowed_tools: list[tuple[str, ...]] = []
 
@@ -68,4 +76,6 @@ class FakeLLM:
             role="assistant",
             content=response.text or None,
             tool_calls=response.tool_calls or None,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
         )
