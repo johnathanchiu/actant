@@ -16,31 +16,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class ModelConfig:
-    provider: str
-    model: str
-    temperature: float = 0.0
-    max_tokens: int | None = None
-
-
-@dataclass(frozen=True)
-class Agent:
-    id: str
-    name: str
-    persona: str
-    persona_version: str
-    model: ModelConfig
-    tool_allowlist: set[str] = field(default_factory=set)
-    max_turns_per_thread: int = 25
-
-
-@dataclass(frozen=True)
-class ContextPolicy:
-    max_input_tokens: int | None = None
-    reserve_output_tokens: int = 4096
-
-
-@dataclass(frozen=True)
 class AgentDefinition:
     id: str
     name: str
@@ -48,8 +23,6 @@ class AgentDefinition:
     llm: LLMClient
     tools: ToolRegistry
     tool_allowlist: set[str] = field(default_factory=set)
-    context_policy: ContextPolicy = field(default_factory=ContextPolicy)
-    persona_version: str = "v1"
     max_turns_per_thread: int = 25
     #: Where this agent's sandboxed tools run. ``None`` means no tool may
     #: declare ``needs_sandbox``.

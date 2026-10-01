@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast
 
@@ -538,20 +538,6 @@ class SQLAlchemyToolCallStore:
             ).all()
             return [tool_call_from_row(row) for row in rows]
 
-    async def get_by_thread_and_turn(self, thread_id: str, turn_id: str) -> list[ToolCallRecord]:
-        async with self.session_factory() as session:
-            rows = (
-                await session.scalars(
-                    select(ActantToolCallModel)
-                    .where(
-                        ActantToolCallModel.thread_id == thread_id,
-                        ActantToolCallModel.turn_id == turn_id,
-                    )
-                    .order_by(ActantToolCallModel.created_at)
-                )
-            ).all()
-            return [tool_call_from_row(row) for row in rows]
-
     async def get_open_for_thread(self, agent_id: str, thread_id: str) -> list[ToolCallRecord]:
         async with self.session_factory() as session:
             rows = (
@@ -574,23 +560,12 @@ class SQLAlchemyToolCallStore:
             return [tool_call_from_row(row) for row in rows]
 
 
-class SQLAlchemyEventPublisher:
-    async def publish(self, channel: str, event: JSONObject) -> None:
-        del channel, event
-
-    async def subscribe(self, channel: str) -> AsyncIterator[JSONObject]:
-        del channel
-        if False:
-            yield {}
-
-
 class SQLAlchemyRuntimeStores:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.threads = SQLAlchemyThreadStore(session_factory)
         self.runs = SQLAlchemyRunStore(session_factory)
         self.messages = SQLAlchemyMessageStore(session_factory)
         self.tool_calls = SQLAlchemyToolCallStore(session_factory)
-        self.publisher = SQLAlchemyEventPublisher()
 
 
 async def _get_thread(
@@ -620,7 +595,6 @@ async def _get_or_create_thread(
 
 
 __all__ = [
-    "SQLAlchemyEventPublisher",
     "SQLAlchemyMessageStore",
     "SQLAlchemyRunStore",
     "SQLAlchemyRuntimeStores",

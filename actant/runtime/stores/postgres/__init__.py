@@ -18,7 +18,6 @@ from actant.runtime.stores.postgres.models import (
     create_schema,
 )
 from actant.runtime.stores.postgres.stores import (
-    SQLAlchemyEventPublisher,
     SQLAlchemyMessageStore,
     SQLAlchemyRunStore,
     SQLAlchemyRuntimeStores,
@@ -34,7 +33,6 @@ __all__ = [
     "ActantRuntimeBase",
     "ActantThreadModel",
     "ActantToolCallModel",
-    "SQLAlchemyEventPublisher",
     "SQLAlchemyMessageStore",
     "SQLAlchemyRunStore",
     "SQLAlchemyRuntimeStores",

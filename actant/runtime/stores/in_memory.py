@@ -179,13 +179,6 @@ class InMemoryToolCallStore:
     async def get_by_run(self, run_id: str) -> list[ToolCallRecord]:
         return [tc for tc in self._records.values() if tc.run_id == run_id]
 
-    async def get_by_thread_and_turn(self, thread_id: str, turn_id: str) -> list[ToolCallRecord]:
-        return [
-            tc
-            for tc in self._records.values()
-            if tc.thread_id == thread_id and tc.turn_id == turn_id
-        ]
-
     async def get_open_for_thread(self, agent_id: str, thread_id: str) -> list[ToolCallRecord]:
         open_states = {
             ToolCallStatus.REQUESTED,
