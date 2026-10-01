@@ -164,11 +164,6 @@ class SandboxSpec:
     #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
     #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
     seed: str | None = None
-    #: ``restore_attempt_timeout_s`` and ``restore_attempts``: deprecated, ignored. A
-    #: restore pull is no longer killed and restarted; s5cmd retries a failed part
-    #: itself, and the open's budget bounds the whole restore.
-    restore_attempt_timeout_s: float = 60.0
-    restore_attempts: int = 3
     #: Upload returned images to configured storage and return durable references.
     #: False returns inline bytes; signing and retention belong to storage adapters.
     upload_images: bool = True
@@ -185,12 +180,6 @@ class SandboxSpec:
             self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
         ):
             raise ValueError("seed is a key prefix ending in '/', for disk_sync storage")
-        if not (
-            math.isfinite(self.restore_attempt_timeout_s) and self.restore_attempt_timeout_s > 0
-        ):
-            raise ValueError("restore_attempt_timeout_s must be a positive, finite number")
-        if isinstance(self.restore_attempts, bool) or self.restore_attempts < 1:
-            raise ValueError("restore_attempts must be at least 1")
         timeout = self.image_upload_timeout_s
         if (
             isinstance(timeout, bool)

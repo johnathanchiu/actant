@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
 
 
 class Route(StrEnum):
@@ -167,10 +167,6 @@ class RestoreConfig(_Message):
     #: ``timeout_s`` fails startup.
     argv: list[str] = Field(min_length=1)
     timeout_s: PositiveFloat = 1800.0
-    #: ``attempt_timeout_s`` and ``attempts``: deprecated, ignored. Each pull runs once
-    #: within ``timeout_s`` and the transfer client retries its own failed requests.
-    attempt_timeout_s: PositiveFloat | None = None
-    attempts: PositiveInt = 1
     stamp: StampConfig | None = None
     #: Used only when the run's prefix is empty.
     seed: SeedConfig | None = None
