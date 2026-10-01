@@ -85,13 +85,13 @@ def test_a_finished_seed_copy_is_marked_and_reopens_as_an_existing_run(
     assert restore(_restore(provider, first))
     assert _files(first) == sorted(SEED)
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == sorted(SEED)
-    assert _s5(endpoint, "ls", provider.seed_marker("t1")).returncode == 0
+    assert _s5(endpoint, "ls", provider.seed_marker(SandboxSpec(), "t1")).returncode == 0
     # Stamped from the seed: the first push uploads nothing, and never touches the marker.
-    push = [arg.replace(DISK_PATH, str(first)) for arg in provider.sync_argv("t1")]
+    push = [arg.replace(DISK_PATH, str(first)) for arg in provider.sync_argv(SandboxSpec(), "t1")]
     (first / "a.txt").unlink()
     pushed = subprocess.run(push, capture_output=True, text=True, check=True).stdout
     assert pushed.split() == ["rm", f"s3://{bucket}/sandboxes/t1/a.txt"]
-    assert _s5(endpoint, "ls", provider.seed_marker("t1")).returncode == 0
+    assert _s5(endpoint, "ls", provider.seed_marker(SandboxSpec(), "t1")).returncode == 0
 
     # Reopened: the run's own files, not the seed's (a.txt stays deleted).
     assert _s5(endpoint, "cp", f"{first}/d/b.txt", f"s3://{bucket}/seed/new.txt").returncode == 0
@@ -141,16 +141,16 @@ def test_a_two_entry_plan_restores_both_and_pushes_only_its_own(
         == 0
     )
 
-    class Scene(ModalSandboxProvider):
-        def restore_plan(self, thread_id: str) -> list[Restore]:
-            return [
-                Restore(Location(bucket, "captures/c1/"), "capture", push=False),
-                Restore(self.thread_location(thread_id), "", push=True),
-            ]
-
-    provider = Scene(app_name="x", bucket=bucket, endpoint_url=endpoint)
+    provider = ModalSandboxProvider(app_name="x", bucket=bucket, endpoint_url=endpoint)
     disk = tmp_path / "disk"
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    spec = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        restore=(
+            Restore(Location(bucket, "captures/c1/"), "capture", push=False),
+            Restore(Location(bucket, "sandboxes/t1/"), "", push=True),
+        ),
+    )
     # Without the leading "/", so s5cmd's exclude patterns move to the test's disk too.
     local = DISK_PATH[1:], str(disk)[1:]
     raw = provider.entry_config(spec, "t1").model_dump_json().replace(*local)
@@ -161,7 +161,7 @@ def test_a_two_entry_plan_restores_both_and_pushes_only_its_own(
 
     (disk / "new.txt").write_text("new")
     (disk / "capture" / "mask.png").write_text("mask")
-    push = [arg.replace(*local) for arg in provider.sync_argv("t1")]
+    push = [arg.replace(*local) for arg in provider.sync_argv(spec, "t1")]
     subprocess.run(push, capture_output=True, text=True, check=True)
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == ["new.txt", "room.py"]
     assert _keys(endpoint, f"s3://{bucket}/captures/c1/*") == ["scan.json"]
@@ -178,13 +178,13 @@ def test_a_mount_is_neither_restored_nor_pushed(endpoint: str, tmp_path: Path) -
     (tmp_path / "src" / "capture" / "f.jpg").write_text("old")
     assert _s5(endpoint, "cp", f"{tmp_path}/src/*", f"s3://{bucket}/sandboxes/t1/").returncode == 0
 
-    class Scene(ModalSandboxProvider):
-        def bucket_mounts(self, thread_id: str) -> list[Mount]:
-            return [Mount(Location(bucket, "captures/c1/"), "capture")]
-
-    provider = Scene(app_name="x", bucket=bucket, endpoint_url=endpoint)
+    provider = ModalSandboxProvider(app_name="x", bucket=bucket, endpoint_url=endpoint)
     disk = tmp_path / "disk"
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    spec = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        mounts=(Mount(Location(bucket, "captures/c1/"), "capture"),),
+    )
     local = DISK_PATH[1:], str(disk)[1:]
     raw = provider.entry_config(spec, "t1").model_dump_json().replace(*local)
     config = EntryConfig.model_validate_json(raw).restore
@@ -195,7 +195,7 @@ def test_a_mount_is_neither_restored_nor_pushed(endpoint: str, tmp_path: Path) -
     (disk / "capture").mkdir()
     (disk / "capture" / "g.jpg").write_text("mounted")
     (disk / "new.txt").write_text("new")
-    push = [arg.replace(*local) for arg in provider.sync_argv("t1")]
+    push = [arg.replace(*local) for arg in provider.sync_argv(spec, "t1")]
     subprocess.run(push, capture_output=True, text=True, check=True)
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == [
         "capture/f.jpg", "new.txt", "room.py"

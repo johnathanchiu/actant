@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from typing import Any, Protocol
 
-from actant.sandbox.base import SandboxSpec
+from actant.sandbox.base import Location, Mount, Restore, SandboxSpec
 
 
 @dataclass(frozen=True)
@@ -66,12 +66,20 @@ def spec_from_json(data: Mapping[str, Any]) -> SandboxSpec:
     args: dict[str, Any] = {
         k: tuple(v) if isinstance(v, list) else v for k, v in data.items() if k in known
     }
+    args["restore"] = tuple(
+        Restore(Location(**r["source"]), r["path"], r["push"]) for r in args.get("restore", ())
+    )
+    args["mounts"] = tuple(
+        Mount(Location(**m["source"]), m["path"]) for m in args.get("mounts", ())
+    )
     return SandboxSpec(**args)
 
 
 def _plain(value: object) -> object:
     if isinstance(value, Mapping):
         return dict(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
     raise TypeError(f"a sandbox spec holds JSON values, not {type(value).__name__}")
 
 

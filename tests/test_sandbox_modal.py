@@ -458,7 +458,7 @@ async def test_a_seed_restores_and_copies_only_into_an_empty_thread_prefix(
     assert restore.seed.copy_argv == [*S5, "cp", "s3://b/templates/base/*", "s3://b/sandboxes/t1/"]
     assert restore.seed.stamp.prefix == "s3://b/templates/base/"
     assert restore.seed.stamp.argv[-1] == "s3://b/templates/base/*"
-    push = provider.sync_argv("t1")
+    push = provider.sync_argv(spec, "t1")
     assert push == [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
 
 
@@ -469,19 +469,20 @@ def test_seed_is_a_disk_sync_key_prefix() -> None:
         SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/room")
 
 
-class _ScenePlan(ModalSandboxProvider):
-    """A scene: its own prefix at the root, and a capture from another prefix, read-only."""
+#: A scene: its own prefix at the root, and a capture from another prefix, read-only.
+SCENE_PLAN = (
+    Restore(Location("b", "captures/c1/"), "capture", push=False),
+    Restore(Location("b", "sandboxes/t1/"), "", push=True),
+)
 
-    def restore_plan(self, thread_id: str) -> list[Restore]:
-        return [
-            Restore(Location("b", "captures/c1/"), "capture", push=False),
-            Restore(self.thread_location(thread_id), "", push=True),
-        ]
+
+def _scene(**kw: Any) -> SandboxSpec:
+    return SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, restore=SCENE_PLAN, **kw)
 
 
 def test_a_restore_plan_pulls_every_entry_and_pushes_only_its_own() -> None:
-    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
+    provider = ModalSandboxProvider(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = _scene(seed="templates/base/")
     restore = provider.entry_config(spec, "t1").restore
     assert restore is not None and restore.seed is not None
     assert restore.argv == [*PULL, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
@@ -490,15 +491,15 @@ def test_a_restore_plan_pulls_every_entry_and_pushes_only_its_own() -> None:
     assert capture.stamp is not None and capture.stamp.root == f"{DISK_PATH}/capture"
     # The seed fills the pushed entry and is marked beside its prefix.
     assert restore.seed.copy_argv[-1] == "s3://b/sandboxes/t1/"
-    assert provider.seed_marker("t1") == "s3://b/sandboxes/t1.actant-seeded"
-    assert provider.sync_argv("t1") == [
+    assert provider.seed_marker(spec, "t1") == "s3://b/sandboxes/t1.actant-seeded"
+    assert provider.sync_argv(spec, "t1") == [
         *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
     ]  # fmt: skip
 
 
 def test_the_spec_sets_the_restore_budget() -> None:
-    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, restore_timeout_s=420)
+    provider = ModalSandboxProvider(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = _scene(restore_timeout_s=420)
     restore = provider.entry_config(spec, "t1").restore
     assert restore is not None and restore.timeout_s == 420
     with pytest.raises(ValueError, match="restore_timeout_s"):
@@ -506,8 +507,8 @@ def test_the_spec_sets_the_restore_budget() -> None:
 
 
 def test_a_restore_pulled_again_keeps_files_already_on_the_disk_at_their_size() -> None:
-    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    provider = ModalSandboxProvider(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = _scene()
     first = provider.entry_config(spec, "t1").restore
     again = provider.entry_config(spec, "t1", size_only=True).restore
     assert first is not None and again is not None
@@ -526,19 +527,9 @@ def test_a_restore_plan_is_checked() -> None:
     with pytest.raises(ValueError, match="relative"):
         Restore(Location("b", ""), "a/../b", push=False)
 
-    class _NoPush(ModalSandboxProvider):
-        def restore_plan(self, thread_id: str) -> list[Restore]:
-            return [Restore(self.thread_location(thread_id), "", push=False)]
-
+    no_push = SandboxSpec(restore=(Restore(Location("b", "x/"), "", push=False),))
     with pytest.raises(ValueError, match="exactly one"):
-        _NoPush(app_name="app", bucket="b").sync_argv("t1")
-
-
-class _MountedScene(ModalSandboxProvider):
-    """A scene: its own prefix at the root, and a capture mounted read-only inside it."""
-
-    def bucket_mounts(self, thread_id: str) -> list[Mount]:
-        return [Mount(Location("b", f"captures/{thread_id}/"), "capture")]
+        ModalSandboxProvider(app_name="app", bucket="b").sync_argv(no_push, "t1")
 
 
 async def test_a_mount_is_read_only_and_no_pull_push_or_stamp_touches_it(
@@ -546,10 +537,16 @@ async def test_a_mount_is_read_only_and_no_pull_push_or_stamp_touches_it(
 ) -> None:
     fake = _FakeModal()
     _use(monkeypatch, fake)
-    provider = _MountedScene(
+    provider = ModalSandboxProvider(
         app_name="app", bucket="b", endpoint_url="https://r2.example", secret_name="r2"
     )
-    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
+    # A scene: its own prefix at the root, and a capture mounted read-only inside it.
+    spec = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        seed="templates/base/",
+        mounts=(Mount(Location("b", "captures/t1/"), "capture"),),
+    )
     await provider.open(spec, sandbox_id="t1")
     args, kw = fake.created
     assert kw["volumes"] == {
@@ -574,7 +571,7 @@ async def test_a_mount_is_read_only_and_no_pull_push_or_stamp_touches_it(
         f"{DISK_PATH}/",
     ]  # fmt: skip
     assert restore.stamp.skip == ["s3://b/sandboxes/t1/capture/"]
-    assert provider.sync_argv("t1") == [
+    assert provider.sync_argv(spec, "t1") == [
         *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
     ]  # fmt: skip
 
@@ -596,21 +593,14 @@ def test_mounts_are_checked_against_the_plan_and_each_other() -> None:
     with pytest.raises(ValueError, match="relative"):
         Mount(Location("b", "c/"), "a/../b")
 
-    @dataclass
-    class _Over(ModalSandboxProvider):
-        mounts: tuple[str, ...] = ()
-        restores: tuple[str, ...] = ()
+    def _over(mounts: tuple[str, ...], restores: tuple[str, ...]) -> SandboxSpec:
+        others = [Restore(Location("b", f"r{i}/"), p, push=False) for i, p in enumerate(restores)]
+        return SandboxSpec(
+            restore=(Restore(Location("b", "sandboxes/t1/"), "", push=True), *others),
+            mounts=tuple(Mount(Location("b", f"m{i}/"), p) for i, p in enumerate(mounts)),
+        )
 
-        def restore_plan(self, thread_id: str) -> list[Restore]:
-            others = [
-                Restore(Location("b", f"r{i}/"), p, push=False)
-                for i, p in enumerate(self.restores)
-            ]
-            return [Restore(self.thread_location(thread_id), "", push=True), *others]
-
-        def bucket_mounts(self, thread_id: str) -> list[Mount]:
-            del thread_id
-            return [Mount(Location("b", f"m{i}/"), p) for i, p in enumerate(self.mounts)]
+    provider = ModalSandboxProvider(app_name="app", bucket="b")
 
     for mounts, restores, match in [
         (("capture",), ("capture",), "under mount"),
@@ -618,21 +608,15 @@ def test_mounts_are_checked_against_the_plan_and_each_other() -> None:
         (("capture", "capture/x"), (), "overlaps"),
         (("capture/x", "capture"), (), "overlaps"),
     ]:
-        provider = _Over(app_name="app", bucket="b", mounts=mounts, restores=restores)
         with pytest.raises(ValueError, match=match):
-            provider.sync_argv("t1")
-    fine = _Over(app_name="app", bucket="b", mounts=("capture",), restores=("inputs",))
-    assert "root/sandbox/capture/*" in fine.sync_argv("t1")
+            provider.sync_argv(_over(mounts, restores), "t1")
+    fine = _over(("capture",), ("inputs",))
+    assert "root/sandbox/capture/*" in provider.sync_argv(fine, "t1")
 
 
 def test_push_exclude_keeps_folders_out_of_every_push() -> None:
-    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
-    spec = SandboxSpec(
-        backend="modal",
-        storage=Storage.DISK_SYNC,
-        services={"tools": "pkg.mod:Tools"},
-        push_exclude=("renders", "cache/frames"),
-    )
+    provider = ModalSandboxProvider(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = _scene(services={"tools": "pkg.mod:Tools"}, push_exclude=("renders", "cache/frames"))
     host = provider.entry_config(spec, "t1").host
     assert host is not None and host.push is not None
     push = host.push
@@ -644,7 +628,7 @@ def test_push_exclude_keeps_folders_out_of_every_push() -> None:
         f"{DISK_PATH}/", "s3://b/sandboxes/t1/",
     ]  # fmt: skip
     # nothing excluded by default: the push is as before
-    assert provider.sync_argv("t1") == [
+    assert provider.sync_argv(_scene(), "t1") == [
         *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
     ]  # fmt: skip
 
