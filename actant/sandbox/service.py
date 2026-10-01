@@ -183,8 +183,8 @@ class SandboxRunner:
         status, response = await _send(endpoint, body, self.timeout, self._client)
         if status == HTTPStatus.UNAUTHORIZED:  # rejected before running: safe to retry
             endpoint = await sandbox.endpoint(refresh=True)
-            assert endpoint is not None
-            _, response = await _send(endpoint, body, self.timeout, self._client)
+            if endpoint is not None:
+                _, response = await _send(endpoint, body, self.timeout, self._client)
         return response
 
 

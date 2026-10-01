@@ -155,7 +155,8 @@ async def start_host(
 ) -> tuple[Endpoint, asyncio.subprocess.Process]:
     """Launch the host for ``spec.services`` in ``root`` on a free port; return once it listens.
     With ``images``, the host uploads returned images under the thread ``root`` names."""
-    assert spec.services
+    if not spec.services:
+        raise ValueError("start_host needs a spec with services")
     token = secrets.token_urlsafe(32)
     config = EntryConfig(
         host=HostConfig(

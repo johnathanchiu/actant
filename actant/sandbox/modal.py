@@ -608,15 +608,14 @@ class ModalSandbox:
             return ExecResult(0, "", "")
         # Unscrubbed: s5cmd needs the bucket keys that ``scrub_env`` usually lists.
         async with heartbeating():
-            return await self._bounded_sync()
+            return await self._bounded_sync(self._sync_argv)
 
-    async def _bounded_sync(self) -> ExecResult:
+    async def _bounded_sync(self, argv: list[str]) -> ExecResult:
         """The push, killed in the container after ``sync_timeout_s``; a Modal API call that
         hangs past that plus :data:`API_SLACK_S` is reported as timed out, never awaited."""
-        assert self._sync_argv is not None
         try:
             return await asyncio.wait_for(
-                self._run(self._sync_argv, timeout=self._sync_timeout),
+                self._run(argv, timeout=self._sync_timeout),
                 self._sync_timeout + API_SLACK_S,
             )
         except TimeoutError:
@@ -631,7 +630,7 @@ class ModalSandbox:
         """
         if not await self._stop_host() and self._sync_argv is not None:
             try:
-                pushed = await self._bounded_sync()
+                pushed = await self._bounded_sync(self._sync_argv)
                 if pushed.returncode:
                     tail = pushed.stderr[-500:]
                     _log.warning("%r: final push exited %d: %s", self, pushed.returncode, tail)
@@ -654,7 +653,8 @@ class ModalSandbox:
         with contextlib.suppress(Exception):
             for refresh in (False, True):
                 endpoint = await asyncio.wait_for(self.endpoint(refresh=refresh), API_SLACK_S)
-                assert endpoint is not None
+                if endpoint is None:
+                    return False
                 # The host's final push may wait for a running one: two timeouts.
                 timeout = 2 * self._sync_timeout + API_SLACK_S
                 status, _ = await asyncio.to_thread(

@@ -501,13 +501,12 @@ class Host:
             image_error=image_error,
         )
 
-    async def pusher(self) -> None:
+    async def pusher(self, push: PushConfig) -> None:
         """Push after calls (one running, at most one pending) and every
         ``push.interval_s`` while a completed call is not yet pushed."""
-        assert self.push
         while True:
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._push_due.wait(), self.push.interval_s)
+                await asyncio.wait_for(self._push_due.wait(), push.interval_s)
             if self._push_due.is_set() or self._pending:
                 self._push_due.clear()
                 await self.push_now()
@@ -658,7 +657,7 @@ async def serve(host: Host, bind: str, port: int) -> None:
     server = await asyncio.start_server(host.connection, bind, port)
     bound = server.sockets[0].getsockname()[1]
     print(f"{READY_PREFIX} {bound}", flush=True)
-    pusher = asyncio.create_task(host.pusher()) if host.push else None
+    pusher = asyncio.create_task(host.pusher(host.push)) if host.push else None
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         loop.add_signal_handler(signum, host.stop.set)
