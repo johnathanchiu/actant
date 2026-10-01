@@ -422,8 +422,16 @@ the worker registers, configured for speed (low reasoning effort), and `summary_
 caps its output, which is most of the call's time:
 
 ```python
-runtime = AgentRuntime(..., summarizers={"fast": OpenAIProvider("gpt-x", thinking_level="low", ...)})
-CompactionConfig(summarizer="fast", summary_tokens=8_000)
+fast = OpenAIProvider("gpt-x", client=client, azure=True, thinking_level="low")
+runtime = AgentRuntime(
+    client=temporal_client,
+    stores=stores,
+    config=TemporalRuntimeConfig(
+        context_compaction=CompactionConfig(summarizer="fast", summary_tokens=8_000)
+    ),
+    resolve_agent=resolve_agent,
+    summarizers={"fast": fast},
+)
 ```
 
 A reasoning model's thinking counts against the cap, so leave it room. A request the
