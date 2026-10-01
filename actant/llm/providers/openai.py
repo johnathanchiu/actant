@@ -80,6 +80,10 @@ def content_to_openai_user_parts(
 #: Images one request may carry: Azure OpenAI rejects more than 50; OpenAI documents 1,500.
 AZURE_REQUEST_IMAGES = 50
 OPENAI_REQUEST_IMAGES = 1_500
+#: Trailing whitespace in a call's arguments that means the model stopped writing them and
+#: is streaming whitespace instead of ending the call. Code indentation, the most whitespace
+#: an argument legitimately has in a row, stays far below it; it is reached in a few seconds.
+RUNAWAY_WHITESPACE = 300
 
 
 class OpenAIProvider:
@@ -403,7 +407,7 @@ class OpenAIProvider:
                         if not delta.strip()
                         else len(delta) - len(delta.rstrip())
                     )
-                    if whitespace >= 300:
+                    if whitespace >= RUNAWAY_WHITESPACE:
                         # The model wrote every argument and then streamed whitespace instead
                         # of stopping. When what it wrote is already one complete object, that
                         # is the call: take it rather than spend a turn asking again. Arguments
@@ -424,7 +428,8 @@ class OpenAIProvider:
                                 0,
                             )
                         raise StreamInterrupted(
-                            "tool arguments contain 300 consecutive whitespace characters",
+                            f"tool arguments contain {RUNAWAY_WHITESPACE} consecutive "
+                            "whitespace characters",
                             retryable=True,
                         )
                 if listener is None:

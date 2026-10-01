@@ -43,6 +43,9 @@ from actant.heartbeat import heartbeating
 from actant.sandbox.base import Endpoint, Sandbox
 from actant.sandbox.protocol import CallRequest, CallResponse, Route
 
+#: Ten minutes, the default ``ActivityTimeouts.tool_s``. A call made inside a tool activity
+#: is ended by that activity's timeout first (it started earlier), so this bounds a call made
+#: outside one; a tool that runs longer raises both.
 DEFAULT_CALL_TIMEOUT_S = 600.0
 #: Concurrent connections one runner holds to service hosts. A call past the cap waits
 #: for a free connection inside its own deadline.
