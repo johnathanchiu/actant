@@ -1,10 +1,10 @@
-"""Keyed sandboxes
+"""Sandboxes by id
 
 Revision ID: 5b0e2f7c9a41
 Revises: 1326e6b76924
 
-A sandbox owned by a key (``actant.sandbox.registry``): its live id and the spec it is
-reopened with, so every worker reaches it by its key. New and empty.
+A sandbox by the id its owner picked (``actant.sandbox.registry``): its backend's live id
+and the spec it is reopened with, so every worker reaches it by its id. New and empty.
 """
 
 from collections.abc import Sequence
@@ -22,8 +22,8 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "actant_sandboxes",
-        sa.Column("key", sa.Text(), nullable=False),
         sa.Column("sandbox_id", sa.Text(), nullable=False),
+        sa.Column("provider_id", sa.Text(), nullable=False),
         sa.Column("spec", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
             "created_at",
@@ -37,7 +37,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("key"),
+        sa.PrimaryKeyConstraint("sandbox_id"),
     )
 
 

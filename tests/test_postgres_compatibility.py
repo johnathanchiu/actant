@@ -172,29 +172,29 @@ async def test_claim_race_and_stale_update_preserve_single_sandbox(
     assert (await stores.threads.get("a", "t")).sandbox_id == winners[0]
 
 
-async def test_a_keyed_sandbox_claim_race_keeps_one_id_and_its_spec(
+async def test_a_sandbox_claim_race_keeps_one_provider_id_and_its_spec(
     stores: SQLAlchemyRuntimeStores,
 ) -> None:
     spec = SandboxSpec(backend="modal", env={"A": "1"}, region=("us-east", "us-west"))
     held = await asyncio.gather(
         *[
-            stores.sandboxes.claim("scene:1", expected=None, sandbox_id=f"sb-{i}", spec=spec)
+            stores.sandboxes.claim("scene_1", expected=None, provider_id=f"sb-{i}", spec=spec)
             for i in range(12)
         ]
     )
-    assert len({record.sandbox_id for record in held if record is not None}) == 1
+    assert len({record.provider_id for record in held if record is not None}) == 1
     first = held[0]
     assert first is not None and first.spec == spec
     # Only the id it still holds is replaced; a stale expectation changes nothing.
-    assert await stores.sandboxes.claim("scene:1", expected="old", sandbox_id="x", spec=spec)
-    assert (await stores.sandboxes.get("scene:1")) == first
+    assert await stores.sandboxes.claim("scene_1", expected="old", provider_id="x", spec=spec)
+    assert (await stores.sandboxes.get("scene_1")) == first
     moved = await stores.sandboxes.claim(
-        "scene:1", expected=first.sandbox_id, sandbox_id="sb-new", spec=spec
+        "scene_1", expected=first.provider_id, provider_id="sb-new", spec=spec
     )
-    assert moved is not None and moved.sandbox_id == "sb-new"
-    await stores.sandboxes.forget("scene:1")
-    assert await stores.sandboxes.get("scene:1") is None
-    gone = await stores.sandboxes.claim("scene:1", expected="sb-new", sandbox_id="y", spec=spec)
+    assert moved is not None and moved.provider_id == "sb-new"
+    await stores.sandboxes.forget("scene_1")
+    assert await stores.sandboxes.get("scene_1") is None
+    gone = await stores.sandboxes.claim("scene_1", expected="sb-new", provider_id="y", spec=spec)
     assert gone is None
 
 

@@ -9,8 +9,8 @@ affect users.
 - `SandboxRunner(client=...)` takes a shared `httpx.AsyncClient`. Runners made per call
   (one per stage or tool call) reuse its open connections to the sandbox host instead of
   a new TLS handshake each; the runner leaves a client it was given open.
-- New `actant.sandbox.store`: a record per keyed sandbox (`SandboxRecord`: key, live id,
-  the spec it reopens with) behind a small `SandboxStore` protocol, with
+- New `actant.sandbox.store`: a record per sandbox (`SandboxRecord`: the `sandbox_id` its
+  owner picked, its backend's live `provider_id`, the spec it reopens with) behind a small `SandboxStore` protocol, with
   `InMemorySandboxStore` and the Postgres `SQLAlchemySandboxStore` (table
   `actant_sandboxes`, revision `5b0e2f7c9a41`). `RuntimeStores` gains `sandboxes`; a
   custom `RuntimeStores` must provide it. A recorded spec keeps every field but `image`,

@@ -1,8 +1,8 @@
-"""Where a keyed sandbox is recorded: its key, its live id and the spec it was opened with.
+"""Where a sandbox is recorded: its id, its backend's live id and the spec it was opened with.
 
-A sandbox is owned by a plain string key the product picks (``"scene:<id>"``, a thread
-id). The record outlives any one process, so every worker reaches the same sandbox by its
-key, and one that was reclaimed is reopened from the spec recorded with it.
+A sandbox's id is an opaque string its owner picks (a scene's own id, a thread id). The
+record outlives any one process, so every worker reaches the same sandbox by its id, and
+one its backend reclaimed is reopened from the spec recorded with it.
 
 This module is part of :mod:`actant.sandbox`, which the agent runtime depends on and never
 the reverse: it imports nothing from actant's runtime.
@@ -20,30 +20,31 @@ from actant.sandbox.base import SandboxSpec
 
 @dataclass(frozen=True)
 class SandboxRecord:
-    """A key's sandbox: its backend id, and the spec it is reopened with when it is gone."""
+    """A sandbox: its backend's id for the live one (``provider_id``), and the spec it is
+    reopened with when that one is gone."""
 
-    key: str
     sandbox_id: str
+    provider_id: str
     #: Without its ``image``: not data, and the backend's to supply (see :func:`spec_to_json`).
     spec: SandboxSpec
 
 
 class SandboxStore(Protocol):
-    """The records of keyed sandboxes. Every write is a compare-and-set on the key's id, so
-    two workers that each opened a sandbox for one key agree on one."""
+    """The records of sandboxes by id. Every write is a compare-and-set on the backend's id,
+    so two workers that each opened a sandbox for one id agree on one."""
 
-    async def get(self, key: str) -> SandboxRecord | None: ...
+    async def get(self, sandbox_id: str) -> SandboxRecord | None: ...
 
     async def claim(
-        self, key: str, *, expected: str | None, sandbox_id: str, spec: SandboxSpec
+        self, sandbox_id: str, *, expected: str | None, provider_id: str, spec: SandboxSpec
     ) -> SandboxRecord | None:
-        """Record ``sandbox_id`` and ``spec`` under ``key`` if the key still holds
-        ``expected`` (``None``: no record yet); return the record the key holds after,
-        ``None`` when it has none."""
+        """Record ``provider_id`` and ``spec`` for ``sandbox_id`` if it still holds
+        ``expected`` (``None``: no record yet); return its record after, ``None`` when it
+        has none."""
         ...
 
-    async def forget(self, key: str) -> None:
-        """The key's record removed; a key with none is left as it is."""
+    async def forget(self, sandbox_id: str) -> None:
+        """The sandbox's record removed; an id with none is left as it is."""
         ...
 
 
@@ -81,16 +82,17 @@ class InMemorySandboxStore:
     def __init__(self) -> None:
         self._records: dict[str, SandboxRecord] = {}
 
-    async def get(self, key: str) -> SandboxRecord | None:
-        return self._records.get(key)
+    async def get(self, sandbox_id: str) -> SandboxRecord | None:
+        return self._records.get(sandbox_id)
 
     async def claim(
-        self, key: str, *, expected: str | None, sandbox_id: str, spec: SandboxSpec
+        self, sandbox_id: str, *, expected: str | None, provider_id: str, spec: SandboxSpec
     ) -> SandboxRecord | None:
-        current = self._records.get(key)
-        if (current.sandbox_id if current is not None else None) == expected:
-            self._records[key] = SandboxRecord(key, sandbox_id, replace(spec, image=None))
-        return self._records.get(key)
+        current = self._records.get(sandbox_id)
+        if (current.provider_id if current is not None else None) == expected:
+            record = SandboxRecord(sandbox_id, provider_id, replace(spec, image=None))
+            self._records[sandbox_id] = record
+        return self._records.get(sandbox_id)
 
-    async def forget(self, key: str) -> None:
-        self._records.pop(key, None)
+    async def forget(self, sandbox_id: str) -> None:
+        self._records.pop(sandbox_id, None)

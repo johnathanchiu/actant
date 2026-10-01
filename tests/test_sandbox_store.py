@@ -1,4 +1,4 @@
-"""Keyed sandbox records: the spec round trip and the in-memory store's compare-and-set."""
+"""Sandbox records: the spec round trip and the in-memory store's compare-and-set."""
 
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ def test_a_spec_round_trips_through_json_without_its_image() -> None:
 @pytest.mark.asyncio
 async def test_the_in_memory_store_sets_an_id_only_over_the_one_expected() -> None:
     store, spec = InMemorySandboxStore(), SandboxSpec(backend="local", image=object())
-    first = await store.claim("k", expected=None, sandbox_id="a", spec=spec)
-    assert first is not None and first.sandbox_id == "a" and first.spec.image is None
-    lost = await store.claim("k", expected=None, sandbox_id="b", spec=spec)
+    first = await store.claim("s", expected=None, provider_id="a", spec=spec)
+    assert first is not None and first.provider_id == "a" and first.spec.image is None
+    lost = await store.claim("s", expected=None, provider_id="b", spec=spec)
     assert lost == first
-    moved = await store.claim("k", expected="a", sandbox_id="c", spec=spec)
-    assert moved is not None and moved.sandbox_id == "c"
-    await store.forget("k")
-    assert await store.get("k") is None
-    assert await store.claim("k", expected="c", sandbox_id="d", spec=spec) is None
+    moved = await store.claim("s", expected="a", provider_id="c", spec=spec)
+    assert moved is not None and moved.provider_id == "c"
+    await store.forget("s")
+    assert await store.get("s") is None
+    assert await store.claim("s", expected="c", provider_id="d", spec=spec) is None
