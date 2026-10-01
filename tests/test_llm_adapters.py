@@ -577,3 +577,49 @@ def test_an_azure_deployment_is_declared_not_guessed_from_the_client() -> None:
         api_version="2025-04-01-preview",
     )
     assert OpenAIProvider("gpt-x", client=sdk).max_images_per_request == 50
+
+
+async def test_qwen_turn_budget_ends_a_call_that_never_answers() -> None:
+    import httpx
+    import openai
+
+    from actant.llm.providers.qwen import QwenProvider
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(60)
+        return httpx.Response(500)
+
+    client = openai.AsyncOpenAI(
+        api_key="test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(hang))
+    )
+    provider = QwenProvider("qwen-example", client=client, turn_s=0.05)
+    with pytest.raises(TimeoutError):
+        await provider.complete("system", [Message(role="user", content="hi")], [])
+
+
+async def test_gemini_turn_budget_ends_a_call_that_never_answers() -> None:
+    from typing import cast
+
+    from google import genai  # pyright: ignore[reportAttributeAccessIssue]
+
+    async def hang(**_: object) -> None:
+        await asyncio.sleep(60)
+
+    models = SimpleNamespace(generate_content_stream=hang)
+    client = cast(genai.Client, SimpleNamespace(aio=SimpleNamespace(models=models)))
+    provider = GeminiProvider(
+        "gemini-example", client=client, check_thinking_support=False, turn_s=0.05
+    )
+    with pytest.raises(TimeoutError):
+        await provider.complete("system", [Message(role="user", content="hi")], [])
+
+
+@pytest.mark.parametrize("name", ["gemini", "qwen"])
+def test_every_provider_turn_budget_must_be_positive(name: str) -> None:
+    from actant.llm.providers.qwen import QwenProvider
+
+    with pytest.raises(ValueError):
+        if name == "gemini":
+            GeminiProvider("gemini-example", api_key="test", turn_s=0)
+        else:
+            QwenProvider("qwen-example", api_key="test", turn_s=0)

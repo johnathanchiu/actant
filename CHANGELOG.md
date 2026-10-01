@@ -4,6 +4,11 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `GeminiProvider(turn_s=...)` and `QwenProvider(turn_s=...)` bound a whole call, as
+  `AnthropicProvider` and `OpenAIProvider` do; every provider now takes a turn budget.
+
 ## 0.30.0
 
 - `SandboxSpec.region` places a Modal sandbox (`"us"`, `"us-east"`, or several);

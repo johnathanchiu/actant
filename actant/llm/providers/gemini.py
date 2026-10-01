@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import uuid
@@ -91,7 +92,10 @@ ToolSchema = dict[str, object]
 
 
 class GeminiProvider:
-    """LLMClient implementation for Gemini generate_content."""
+    """LLMClient implementation for Gemini generate_content.
+
+    ``turn_s`` bounds the whole call; None leaves it to the client's own timeout.
+    """
 
     supports_allowed_tools = False
 
@@ -103,7 +107,11 @@ class GeminiProvider:
         thinking_level: str = "med",
         client: genai.Client | None = None,
         check_thinking_support: bool = True,
+        turn_s: float | None = None,
     ) -> None:
+        if turn_s is not None and turn_s <= 0:
+            raise ValueError("turn_s must be positive")
+        self.turn_s = turn_s
         self.model_id = model_id.removeprefix("gemini/")
         self.thinking_level = thinking_level
         self.client = client or genai.Client(api_key=env_api_key("GEMINI_API_KEY", api_key))
@@ -264,6 +272,26 @@ class GeminiProvider:
         )
 
     async def complete(
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: list[dict],
+        listener: "StreamListener | None" = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
+    ) -> Message:
+        async with asyncio.timeout(self.turn_s):
+            return await self._complete(
+                system,
+                messages,
+                tools,
+                listener,
+                allowed_tools=allowed_tools,
+                max_output_tokens=max_output_tokens,
+            )
+
+    async def _complete(
         self,
         system: str,
         messages: Sequence[Message],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
@@ -33,7 +34,11 @@ RequestParams = CompletionCreateParamsBase
 
 
 class QwenProvider:
-    """LLMClient implementation for Qwen non-streaming chat completions."""
+    """LLMClient implementation for Qwen streaming chat completions.
+
+    ``turn_s`` bounds the whole call, the SDK's own retries included; None leaves it to
+    the client's per-request timeout.
+    """
 
     # Thinking mode accepts only tool_choice "auto" or "none".
     supports_allowed_tools = False
@@ -45,7 +50,11 @@ class QwenProvider:
         api_key: str | None = None,
         base_url: str = DASHSCOPE_BASE_URL,
         client: openai.AsyncOpenAI | None = None,
+        turn_s: float | None = None,
     ) -> None:
+        if turn_s is not None and turn_s <= 0:
+            raise ValueError("turn_s must be positive")
+        self.turn_s = turn_s
         self.model_id = model_id
         self.client = client or openai.AsyncOpenAI(
             api_key=env_api_key("DASHSCOPE_API_KEY", api_key),
@@ -124,6 +133,26 @@ class QwenProvider:
         return params
 
     async def complete(
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: list[dict],
+        listener: "StreamListener | None" = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
+    ) -> Message:
+        async with asyncio.timeout(self.turn_s):
+            return await self._complete(
+                system,
+                messages,
+                tools,
+                listener,
+                allowed_tools=allowed_tools,
+                max_output_tokens=max_output_tokens,
+            )
+
+    async def _complete(
         self,
         system: str,
         messages: Sequence[Message],
