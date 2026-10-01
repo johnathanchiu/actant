@@ -327,10 +327,14 @@ async def test_each_attempt_reserves_and_records_failed_usage() -> None:
 
 
 async def test_turn_budget_includes_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wait that would outlast the budget is not started: the failure that called for it
+    is raised at once, not a TimeoutError at the end of the budget that hides it."""
     monkeypatch.setattr("actant.llm.providers.openai.random.uniform", lambda *args: 10)
-    provider, requests = _provider([httpx.Response(503)] * 3, turn_s=0.05, attempts=3)
-    with pytest.raises(TimeoutError):
+    provider, requests = _provider([httpx.Response(503)] * 3, turn_s=5, attempts=3)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(openai.InternalServerError):
         await provider.complete("system", [], [])
+    assert asyncio.get_running_loop().time() - started < 1
     assert len(requests) == 1
 
 
