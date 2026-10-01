@@ -36,6 +36,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from actant.messages import (
+    MESSAGE_REQUIRED,
+    SUBAGENT_NOT_FOUND,
+    SUBAGENT_REQUIRED,
+    SUBAGENT_SPAWN_FAILED,
+    TASK_NO_INVOKER,
+    TASK_NO_PARENT,
+    UNKNOWN_SUBAGENT,
+)
 from actant.core import JSONObject, JSONValue
 from actant.tools.admission import (
     ToolCallView,
@@ -87,7 +96,7 @@ class InMemorySubagentRegistry:
     async def invoke(self, name: str, message: str, context: JSONObject) -> ToolResult:
         invoker = self.invokers.get(name)
         if invoker is None:
-            return ToolResult.fail(f"Subagent {name!r} not found")
+            return ToolResult.fail(SUBAGENT_NOT_FOUND.format(name=name))
         return await invoker.invoke(name, message, context)
 
 
@@ -186,6 +195,7 @@ class TaskTool:
             invoker=self.invoker,
             spawner=self.spawner,
             parent_thread_id=self.parent_thread_id or ctx.thread_id or None,
+            subagent_choices=self.subagent_choices,
         )
 
     # ``can_execute`` validates and nothing more. Starting the subagent is
@@ -200,25 +210,12 @@ class TaskTool:
         context: TurnContextView | None,
     ) -> ToolDecision:
         del invocation, context
-        if not self.background:
-            return ToolDecision.execute()
         args: JSONObject = call.args if isinstance(call.args, dict) else {}
-        subagent = args.get("subagent")
-        message = args.get("message")
-        if not isinstance(subagent, str) or not subagent:
-            return ToolDecision.deny(reason="`subagent` is required")
-        if self.subagent_choices and subagent not in self.subagent_choices:
-            valid = ", ".join(self.subagent_choices)
-            return ToolDecision.deny(reason=f"Unknown subagent {subagent!r}; valid: {valid}")
-        if not isinstance(message, str) or not message.strip():
-            return ToolDecision.deny(reason="`message` is required")
-        if self._parent_thread_id(call) is None:
-            return ToolDecision.deny(
-                reason=(
-                    "TaskTool has no parent_thread_id: neither set at "
-                    "construction nor present on the tool call."
-                )
-            )
+        invalid = _invalid(args, self.subagent_choices)
+        if invalid is not None:
+            return ToolDecision.deny(reason=invalid)
+        if self.background and self._parent_thread_id(call) is None:
+            return ToolDecision.deny(reason=TASK_NO_PARENT)
         return ToolDecision.execute()
 
     def _parent_thread_id(self, call: ToolCallView) -> str | None:
@@ -251,36 +248,37 @@ class TaskInvocation(BaseToolInvocation[JSONObject, object]):
         invoker: SubagentInvoker | None = None,
         spawner: SubagentSpawner | None = None,
         parent_thread_id: str | None = None,
+        subagent_choices: Sequence[str] = (),
     ) -> None:
         super().__init__(params)
         self._invoker = invoker
         self._spawner = spawner
         self._parent_thread_id = parent_thread_id
+        self._subagent_choices = subagent_choices
 
     def get_description(self) -> str:
         subagent = self.params.get("subagent")
         return f"Delegate task to {subagent}" if isinstance(subagent, str) else "Delegate task"
 
     async def execute(self) -> ToolResult:
-        subagent = self.params.get("subagent")
-        message = self.params.get("message")
-        if not isinstance(subagent, str) or not subagent:
-            return ToolResult.fail("subagent is required")
-        if not isinstance(message, str) or not message:
-            return ToolResult.fail("message is required")
+        invalid = _invalid(self.params, self._subagent_choices)
+        if invalid is not None:
+            return ToolResult.fail(invalid)
+        subagent = str(self.params["subagent"])
+        message = str(self.params["message"])
         context = _context_payload(self.params.get("context"))
 
         if self._spawner is not None:
-            return await self._start(subagent, message, context)
+            return await self._start(self._spawner, subagent, message, context)
         if self._invoker is None:
-            return ToolResult.fail("TaskTool has neither an invoker nor a spawner.")
+            return ToolResult.fail(TASK_NO_INVOKER)
         return await self._invoker.invoke(subagent, message, context)
 
-    async def _start(self, subagent: str, message: str, context: JSONObject) -> ToolResult:
-        spawner = self._spawner
-        assert spawner is not None
+    async def _start(
+        self, spawner: SubagentSpawner, subagent: str, message: str, context: JSONObject
+    ) -> ToolResult:
         if self._parent_thread_id is None:
-            return ToolResult.fail("TaskTool has no parent_thread_id.")
+            return ToolResult.fail(TASK_NO_PARENT)
         try:
             thread_id = await spawner.spawn(
                 name=subagent,
@@ -289,7 +287,7 @@ class TaskInvocation(BaseToolInvocation[JSONObject, object]):
                 parent_thread_id=self._parent_thread_id,
             )
         except Exception as exc:  # noqa: BLE001 -- a failed spawn is a failed tool
-            return ToolResult.fail(f"Subagent spawn failed: {exc}")
+            return ToolResult.fail(SUBAGENT_SPAWN_FAILED.format(error=exc))
 
         # ``sub_thread_id`` is in the output, not in metadata, even though
         # it is bookkeeping rather than something the model needs: the tool
@@ -305,6 +303,19 @@ class TaskInvocation(BaseToolInvocation[JSONObject, object]):
                 "status": "running",
             }
         )
+
+
+def _invalid(args: JSONObject, choices: Sequence[str]) -> str | None:
+    """Why ``args`` cannot delegate, or None: one rule for admission and execution."""
+    subagent = args.get("subagent")
+    message = args.get("message")
+    if not isinstance(subagent, str) or not subagent:
+        return SUBAGENT_REQUIRED
+    if choices and subagent not in choices:
+        return UNKNOWN_SUBAGENT.format(name=subagent, valid=", ".join(choices))
+    if not isinstance(message, str) or not message.strip():
+        return MESSAGE_REQUIRED
+    return None
 
 
 def _context_payload(value: JSONValue | None) -> JSONObject:

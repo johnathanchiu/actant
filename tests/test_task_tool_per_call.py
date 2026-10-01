@@ -295,3 +295,31 @@ async def test_the_parent_passed_at_thread_start_reaches_the_call_context() -> N
     assert ctx.parent_thread_id == "root"
     with pytest.raises(ValueError, match="cannot spawn"):
         await TaskTool(spawner=_CapturingSpawner()).build({"name": "x", "message": "y"}, ctx)
+
+
+@pytest.mark.parametrize("background", [False, True])
+async def test_admission_and_execution_apply_one_rule_in_both_modes(background: bool) -> None:
+    """A blank message or an unknown subagent is refused the same way whether the tool
+    delegates inline or in the background, at admission and at execution."""
+    from actant.tools.base import ToolResult
+
+    class _Invoker:
+        async def invoke(self, name: str, message: str, context: JSONObject) -> ToolResult:
+            return ToolResult.ok({"name": name})
+
+    spawner = _CapturingSpawner()
+    tool = (
+        TaskTool(spawner=spawner, subagent_choices=["x"])
+        if background
+        else TaskTool(invoker=_Invoker(), subagent_choices=["x"])
+    )
+    for args, reason in (
+        ({"subagent": "x", "message": "  "}, "`message` is required"),
+        ({"subagent": "y", "message": "go"}, "Unknown subagent 'y'; valid: x"),
+    ):
+        call = _FakeCall(id="tc", thread_id="t", args=cast(JSONObject, args))
+        decision = await tool.can_execute(call, None, None)
+        assert decision.kind == ToolDecisionKind.DENY and decision.reason == reason
+        result = await (await tool.build(cast(JSONObject, args), _ctx("t"))).execute()
+        assert result.error == reason
+    assert spawner.spawns == []

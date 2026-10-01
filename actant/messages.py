@@ -31,3 +31,14 @@ TOOL_NEEDS_SANDBOX = "Tool {name!r} needs a sandbox and none was given"
 TOOL_NEEDS_CONTEXT = "Tool {name!r} needs its call context"
 NO_IMAGE_WITH_ID = "no image with id {id!r} in this thread"
 FINISH_PATHS_NOT_A_LIST = "`paths` must be a list of workspace paths"
+
+# === the task tool ===
+SUBAGENT_REQUIRED = "`subagent` is required"
+MESSAGE_REQUIRED = "`message` is required"
+UNKNOWN_SUBAGENT = "Unknown subagent {name!r}; valid: {valid}"
+SUBAGENT_NOT_FOUND = "Subagent {name!r} not found"
+SUBAGENT_SPAWN_FAILED = "Subagent spawn failed: {error}"
+TASK_NO_INVOKER = "TaskTool has neither an invoker nor a spawner."
+TASK_NO_PARENT = (
+    "TaskTool has no parent_thread_id: neither set at construction nor present on the tool call."
+)
