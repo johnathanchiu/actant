@@ -339,7 +339,12 @@ class OpenAIProvider:
     ) -> tuple[Message, int]:
         tool_stream_state = _OpenAIToolStreamState()
         manager = self.client.responses.stream(**params)
-        stream = await asyncio.wait_for(manager.__aenter__(), self.idle_s)
+        # Each bound is a nested ``asyncio.timeout``, never ``asyncio.wait_for``: on
+        # Python 3.11, ``wait_for`` returns the inner result when the turn budget's
+        # cancel lands just as an event arrives, so the cancel is lost and a busy
+        # stream runs on past ``turn_s``.
+        async with asyncio.timeout(self.idle_s):
+            stream = await manager.__aenter__()
         try:
             events = stream.__aiter__()
             whitespace = 0
@@ -355,7 +360,8 @@ class OpenAIProvider:
                 # longer ``reasoning_idle_s`` applies.
                 gap = self.idle_s if emitting else self.reasoning_idle_s
                 try:
-                    event = await asyncio.wait_for(anext(events), gap)
+                    async with asyncio.timeout(gap):
+                        event = await anext(events)
                 except StopAsyncIteration:
                     break
                 if listener is not None and listener.cancel_requested():
@@ -415,7 +421,8 @@ class OpenAIProvider:
                     continue
                 await _forward_stream_event(event, listener, tool_stream_state)
             try:
-                response = await asyncio.wait_for(stream.get_final_response(), self.idle_s)
+                async with asyncio.timeout(self.idle_s):
+                    response = await stream.get_final_response()
             except RuntimeError as error:
                 raise StreamInterrupted(
                     "stream closed without response.completed", retryable=True
