@@ -253,6 +253,7 @@ class ModalSandboxProvider:
             cpu=spec.cpu,
             memory=spec.memory_mb,
             gpu=spec.gpu,
+            region=list(spec.region) if isinstance(spec.region, tuple) else spec.region,
             timeout=spec.timeout_s,
             idle_timeout=spec.idle_timeout_s,
             **self._network(spec),

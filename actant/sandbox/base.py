@@ -135,6 +135,10 @@ class SandboxSpec:
     env: Mapping[str, str] = field(default_factory=dict)
     #: A GPU type the backend understands (``"L4"``, ``"H100"``); ``None`` for CPU only.
     gpu: str | None = None
+    #: Where the backend may place the sandbox: a region it understands (Modal's ``"us"``,
+    #: ``"us-east"``) or several; ``None`` for anywhere. Modal's default also places
+    #: sandboxes in Europe and Asia; a ``disk_sync`` sandbox belongs near its bucket.
+    region: str | tuple[str, ...] | None = None
     #: Outbound network. Off by default: turn it on only for tools that call external APIs.
     network: bool = False
     #: Backend secret names (Modal secrets) injected into the sandbox's environment.
