@@ -378,11 +378,10 @@ JSON of an `actant.sandbox.StorageStatus` (read it with
 
 Warn when `consecutive_failures` is non-zero. The final push on shutdown is
 bounded the same way, so shutdown finishes even when storage is unreachable;
-`Sandbox.sync` and `close` never wait without bound. Each pull of a restore is
-killed after `restore_attempt_timeout_s` (default 60) and run again, up to
-`restore_attempts` (default 3) runs; a retry fetches only the files still
-missing, and progress (`restore: 812/1040 objects (attempt 1/3)`) goes to the
-sandbox's stderr. A restore that still fails fails startup. Restored files take
+`Sandbox.sync` and `close` never wait without bound. Each pull of a restore runs
+once; s5cmd retries a failed request (one part of an object) on its own, and
+progress (`restore: 812/1040 objects`) goes to the sandbox's stderr. A restore
+that fails or outlasts its budget fails startup. Restored files take
 their objects' mtimes, so a push uploads only files changed since.
 
 A disk can be made of more than the thread's prefix. Override

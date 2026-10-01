@@ -608,11 +608,10 @@ def test_entry_fails_when_restore_times_out(tmp_path: Path) -> None:
     assert time.monotonic() - started < 20
 
 
-def test_a_slow_pull_runs_once_past_the_deprecated_attempt_limit(
+def test_a_slow_pull_runs_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``attempt_timeout_s`` and ``attempts`` are ignored: nothing kills or restarts a
-    slow pull, and progress and the stamp still apply."""
+    """Nothing kills or restarts a slow pull, and progress and the stamp still apply."""
     from actant.sandbox import entry
 
     monkeypatch.setattr(entry, "PROGRESS_INTERVAL_S", 0.1)
@@ -632,8 +631,6 @@ def test_a_slow_pull_runs_once_past_the_deprecated_attempt_limit(
     )
     config = RestoreConfig(
         argv=[sys.executable, "-c", pull],
-        attempt_timeout_s=0.5,
-        attempts=3,
         stamp=StampConfig(
             argv=[sys.executable, "-c", f"print({listed!r})"],
             prefix="s3://b/t/",
@@ -654,9 +651,7 @@ def test_a_stalled_pull_fails_at_the_overall_budget_without_restarting(
 
     runs = tmp_path / "runs"
     stall = f"import time; open({str(runs)!r}, 'a').write('.'); time.sleep(60)"
-    config = RestoreConfig(
-        argv=[sys.executable, "-c", stall], timeout_s=0.5, attempt_timeout_s=0.1, attempts=3
-    )
+    config = RestoreConfig(argv=[sys.executable, "-c", stall], timeout_s=0.5)
     assert not restore(config)
     assert runs.read_text() == "."
     assert "restore timed out after 0.5s" in capsys.readouterr().err

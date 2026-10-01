@@ -9,6 +9,9 @@ affect users.
 - `AgentRuntime.cancel_thread` records the cancel in the stores before it returns: open
   tool calls are closed with a paired tool result and the thread is `CANCELLED`, also
   for a thread whose workflow had already closed. A host no longer repairs these itself.
+- Breaking: `SandboxSpec.restore_attempt_timeout_s` and `restore_attempts`, and
+  `RestoreConfig.attempt_timeout_s` and `attempts`, are removed. They were deprecated
+  and ignored since 0.27.0; drop them from any spec that still sets them.
 
 ## 0.30.0
 
