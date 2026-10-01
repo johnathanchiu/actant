@@ -402,7 +402,7 @@ class RunActivities:
             )
             instructions = f"{instructions}\n\n{length}" if instructions else length
         request = await self._prepare(
-            compaction_request(view.messages[:cut], instructions),
+            compaction_request(view.messages[:cut], instructions, config.prompt),
             payload.agent_id,
             payload.thread_id,
             payload.run_id,
@@ -433,7 +433,9 @@ class RunActivities:
                 reason,
             )
             request = await self._prepare(
-                compaction_request(view.messages[:cut], self.context.compaction_instructions),
+                compaction_request(
+                    view.messages[:cut], self.context.compaction_instructions, config.prompt
+                ),
                 payload.agent_id,
                 payload.thread_id,
                 payload.run_id,

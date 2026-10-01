@@ -70,6 +70,13 @@ class CompactionConfig:
 
         CompactionConfig(summarizer="fast", summary_tokens=4_000)
 
+    ``prompt`` replaces actant's generic summary instruction (``COMPACTION_PROMPT``)
+    for an app that knows what its agents must carry across a compaction; the
+    runtime's ``compaction_instructions`` and the length line ``summary_tokens``
+    adds still follow it. ``None`` keeps the generic one::
+
+        CompactionConfig(prompt="<compaction_request>...</compaction_request>")
+
     The limits are the model client's: its ``context_window_tokens`` and
     ``max_images_per_request`` (``OpenAIProvider`` takes both); a limit the
     client does not declare is not checked. Unrelated to
@@ -81,12 +88,15 @@ class CompactionConfig:
     background: float | None = None
     summarizer: str | None = None
     summary_tokens: int | None = None
+    prompt: str | None = None
 
     def __post_init__(self) -> None:
         if self.background is not None and not 0 < self.background < self.threshold:
             raise ValueError("background must be above 0 and below threshold")
         if self.summary_tokens is not None and self.summary_tokens < 256:
             raise ValueError("summary_tokens must be at least 256")
+        if self.prompt is not None and not self.prompt.strip():
+            raise ValueError("prompt must not be empty; None keeps the generic one")
 
 
 @dataclass(frozen=True)

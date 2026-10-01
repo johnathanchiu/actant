@@ -394,7 +394,8 @@ decisions and why, what was verified, every open item, next steps, key facts,
 and an index of notable images by id). That call carries no more than the last
 request did, so it is under the image limit, and its output is capped to the
 window's remaining margin. If it fails, the run fails; nothing is dropped.
-`compaction_instructions` on `AgentRuntime` appends to the prompt.
+`CompactionConfig(prompt=...)` replaces the built-in prompt with an app's own;
+`compaction_instructions` on `AgentRuntime` appends to whichever is used.
 
 The summary is stored as a compaction row in the transcript: a message with
 `kind="compaction"` whose content is one `CompactionBlock` (the summary, the

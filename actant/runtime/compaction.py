@@ -225,9 +225,12 @@ def crossed_limits(
     return ",".join(reasons) or None
 
 
-def compaction_request(view: Sequence[Message], instructions: str = "") -> list[Message]:
+def compaction_request(
+    view: Sequence[Message], instructions: str = "", prompt: str | None = None
+) -> list[Message]:
     """The summary call's messages: the context being replaced, each stored image
-    labelled with its id for the image index, then the prompt."""
+    labelled with its id for the image index, then the prompt (``prompt``, else
+    ``COMPACTION_PROMPT``) with ``instructions`` after it."""
     labelled: list[Message] = []
     for message in view:
         if isinstance(message.content, list) and any(
@@ -240,8 +243,10 @@ def compaction_request(view: Sequence[Message], instructions: str = "") -> list[
                 blocks.append(block)
             message = replace(message, content=blocks)
         labelled.append(message)
-    prompt = COMPACTION_PROMPT if not instructions else f"{COMPACTION_PROMPT}\n\n{instructions}"
-    return [*labelled, Message(role="user", content=prompt)]
+    text = COMPACTION_PROMPT if prompt is None else prompt
+    if instructions:
+        text = f"{text}\n\n{instructions}"
+    return [*labelled, Message(role="user", content=text)]
 
 
 def image_id(block: AssetBlock) -> str:
