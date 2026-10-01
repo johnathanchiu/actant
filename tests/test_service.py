@@ -283,6 +283,17 @@ async def test_sandbox_runner_uses_the_thread_sandbox(sandbox: LocalSandbox) -> 
     assert json.loads(direct.text) == {"count": 8}
 
 
+async def test_sandbox_runners_share_a_client_they_leave_open(sandbox: LocalSandbox) -> None:
+    import httpx
+
+    async with httpx.AsyncClient(trust_env=False) as client:
+        for count in (1, 2):
+            async with SandboxRunner("counter", client=client) as runner:
+                response = await runner.call("bump", {}, key="shared", sandbox=sandbox)
+            assert json.loads(response.text) == {"count": count}
+        assert not client.is_closed
+
+
 def test_storage_status_lands_on_tool_metadata() -> None:
     status = StorageStatus(pending=True)
     result = to_tool_result(CallResponse(text="ok", storage=status))

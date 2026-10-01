@@ -137,7 +137,12 @@ class SandboxRunner:
     """Runs methods of ``service`` (a name in ``SandboxSpec.services``) on ``sandbox``'s
     host, one instance per ``key`` (a tool passes its thread id), created from ``init``.
     A connect credential the host rejects is refreshed once through
-    :meth:`Sandbox.endpoint`."""
+    :meth:`Sandbox.endpoint`.
+
+    ``client`` shares one HTTP connection pool across runners: a process that makes
+    many short-lived runners passes the same client to each, so a call reuses an open
+    connection to the host instead of a new TLS handshake. The runner never closes a
+    client it was given; without one it makes its own and :meth:`close` closes it."""
 
     needs_sandbox = True
 
@@ -147,18 +152,21 @@ class SandboxRunner:
         init: Mapping[str, object] | None = None,
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT_S,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         import httpx
 
         self.service = service
         self.init = dict(init or {})
         self.timeout = timeout
-        self._client = httpx.AsyncClient(
+        self._owned = client is None
+        self._client = client or httpx.AsyncClient(
             trust_env=False, limits=httpx.Limits(max_connections=MAX_HOST_CONNECTIONS)
         )
 
     async def close(self) -> None:
-        await self._client.aclose()
+        if self._owned:
+            await self._client.aclose()
 
     async def __aenter__(self) -> SandboxRunner:
         return self
