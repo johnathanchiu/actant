@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -528,3 +529,26 @@ async def test_anthropic_leaves_a_429_to_the_sdk_retries() -> None:
     with pytest.raises(anthropic.RateLimitError):
         await provider.complete("system", [Message(role="user", content="hi")], [])
     assert len(sent) == 3  # the SDK's first try and its two retries, nothing more
+
+
+async def test_anthropic_turn_budget_ends_a_call_that_never_answers() -> None:
+    import anthropic
+    import httpx
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(60)
+        return httpx.Response(500)
+
+    client = anthropic.AsyncAnthropic(
+        api_key="test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(hang))
+    )
+    provider = AnthropicProvider(model_id="claude-opus-5-5", client=client, turn_s=0.05)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(TimeoutError):
+        await provider.complete("system", [Message(role="user", content="hi")], [])
+    assert asyncio.get_running_loop().time() - started < 1
+
+
+def test_anthropic_turn_budget_must_be_positive() -> None:
+    with pytest.raises(ValueError):
+        AnthropicProvider(model_id="claude-opus-5-5", api_key="test", turn_s=0)

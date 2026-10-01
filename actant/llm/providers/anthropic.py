@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -55,7 +56,11 @@ _VERSION = re.compile(r"claude-(?:[a-z]+-)?(\d{1,2})(?:-(\d{1,2})(?!\d))?")
 
 
 class AnthropicProvider:
-    """LLMClient implementation for Anthropic Messages API."""
+    """LLMClient implementation for Anthropic Messages API.
+
+    ``turn_s`` bounds the whole call, the SDK's own retries included; None leaves it
+    to the client's per-request timeout.
+    """
 
     # tool_choice cannot name a subset of tools.
     supports_allowed_tools = False
@@ -68,7 +73,11 @@ class AnthropicProvider:
         thinking_level: str = "med",
         client: anthropic.AsyncAnthropic | None = None,
         rate_limiter: RateLimiter | None = None,
+        turn_s: float | None = None,
     ) -> None:
+        if turn_s is not None and turn_s <= 0:
+            raise ValueError("turn_s must be positive")
+        self.turn_s = turn_s
         self.model_id = model_id
         self.thinking_level = thinking_level
         self.client = client or anthropic.AsyncAnthropic(
@@ -199,6 +208,20 @@ class AnthropicProvider:
         *,
         allowed_tools: tuple[str, ...] = (),
         max_output_tokens: int | None = None,
+    ) -> Message:
+        async with asyncio.timeout(self.turn_s):
+            return await self._complete(
+                system, messages, tools, listener, allowed_tools, max_output_tokens
+            )
+
+    async def _complete(
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: list[dict],
+        listener: "StreamListener | None",
+        allowed_tools: tuple[str, ...],
+        max_output_tokens: int | None,
     ) -> Message:
         if allowed_tools:
             raise NotImplementedError(
