@@ -175,6 +175,7 @@ class AgentRuntime:
             parent_thread_id=parent_thread_id,
             interleave_inbox=self.config.interleave_inbox,
             context_compaction=self.config.context_compaction,
+            activity_timeouts=self.config.activity_timeouts,
         )
         await client.start_workflow(
             AgentThreadWorkflow.run,

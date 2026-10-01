@@ -497,6 +497,19 @@ def test_a_restore_plan_pulls_every_entry_and_pushes_only_its_own() -> None:
     ]  # fmt: skip
 
 
+def test_a_restore_pulled_again_keeps_files_already_on_the_disk_at_their_size() -> None:
+    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    first = provider.entry_config(spec, "t1").restore
+    again = provider.entry_config(spec, "t1", size_only=True).restore
+    assert first is not None and again is not None
+    pulls = [(first.argv, again.argv), *((a.argv, b.argv) for a, b in zip(first.also, again.also))]
+    for before, after in pulls:
+        assert "--size-only" not in before
+        at = before.index("sync") + 1
+        assert after == [*before[:at], "--size-only", *before[at:]]
+
+
 def test_a_restore_plan_is_checked() -> None:
     with pytest.raises(ValueError, match="prefix ending"):
         Location("b", "captures")

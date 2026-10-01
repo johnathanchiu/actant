@@ -77,6 +77,11 @@ def content_to_openai_user_parts(
     return parts or [{"type": "input_text", "text": ""}]
 
 
+#: Images one request may carry: Azure OpenAI rejects more than 50; OpenAI documents 1,500.
+AZURE_REQUEST_IMAGES = 50
+OPENAI_REQUEST_IMAGES = 1_500
+
+
 class OpenAIProvider:
     """LLMClient implementation for OpenAI's Responses API.
 
@@ -86,7 +91,8 @@ class OpenAIProvider:
     including retries. Only transient failures retry: timeouts, connection errors,
     408/409/429/5xx, server or rate-limit error codes, a stream error naming no code,
     OpenAI timing out fetching an image URL, and a stream that closes before a terminal
-    event.
+    event. ``azure`` marks an Azure OpenAI deployment, whatever the client's type, for
+    its service limits (``max_images_per_request`` defaults to Azure's 50).
     """
 
     supports_allowed_tools = True
@@ -105,15 +111,19 @@ class OpenAIProvider:
         attempts: int = 3,
         context_window_tokens: int | None = None,
         max_images_per_request: int | None = None,
+        azure: bool = False,
     ) -> None:
         self.model_id = model_id
         # Limits for context compaction (``CompactionConfig``). The window
         # depends on the model and deployment, so it is never guessed. Images
         # per request are documented per service: Azure OpenAI rejects more
-        # than 50, OpenAI accepts 1,500.
+        # than 50, OpenAI accepts 1,500. ``azure`` says which service this is: an
+        # Azure deployment reached through a plain ``AsyncOpenAI(base_url=...)``
+        # looks like OpenAI from the client's type.
         self.context_window_tokens = context_window_tokens
+        self.azure = azure or isinstance(client, openai.AsyncAzureOpenAI)
         self.max_images_per_request = max_images_per_request or (
-            50 if isinstance(client, openai.AsyncAzureOpenAI) else 1_500
+            AZURE_REQUEST_IMAGES if self.azure else OPENAI_REQUEST_IMAGES
         )
         self.thinking_level = thinking_level
         # This provider owns retries; SDK retries would stack under each attempt.

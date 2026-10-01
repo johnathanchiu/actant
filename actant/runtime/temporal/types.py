@@ -16,6 +16,26 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class ActivityTimeouts:
+    """How long one model turn, one compaction, and one tool call may run, in seconds.
+
+    Each is the activity's ``start_to_close_timeout``: a tool that opens a sandbox
+    needs at least the sandbox's own open budget here. A tool call that stops
+    heartbeating for ``tool_heartbeat_s`` is treated as lost (its worker died);
+    set it longer than the tool's own beat, every ``actant.heartbeat.HEARTBEAT_EVERY_S``.
+    """
+
+    turn_s: float = 600.0
+    compact_s: float = 600.0
+    tool_s: float = 600.0
+    tool_heartbeat_s: float = 120.0
+
+    def __post_init__(self) -> None:
+        if min(self.turn_s, self.compact_s, self.tool_s, self.tool_heartbeat_s) <= 0:
+            raise ValueError("activity timeouts must be positive")
+
+
+@dataclass(frozen=True)
 class CompactionConfig:
     """When to compact the model's context, and what survives it verbatim.
 
@@ -74,6 +94,9 @@ class TemporalRuntimeConfig:
     # default) never compacts. Copied into ``ThreadInput`` like
     # ``interleave_inbox``.
     context_compaction: CompactionConfig | None = None
+    # How long a model turn, a compaction and a tool call may each run. Copied
+    # into ``ThreadInput`` like ``interleave_inbox``.
+    activity_timeouts: ActivityTimeouts = field(default_factory=ActivityTimeouts)
 
 
 # === Names ===
@@ -197,6 +220,9 @@ class ThreadInput:
     # Model-context compaction for this thread; ``None`` never compacts. Last
     # and defaulted for the same reason as ``interleave_inbox``.
     context_compaction: CompactionConfig | None = None
+    # Last and defaulted likewise: a history recorded before it existed decodes
+    # to the defaults, which are the timeouts it ran with.
+    activity_timeouts: ActivityTimeouts = field(default_factory=ActivityTimeouts)
 
 
 # === Activity I/O ===
