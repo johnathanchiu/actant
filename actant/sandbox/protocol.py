@@ -113,7 +113,8 @@ class ImageUploadConfig(_Message):
 
     destination: str = Field(pattern=r"^s3://[^/]+/(.*/)?$")
     endpoint_url: str | None = None
-    # A failed or timed-out upload falls back to inline bytes.
+    # Each attempt's connect and read timeout (``uploads.upload_budget``). A failed or
+    # timed-out upload falls back to inline bytes.
     timeout_s: PositiveFloat = Field(default=10.0, allow_inf_nan=False)
 
 

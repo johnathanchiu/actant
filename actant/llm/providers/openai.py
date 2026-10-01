@@ -77,6 +77,11 @@ def content_to_openai_user_parts(
     return parts or [{"type": "input_text", "text": ""}]
 
 
+#: Images one request may carry: Azure OpenAI rejects more than 50; OpenAI documents 1,500.
+AZURE_REQUEST_IMAGES = 50
+OPENAI_REQUEST_IMAGES = 1_500
+
+
 class OpenAIProvider:
     """LLMClient implementation for OpenAI's Responses API.
 
@@ -86,7 +91,8 @@ class OpenAIProvider:
     including retries. Only transient failures retry: timeouts, connection errors,
     408/409/429/5xx, server or rate-limit error codes, a stream error naming no code,
     OpenAI timing out fetching an image URL, and a stream that closes before a terminal
-    event.
+    event. ``azure`` marks an Azure OpenAI deployment, whatever the client's type, for
+    its service limits (``max_images_per_request`` defaults to Azure's 50).
     """
 
     supports_allowed_tools = True
@@ -105,15 +111,19 @@ class OpenAIProvider:
         attempts: int = 3,
         context_window_tokens: int | None = None,
         max_images_per_request: int | None = None,
+        azure: bool = False,
     ) -> None:
         self.model_id = model_id
         # Limits for context compaction (``CompactionConfig``). The window
         # depends on the model and deployment, so it is never guessed. Images
         # per request are documented per service: Azure OpenAI rejects more
-        # than 50, OpenAI accepts 1,500.
+        # than 50, OpenAI accepts 1,500. ``azure`` says which service this is: an
+        # Azure deployment reached through a plain ``AsyncOpenAI(base_url=...)``
+        # looks like OpenAI from the client's type.
         self.context_window_tokens = context_window_tokens
+        self.azure = azure or isinstance(client, openai.AsyncAzureOpenAI)
         self.max_images_per_request = max_images_per_request or (
-            50 if isinstance(client, openai.AsyncAzureOpenAI) else 1_500
+            AZURE_REQUEST_IMAGES if self.azure else OPENAI_REQUEST_IMAGES
         )
         self.thinking_level = thinking_level
         # This provider owns retries; SDK retries would stack under each attempt.
@@ -339,7 +349,12 @@ class OpenAIProvider:
     ) -> tuple[Message, int]:
         tool_stream_state = _OpenAIToolStreamState()
         manager = self.client.responses.stream(**params)
-        stream = await asyncio.wait_for(manager.__aenter__(), self.idle_s)
+        # Each bound is a nested ``asyncio.timeout``, never ``asyncio.wait_for``: on
+        # Python 3.11, ``wait_for`` returns the inner result when the turn budget's
+        # cancel lands just as an event arrives, so the cancel is lost and a busy
+        # stream runs on past ``turn_s``.
+        async with asyncio.timeout(self.idle_s):
+            stream = await manager.__aenter__()
         try:
             events = stream.__aiter__()
             whitespace = 0
@@ -355,7 +370,8 @@ class OpenAIProvider:
                 # longer ``reasoning_idle_s`` applies.
                 gap = self.idle_s if emitting else self.reasoning_idle_s
                 try:
-                    event = await asyncio.wait_for(anext(events), gap)
+                    async with asyncio.timeout(gap):
+                        event = await anext(events)
                 except StopAsyncIteration:
                     break
                 if listener is not None and listener.cancel_requested():
@@ -415,7 +431,8 @@ class OpenAIProvider:
                     continue
                 await _forward_stream_event(event, listener, tool_stream_state)
             try:
-                response = await asyncio.wait_for(stream.get_final_response(), self.idle_s)
+                async with asyncio.timeout(self.idle_s):
+                    response = await stream.get_final_response()
             except RuntimeError as error:
                 raise StreamInterrupted(
                     "stream closed without response.completed", retryable=True
