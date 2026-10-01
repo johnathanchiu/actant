@@ -166,9 +166,8 @@ class RestoreConfig(_Message):
     #: ``timeout_s`` fails startup.
     argv: list[str] = Field(min_length=1)
     timeout_s: PositiveFloat = 1800.0
-    #: A pull (the run's or the seed's) is killed after this long (``timeout_s`` when
-    #: unset) and run again, up to ``attempts`` runs in all. A sync skips the files it
-    #: already has, so a retry fetches only what is missing.
+    #: ``attempt_timeout_s`` and ``attempts``: deprecated, ignored. Each pull runs once
+    #: within ``timeout_s`` and the transfer client retries its own failed requests.
     attempt_timeout_s: PositiveFloat | None = None
     attempts: PositiveInt = 1
     stamp: StampConfig | None = None

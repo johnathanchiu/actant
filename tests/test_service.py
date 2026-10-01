@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
@@ -605,11 +608,11 @@ def test_entry_fails_when_restore_times_out(tmp_path: Path) -> None:
     assert time.monotonic() - started < 20
 
 
-def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
+def test_a_slow_pull_runs_once_past_the_deprecated_attempt_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The first attempt fetches one object and stalls on the next; the retry, like
-    s5cmd's sync, skips what is on disk. Progress counts across attempts."""
+    """``attempt_timeout_s`` and ``attempts`` are ignored: nothing kills or restarts a
+    slow pull, and progress and the stamp still apply."""
     from actant.sandbox import entry
 
     monkeypatch.setattr(entry, "PROGRESS_INTERVAL_S", 0.1)
@@ -619,10 +622,9 @@ def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
         f"os.chdir({str(tmp_path)!r})\n"
         "open('runs', 'a').write('.')\n"
         "for name in ('a.txt', 'b.txt'):\n"
-        "    if os.path.exists(name): continue\n"
-        "    if name == 'b.txt' and len(open('runs').read()) == 1: time.sleep(60)\n"
         "    open(name, 'w').write('abc')\n"
         "    print(f'cp s3://b/t/{name} {name}', flush=True)\n"
+        "    time.sleep(1.5)\n"
     )
     listed = "\n".join(
         json.dumps({"key": f"s3://b/t/{n}", "last_modified": "2026-01-02T03:04:05Z", "size": 3})
@@ -630,7 +632,7 @@ def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
     )
     config = RestoreConfig(
         argv=[sys.executable, "-c", pull],
-        attempt_timeout_s=1,
+        attempt_timeout_s=0.5,
         attempts=3,
         stamp=StampConfig(
             argv=[sys.executable, "-c", f"print({listed!r})"],
@@ -638,28 +640,91 @@ def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
             root=str(tmp_path),
         ),
     )
-    started = time.monotonic()
     assert entry.restore(config)
-    assert time.monotonic() - started < 10
-    assert runs.read_text() == ".."
+    assert runs.read_text() == "."
     err = capsys.readouterr().err
-    assert "restore attempt 1/3 timed out after 1s" in err
-    assert "restore: 1/2 objects (attempt 1/3)" in err
-    assert "restore: 2/2 objects (attempt 2/3)" in err
+    assert "restore: 1/2 objects" in err and "restore: 2/2 objects" in err
     assert int((tmp_path / "b.txt").stat().st_mtime) == 1767323045
 
 
-def test_a_pull_that_stalls_on_every_attempt_fails_startup(
+def test_a_stalled_pull_fails_at_the_overall_budget_without_restarting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from actant.sandbox.entry import restore
 
     runs = tmp_path / "runs"
     stall = f"import time; open({str(runs)!r}, 'a').write('.'); time.sleep(60)"
-    config = RestoreConfig(argv=[sys.executable, "-c", stall], attempt_timeout_s=0.5, attempts=2)
+    config = RestoreConfig(
+        argv=[sys.executable, "-c", stall], timeout_s=0.5, attempt_timeout_s=0.1, attempts=3
+    )
     assert not restore(config)
-    assert runs.read_text() == ".."
+    assert runs.read_text() == "."
     assert "restore timed out after 0.5s" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(shutil.which("s5cmd") is None, reason="needs the s5cmd binary")
+def test_s5cmd_retries_a_failed_part_without_refetching_the_others(tmp_path: Path) -> None:
+    """The pull's flags against a stub bucket whose first read of one part fails: s5cmd
+    retries that part alone, and the object lands whole."""
+    from actant.sandbox.entry import restore
+    from actant.sandbox.modal import PULL_FLAGS
+
+    mib = 1 << 20
+    body = bytes(range(256)) * (3 * mib // 256)
+    ranges: list[str] = []
+
+    class Bucket(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+        def _send(self, status: int, data: bytes, headers: dict[str, str]) -> None:
+            self.send_response(status)
+            for name, value in {**headers, "Content-Length": str(len(data))}.items():
+                self.send_header(name, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+
+        def do_HEAD(self) -> None:
+            self._send(200, body, {"Last-Modified": "Fri, 02 Jan 2026 03:04:05 GMT"})
+
+        def do_GET(self) -> None:
+            if "list-type=2" in self.path:
+                listing = (
+                    "<ListBucketResult><Name>b</Name><Prefix>t/</Prefix><KeyCount>1</KeyCount>"
+                    "<IsTruncated>false</IsTruncated><Contents><Key>t/big.bin</Key>"
+                    "<LastModified>2026-01-02T03:04:05.000Z</LastModified>"
+                    f'<Size>{len(body)}</Size><ETag>"e"</ETag></Contents></ListBucketResult>'
+                )
+                self._send(200, listing.encode(), {"Content-Type": "application/xml"})
+                return
+            spec = self.headers.get("Range", f"bytes=0-{len(body) - 1}")
+            ranges.append(spec)
+            start, end = (int(n) for n in spec.removeprefix("bytes=").split("-"))
+            if start == mib and ranges.count(spec) == 1:
+                self._send(500, b"<Error><Code>InternalError</Code></Error>", {})
+                return
+            part = body[start : end + 1]
+            content_range = f"bytes {start}-{start + len(part) - 1}/{len(body)}"
+            self._send(206, part, {"Content-Range": content_range})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Bucket)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    flags = [*PULL_FLAGS[:-1], "1"]  # 1 MiB parts: three of them
+    endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+    argv = ["s5cmd", "--endpoint-url", endpoint, *flags, "s3://b/t/*", f"{tmp_path}/"]
+    env = {"AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s", "AWS_REGION": "us-east-1"}
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            for name, value in env.items():
+                patch.setenv(name, value)
+            assert restore(RestoreConfig(argv=argv, timeout_s=60))
+    finally:
+        server.shutdown()
+    assert (tmp_path / "big.bin").read_bytes() == body
+    assert sorted(ranges) == sorted(
+        [f"bytes={n * mib}-{(n + 1) * mib - 1}" for n in range(3)] + [f"bytes={mib}-{2 * mib - 1}"]
+    )
 
 
 def test_restore_pulls_its_other_inputs_alongside_and_fails_if_one_fails(

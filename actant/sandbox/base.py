@@ -160,9 +160,9 @@ class SandboxSpec:
     #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
     #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
     seed: str | None = None
-    #: ``disk_sync``: each pull of the restore (or of the seed) is killed after this many
-    #: seconds and run again, up to ``restore_attempts`` runs in all; a retry fetches only
-    #: the files still missing. Keep attempts times timeout under the caller's budget.
+    #: ``restore_attempt_timeout_s`` and ``restore_attempts``: deprecated, ignored. A
+    #: restore pull is no longer killed and restarted; s5cmd retries a failed part
+    #: itself, and the open's budget bounds the whole restore.
     restore_attempt_timeout_s: float = 60.0
     restore_attempts: int = 3
     #: Upload returned images to configured storage and return durable references.

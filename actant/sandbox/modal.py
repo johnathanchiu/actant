@@ -87,6 +87,10 @@ THREAD_TAG = "actant_thread"
 _log = logging.getLogger(__name__)
 #: How long the restore (and the readiness wait around it) may take.
 SYNC_TIMEOUT_S = 1800
+#: A pull's s5cmd flags. A failed request (one part of an object: a ranged read) is
+#: retried on its own, keeping the parts already fetched; 16 MiB parts bound what a
+#: retry refetches, and 8 at a time keep one large object moving.
+PULL_FLAGS = ("--retry-count", "20", "sync", "--concurrency", "8", "--part-size", "16")
 #: Slack over a command's own timeout for Modal's API round trips.
 API_SLACK_S = 60
 S5CMD_VERSION = "2.3.0"
@@ -339,8 +343,6 @@ class ModalSandboxProvider:
             restore = RestoreConfig(
                 argv=self._pull_argv(pushed, mounts),
                 timeout_s=SYNC_TIMEOUT_S,
-                attempt_timeout_s=spec.restore_attempt_timeout_s,
-                attempts=spec.restore_attempts,
                 stamp=self._stamp_config(pushed, mounts),
                 seed=None if spec.seed is None else self._seed_config(pushed, spec.seed, mounts),
                 also=[
@@ -457,7 +459,9 @@ class ModalSandboxProvider:
             for relative in _mounted(restore, mounts)
             for arg in ("--exclude", f"{restore.source.prefix}{relative}/*")
         ]
-        return self._s5cmd("sync", *excludes, f"{restore.source.url}*", f"{_disk(restore.path)}/")
+        return self._s5cmd(
+            *PULL_FLAGS, *excludes, f"{restore.source.url}*", f"{_disk(restore.path)}/"
+        )
 
     def _stamp_config(self, restore: Restore, mounts: Sequence[Mount]) -> StampConfig:
         """List an entry alongside its pull, so pulled files keep their objects' mtimes."""
