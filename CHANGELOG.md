@@ -4,7 +4,10 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.29.0
+
+- Before each model call, the time spent preparing it is logged by phase, so a slow turn
+  shows where its time went.
 
 - `actant.assets.InlineImages` wraps a URL resolver for a provider that cannot fetch URLs
   (Azure OpenAI): each picture is read from its URL and sent inline, fitted to `image_side`
