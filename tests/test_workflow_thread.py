@@ -15,6 +15,7 @@ from actant.runtime.temporal.activities.context import ActivityContext
 from runtime_fixtures import static_agents
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -577,6 +578,32 @@ async def test_final_tools_are_applied_on_the_last_run_turn() -> None:
         assert fake.calls[0][2] == fake.calls[1][2]
 
     await _run(body, agent=agent)
+
+
+async def test_a_turn_logs_where_its_time_before_the_call_went(caplog) -> None:
+    fake = FakeLLM([FakeResponse(text="done")])
+    agent = _agent(fake)
+
+    async def body(s: _RunSetup, client) -> None:
+        handle = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=1),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="work")],
+        )
+        await handle.result()
+
+    with caplog.at_level(logging.INFO, logger="actant.runtime.temporal.activities.runs"):
+        await _run(body, agent=agent)
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("turn prepared")]
+    assert len(lines) == 1
+    fields = dict(f.split("=") for f in lines[0].split()[2:])
+    assert fields["agent"] == _AGENT and fields["turn"] == "1"
+    phases = {k: float(v) for k, v in fields.items() if k not in ("agent", "turn", "seconds")}
+    assert set(phases) == {"resolve", "load", "inbound", "history", "assets", "events"}
+    assert sum(phases.values()) == pytest.approx(float(fields["seconds"]), abs=0.005)
 
 
 @pytest.mark.asyncio

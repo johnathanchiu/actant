@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import replace
 from typing import cast
 
@@ -61,6 +62,29 @@ STOPPED_WITHOUT_FINISHING = "stopped without finishing"
 logger = logging.getLogger(__name__)
 
 
+class _Phases:
+    """Where a model turn's time before its call went: one line per turn, so a slow start
+    (the thread's stores, the turn gate, its pictures, its listeners) names its cause."""
+
+    def __init__(self) -> None:
+        self.started = self.last = time.perf_counter()
+        self.seconds: dict[str, float] = {}
+
+    def end(self, phase: str) -> None:
+        now = time.perf_counter()
+        self.seconds[phase] = self.seconds.get(phase, 0.0) + now - self.last
+        self.last = now
+
+    def log(self, agent_id: str, turn_index: int) -> None:
+        logger.info(
+            "turn prepared agent=%s turn=%d seconds=%.3f %s",
+            agent_id,
+            turn_index,
+            self.last - self.started,
+            " ".join(f"{phase}={s:.3f}" for phase, s in self.seconds.items()),
+        )
+
+
 class RunActivities:
     """Activities for the lifecycle and LLM turns of an agent run."""
 
@@ -116,11 +140,14 @@ class RunActivities:
     @activity.defn(name=ActivityName.RUN_TURN)
     async def run_turn(self, payload: RunTurnInput) -> TurnResult:
         """Invoke the LLM once and atomically persist its assistant turn."""
+        phases = _Phases()
         agent = await self.context.agent(payload.agent_id, payload.thread_id)
+        phases.end("resolve")
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )
         run = await self.context.stores.runs.get(payload.run_id)
+        phases.end("load")
         events = self.context.events(
             thread, run_id=payload.run_id, turn_id=payload.turn_id, turn_index=payload.turn_index
         )
@@ -141,6 +168,7 @@ class RunActivities:
         ]
         if not measuring:
             await self._append_inbound(payload, inbound, events)
+            phases.end("inbound")
 
         # A turn run again after compaction was already admitted.
         if self.context.turn_gate is not None and not payload.compacted:
@@ -159,6 +187,7 @@ class RunActivities:
                     turn_index=payload.turn_index,
                     stop_reason=reason,
                 )
+            phases.end("gate")
 
         model_view: ModelView | None = None
         if compaction is None:
@@ -175,9 +204,11 @@ class RunActivities:
                 )
             )
             view = model_view.messages + (inbound if measuring else [])
+        phases.end("history")
         messages = await self._prepare(
             view, payload.agent_id, payload.thread_id, payload.run_id, payload.turn_id
         )
+        phases.end("assets")
         if compaction is not None and model_view is not None and measuring:
             trigger = _compaction_trigger(agent, compaction, model_view, view, messages)
             if trigger is not None:
@@ -189,6 +220,7 @@ class RunActivities:
                     compaction=trigger,
                 )
             await self._append_inbound(payload, inbound, events)
+            phases.end("inbound")
         context = TurnContext(
             agent=agent,
             system_prompt=agent.persona,
@@ -199,6 +231,8 @@ class RunActivities:
         )
 
         await events.on_turn_start(payload.turn_index, payload.turn_id)
+        phases.end("events")
+        phases.log(payload.agent_id, payload.turn_index)
         try:
             assistant = await agent.complete(
                 context.messages,
