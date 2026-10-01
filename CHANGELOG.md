@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.3
 
 - A `CompactionConfig.summarizer` the worker never registered fails the thread once, before
   a run opens (`ApplicationError` of type `UNREGISTERED_SUMMARIZER`, non-retryable), instead
