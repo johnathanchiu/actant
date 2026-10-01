@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from uuid import UUID
 import temporalio.client
@@ -11,6 +12,7 @@ from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxR
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
+from actant.llm.base import LLMClient
 from actant.runtime.cancellation import record_cancelled
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.publisher import EventSink, EventSource
@@ -76,6 +78,7 @@ class AgentRuntime:
         run_completion_handler: RunCompletionHandler | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
         compaction_instructions: str = "",
+        summarizers: Mapping[str, LLMClient] | None = None,
     ) -> None:
         self.client = client
         self.stores = stores
@@ -92,6 +95,7 @@ class AgentRuntime:
             run_completion_handler=run_completion_handler,
             message_preprocessor=message_preprocessor,
             compaction_instructions=compaction_instructions,
+            summarizers=summarizers,
             cancel_children=self._cancel_children,
         )
         self._running = False

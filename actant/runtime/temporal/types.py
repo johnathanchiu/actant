@@ -58,6 +58,18 @@ class CompactionConfig:
 
         CompactionConfig(threshold=0.9, background=0.5, keep=["tool:checklist"])
 
+    ``summarizer`` names a model client the worker registers
+    (``AgentRuntime(summarizers={"fast": client})``) to write the summary on
+    instead of the agent's own model: a smaller model, configured with little or
+    no reasoning, makes the call faster. A request that client cannot take (past
+    its declared window or image limit) is summarized on the agent's model.
+    ``summary_tokens`` caps the summary's output (the default is 16,000, less
+    when the window's margin is smaller); output tokens are most of the call's
+    time. A summary that runs into the cap was cut short, so it is written again
+    on the agent's own model with the default cap: a summary is never truncated::
+
+        CompactionConfig(summarizer="fast", summary_tokens=4_000)
+
     The limits are the model client's: its ``context_window_tokens`` and
     ``max_images_per_request`` (``OpenAIProvider`` takes both); a limit the
     client does not declare is not checked. Unrelated to
@@ -67,10 +79,14 @@ class CompactionConfig:
     threshold: float = 0.9
     keep: list[str] = field(default_factory=list)
     background: float | None = None
+    summarizer: str | None = None
+    summary_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.background is not None and not 0 < self.background < self.threshold:
             raise ValueError("background must be above 0 and below threshold")
+        if self.summary_tokens is not None and self.summary_tokens < 256:
+            raise ValueError("summary_tokens must be at least 256")
 
 
 @dataclass(frozen=True)

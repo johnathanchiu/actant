@@ -415,6 +415,30 @@ sent as a user message labelled as retained, its content verbatim: a tool
 result without its call is rejected by providers, and replaying the old call
 out of place (with its siblings and reasoning items) is not safe either.
 
+### A faster summary
+
+The summary call is the agent's own model by default. `summarizer` names a model client
+the worker registers, configured for speed (low reasoning effort), and `summary_tokens`
+caps its output, which is most of the call's time:
+
+```python
+fast = OpenAIProvider("gpt-x", client=client, azure=True, thinking_level="low")
+runtime = AgentRuntime(
+    client=temporal_client,
+    stores=stores,
+    config=TemporalRuntimeConfig(
+        context_compaction=CompactionConfig(summarizer="fast", summary_tokens=8_000)
+    ),
+    resolve_agent=resolve_agent,
+    summarizers={"fast": fast},
+)
+```
+
+A reasoning model's thinking counts against the cap, so leave it room. A request the
+summarizer cannot take is summarized on the agent's model, and a summary that reaches the
+cap (or a summarizer that fails) is written again there with the default cap: a summary
+is never cut short.
+
 ### Writing the summary ahead
 
 A compaction at the threshold holds the turn that triggered it for as long as
