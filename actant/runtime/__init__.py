@@ -8,7 +8,11 @@ if TYPE_CHECKING:
     from actant.runtime.temporal.activities.context import AgentResolver
     from actant.runtime.completion import RunCompletion, RunCompletionHandler
     from actant.runtime.gate import TurnGate, TurnStart
-    from actant.runtime.temporal.types import CompactionConfig, TemporalRuntimeConfig
+    from actant.runtime.temporal.types import (
+        ActivityTimeouts,
+        CompactionConfig,
+        TemporalRuntimeConfig,
+    )
     from actant.runtime.thread import ThreadHandle
     from actant.runtime.local import LocalRun, LocalThreadRuntime
 from actant.runtime.runtime import AgentRuntime
@@ -18,6 +22,7 @@ __all__ = [
     "LocalThreadRuntime",
     "AgentRuntime",
     "AgentResolver",
+    "ActivityTimeouts",
     "CompactionConfig",
     "RunCompletion",
     "RunCompletionHandler",
@@ -49,7 +54,7 @@ def __getattr__(name: str) -> Any:
         from actant.runtime import gate
 
         return getattr(gate, name)
-    if name in {"CompactionConfig", "TemporalRuntimeConfig"}:
+    if name in {"ActivityTimeouts", "CompactionConfig", "TemporalRuntimeConfig"}:
         from actant.runtime.temporal import types
 
         return getattr(types, name)

@@ -60,6 +60,7 @@ from urllib.parse import urlsplit
 
 import actant.sandbox.entry as entry
 import actant.sandbox.host as host
+from actant.heartbeat import heartbeating
 from actant.sandbox.base import (
     Endpoint,
     Entry,
@@ -196,7 +197,11 @@ class ModalSandboxProvider:
     )
 
     async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
-        del agent_id
+        # An open waits up to SYNC_TIMEOUT_S on its restore: the caller's activity beats.
+        async with heartbeating():
+            return await self._open(spec, thread_id)
+
+    async def _open(self, spec: SandboxSpec, thread_id: str) -> Sandbox:
         # Before any Modal call: a missing public endpoint fails here, not in a container.
         config = self.entry_config(spec, thread_id)
         modal = importlib.import_module("modal")
@@ -575,7 +580,8 @@ class ModalSandbox:
         # secrets are container-wide, so ``env -u`` (argv, no shell) removes them here.
         unset = [f"-u{name}" for name in self._scrub if name not in (env or {})]
         prefix = ["env", *unset] if unset else []
-        return await self._run([*prefix, *argv], cwd=cwd, timeout=timeout, env=env)
+        async with heartbeating():
+            return await self._run([*prefix, *argv], cwd=cwd, timeout=timeout, env=env)
 
     async def _run(
         self,
@@ -600,7 +606,8 @@ class ModalSandbox:
         if self._sync_argv is None:
             return ExecResult(0, "", "")
         # Unscrubbed: s5cmd needs the bucket keys that ``scrub_env`` usually lists.
-        return await self._bounded_sync()
+        async with heartbeating():
+            return await self._bounded_sync()
 
     async def _bounded_sync(self) -> ExecResult:
         """The push, killed in the container after ``sync_timeout_s``; a Modal API call that

@@ -177,14 +177,19 @@ async def test_killed_worker_repairs_one_result_without_repeating_side_effect(
     """Kill after the effect but before result persistence; recover on a fresh process."""
     from temporalio.testing import WorkflowEnvironment
 
-    from actant.runtime import AgentRuntime, TemporalRuntimeConfig
+    from actant.runtime import ActivityTimeouts, AgentRuntime, TemporalRuntimeConfig
 
     effects = tmp_path / "effects.txt"
     log_path = tmp_path / "worker.log"
     helper = Path(__file__).with_name("crash_worker.py")
     processes: list[asyncio.subprocess.Process] = []
     async with await WorkflowEnvironment.start_local() as env:
-        config = TemporalRuntimeConfig(task_queue=uuid4().hex)
+        # Only failure detection is shortened; the workflow, activities and retry
+        # policy are production's.
+        config = TemporalRuntimeConfig(
+            task_queue=uuid4().hex,
+            activity_timeouts=ActivityTimeouts(tool_s=10, tool_heartbeat_s=3),
+        )
         runtime = AgentRuntime(client=env.client, stores=stores, config=config)
         with log_path.open("wb") as log:
 

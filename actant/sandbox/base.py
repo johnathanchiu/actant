@@ -168,7 +168,8 @@ class SandboxSpec:
     #: Upload returned images to configured storage and return durable references.
     #: False returns inline bytes; signing and retention belong to storage adapters.
     upload_images: bool = True
-    #: Maximum seconds to upload one image before returning inline bytes.
+    #: Seconds one attempt to upload an image may take (its connect and read timeouts); boto
+    #: retries it, and an image that never lands returns as inline bytes.
     image_upload_timeout_s: float = 10.0
 
     def __post_init__(self) -> None:
