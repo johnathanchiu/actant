@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.30.0
 
 - `SandboxSpec.region` places a Modal sandbox (`"us"`, `"us-east"`, or several);
   `None`, the default, leaves it anywhere. Modal's default also places sandboxes in
