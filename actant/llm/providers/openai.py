@@ -84,8 +84,9 @@ class OpenAIProvider:
     streaming; ``reasoning_idle_s`` bounds silences outside an open output item, where
     a reasoning model legitimately emits nothing; ``turn_s`` bounds the whole call,
     including retries. Only transient failures retry: timeouts, connection errors,
-    408/409/429/5xx, server or rate-limit error codes, OpenAI timing out fetching an
-    image URL, and a stream that closes before a terminal event.
+    408/409/429/5xx, server or rate-limit error codes, a stream error naming no code,
+    OpenAI timing out fetching an image URL, and a stream that closes before a terminal
+    event.
     """
 
     supports_allowed_tools = True
@@ -521,11 +522,13 @@ def _is_transient(error: Exception) -> bool:
     if isinstance(error, (TimeoutError, openai.APIConnectionError, httpx.TransportError)):
         return True
     if isinstance(error, openai.APIError):
-        # The SDK raises a bare APIError for an SSE payload carrying an ``error`` object.
-        body = error.body
-        return isinstance(body, Mapping) and (
-            body.get("code") in _TRANSIENT_CODES or body.get("type") in _TRANSIENT_CODES
-        )
+        # The SDK raises a bare APIError for an SSE payload carrying an ``error`` object: the
+        # server accepted the request (HTTP 200) and failed it while streaming. A code or type
+        # says which side is at fault; one that names neither is a server failure like a 5xx
+        # (Azure's peak-load refusal is one), worth another attempt within the budget.
+        body = error.body if isinstance(error.body, Mapping) else {}
+        named = {body.get("code"), body.get("type")} - {None}
+        return not named or bool(named & _TRANSIENT_CODES)
     return False
 
 
