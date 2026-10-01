@@ -333,21 +333,28 @@ class ModalSandboxProvider:
             )
         return {"outbound_domain_allowlist": [bucket_host]}
 
-    def entry_config(self, spec: SandboxSpec, thread_id: str) -> EntryConfig:
-        """The entrypoint's config: restore a ``disk_sync`` disk, then serve the services."""
+    def entry_config(
+        self, spec: SandboxSpec, thread_id: str, *, size_only: bool = False
+    ) -> EntryConfig:
+        """The entrypoint's config: restore a ``disk_sync`` disk, then serve the services.
+
+        ``size_only`` compares a file already on the disk with its object by size alone
+        (s5cmd ``--size-only``): for pulling the restore again into a sandbox that is
+        already up, where a file pulled early is newer than its object and is kept."""
         disk_sync = spec.storage == Storage.DISK_SYNC
         restore = push = None
         if disk_sync:
             plan = self._plan(thread_id)
             pushed, others, mounts = plan.pushed, plan.others, plan.mounts
             restore = RestoreConfig(
-                argv=self._pull_argv(pushed, mounts),
+                argv=self._pull_argv(pushed, mounts, size_only=size_only),
                 timeout_s=SYNC_TIMEOUT_S,
                 stamp=self._stamp_config(pushed, mounts),
                 seed=None if spec.seed is None else self._seed_config(pushed, spec.seed, mounts),
                 also=[
                     PullConfig(
-                        argv=self._pull_argv(r, mounts), stamp=self._stamp_config(r, mounts)
+                        argv=self._pull_argv(r, mounts, size_only=size_only),
+                        stamp=self._stamp_config(r, mounts),
                     )
                     for r in others
                 ],
@@ -451,17 +458,20 @@ class ModalSandboxProvider:
     def _marker(location: Location) -> str:
         return f"{location.url.rstrip('/')}{SEED_MARKER_SUFFIX}"
 
-    def _pull_argv(self, restore: Restore, mounts: Sequence[Mount]) -> list[str]:
+    def _pull_argv(
+        self, restore: Restore, mounts: Sequence[Mount], *, size_only: bool = False
+    ) -> list[str]:
         """Pull an entry onto the disk (never deletes), skipping the mounts inside it."""
+        flags: list[str] = list(PULL_FLAGS)
+        if size_only:
+            flags.insert(flags.index("sync") + 1, "--size-only")
         # For a bucket source, s5cmd 2.3 matches an object's whole key.
         excludes = [
             arg
             for relative in _mounted(restore, mounts)
             for arg in ("--exclude", f"{restore.source.prefix}{relative}/*")
         ]
-        return self._s5cmd(
-            *PULL_FLAGS, *excludes, f"{restore.source.url}*", f"{_disk(restore.path)}/"
-        )
+        return self._s5cmd(*flags, *excludes, f"{restore.source.url}*", f"{_disk(restore.path)}/")
 
     def _stamp_config(self, restore: Restore, mounts: Sequence[Mount]) -> StampConfig:
         """List an entry alongside its pull, so pulled files keep their objects' mtimes."""
