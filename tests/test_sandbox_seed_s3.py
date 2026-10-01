@@ -200,3 +200,37 @@ def test_a_mount_is_neither_restored_nor_pushed(endpoint: str, tmp_path: Path) -
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == [
         "capture/f.jpg", "new.txt", "room.py"
     ]  # fmt: skip
+
+
+def test_a_push_never_follows_a_link(endpoint: str, tmp_path: Path) -> None:
+    """A room links the frames of a read-only restore entry and of an excluded folder: the
+    push sends the room's own files, and nothing through either link."""
+    bucket = f"links-{uuid.uuid4().hex[:12]}"
+    assert _s5(endpoint, "mb", f"s3://{bucket}").returncode == 0
+    provider = ModalSandboxProvider(app_name="x", bucket=bucket, endpoint_url=endpoint)
+    disk = tmp_path / "disk"
+    spec = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        restore=(
+            Restore(Location(bucket, "sandboxes/t1/"), "", push=True),
+            Restore(Location(bucket, "captures/c1/"), "capture", push=False),
+        ),
+        push_exclude=("survey/frames",),
+    )
+    for name in ("capture/upload.zip", "survey/frames/0001.jpg", "survey/cloud.npz"):
+        (disk / name).parent.mkdir(parents=True, exist_ok=True)
+        (disk / name).write_text(name)
+    room = disk / "scenes" / "s1"
+    room.mkdir(parents=True)
+    (room / "room.py").write_text("room")
+    (room / "capture").symlink_to("../../survey/frames", target_is_directory=True)
+    (room / "upload").symlink_to("../../capture", target_is_directory=True)
+    (room / "cloud.npz").symlink_to("../../survey/cloud.npz")
+
+    local = DISK_PATH[1:], str(disk)[1:]
+    push = [arg.replace(*local) for arg in provider.sync_argv(spec, "t1")]
+    subprocess.run(push, capture_output=True, text=True, check=True)
+    assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == [
+        "scenes/s1/room.py", "survey/cloud.npz"
+    ]  # fmt: skip

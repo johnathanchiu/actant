@@ -183,7 +183,7 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
     sandbox = await provider.open(spec, sandbox_id="t1")
     assert isinstance(sandbox, ModalSandbox)
     args, kw = fake.created
-    push = [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
+    push = [*S5, "sync", "--no-follow-symlinks", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
     restore = [*PULL, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
     assert list(args[:3]) == ["python", "-m", "actant.sandbox.entry"] and len(args) == 4
     assert EntryConfig.model_validate_json(args[3]) == EntryConfig(
@@ -459,7 +459,7 @@ async def test_a_seed_restores_and_copies_only_into_an_empty_thread_prefix(
     assert restore.seed.stamp.prefix == "s3://b/templates/base/"
     assert restore.seed.stamp.argv[-1] == "s3://b/templates/base/*"
     push = provider.sync_argv(spec, "t1")
-    assert push == [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
+    assert push == [*S5, "sync", "--no-follow-symlinks", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
 
 
 def test_seed_is_a_disk_sync_key_prefix() -> None:
@@ -493,7 +493,7 @@ def test_a_restore_plan_pulls_every_entry_and_pushes_only_its_own() -> None:
     assert restore.seed.copy_argv[-1] == "s3://b/sandboxes/t1/"
     assert provider.seed_marker(spec, "t1") == "s3://b/sandboxes/t1.actant-seeded"
     assert provider.sync_argv(spec, "t1") == [
-        *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
+        *S5, "sync", "--no-follow-symlinks", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
     ]  # fmt: skip
 
 
@@ -572,7 +572,7 @@ async def test_a_mount_is_read_only_and_no_pull_push_or_stamp_touches_it(
     ]  # fmt: skip
     assert restore.stamp.skip == ["s3://b/sandboxes/t1/capture/"]
     assert provider.sync_argv(spec, "t1") == [
-        *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
+        *S5, "sync", "--no-follow-symlinks", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
     ]  # fmt: skip
 
 
@@ -621,7 +621,7 @@ def test_push_exclude_keeps_folders_out_of_every_push() -> None:
     assert host is not None and host.push is not None
     push = host.push
     assert push.argv == [
-        *S5, "sync",
+        *S5, "sync", "--no-follow-symlinks",
         "--exclude", "root/sandbox/capture/*",
         "--exclude", "root/sandbox/renders/*",
         "--exclude", "root/sandbox/cache/frames/*",
@@ -629,7 +629,7 @@ def test_push_exclude_keeps_folders_out_of_every_push() -> None:
     ]  # fmt: skip
     # nothing excluded by default: the push is as before
     assert provider.sync_argv(_scene(), "t1") == [
-        *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
+        *S5, "sync", "--no-follow-symlinks", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
     ]  # fmt: skip
 
 
