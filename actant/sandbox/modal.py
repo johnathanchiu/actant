@@ -76,6 +76,7 @@ from actant.sandbox.protocol import (
     PullConfig,
     PushConfig,
     RestoreConfig,
+    RestoreSummary,
     Route,
     SeedConfig,
     StampConfig,
@@ -276,7 +277,12 @@ class ModalSandboxProvider:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(asyncio.shield(sandbox.terminate.aio()), API_SLACK_S)
                 raise
-        return self._handle(sandbox, spec, thread_id)
+        handle = self._handle(sandbox, spec, thread_id)
+        if disk_sync:
+            handle.restore_summary = await _restore_summary(sandbox)
+            if handle.restore_summary is not None:
+                _log.info("sandbox for thread %s: %s", thread_id, handle.restore_summary.line())
+        return handle
 
     async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
         live = self._live.get(sandbox_id)
@@ -339,8 +345,10 @@ class ModalSandboxProvider:
             restore = RestoreConfig(
                 argv=self._pull_argv(pushed, mounts),
                 timeout_s=SYNC_TIMEOUT_S,
-                attempt_timeout_s=spec.restore_attempt_timeout_s,
+                stall_s=spec.restore_stall_s,
                 attempts=spec.restore_attempts,
+                endpoint_url=self.endpoint_url,
+                summary_path=entry.SUMMARY_FILE,
                 stamp=self._stamp_config(pushed, mounts),
                 seed=None if spec.seed is None else self._seed_config(pushed, spec.seed, mounts),
                 also=[
@@ -470,6 +478,21 @@ class ModalSandboxProvider:
         )
 
 
+async def _restore_summary(sandbox: Any) -> RestoreSummary | None:
+    """The entrypoint's restore summary, read from the ready sandbox; ``None`` when it
+    cannot be read (an image older than 0.27.0 writes none)."""
+
+    async def read() -> str:
+        process = await sandbox.exec.aio("cat", entry.SUMMARY_FILE)
+        return await process.stdout.read.aio()
+
+    try:
+        return RestoreSummary.model_validate_json(await asyncio.wait_for(read(), API_SLACK_S))
+    except Exception as error:  # noqa: BLE001 -- a summary is only a log line
+        _log.info("restore summary unavailable: %s", error)
+        return None
+
+
 @dataclass(frozen=True)
 class _Plan:
     pushed: Restore
@@ -515,6 +538,8 @@ class ModalSandbox:
         self.id = str(sandbox.object_id)
         self._service_port = service_port
         self._endpoint: Endpoint | None = None
+        #: What the open's restore did (``disk_sync``); ``None`` for an attached sandbox.
+        self.restore_summary: RestoreSummary | None = None
 
     async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
         """A connect token for the service port, minted once and again on ``refresh``.

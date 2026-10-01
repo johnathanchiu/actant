@@ -162,21 +162,83 @@ class PullConfig(_Message):
 
 
 class RestoreConfig(_Message):
-    #: Pulls the run's prefix onto the disk; each command failing or exceeding
-    #: ``timeout_s`` fails startup.
+    #: Pulls the run's prefix onto the disk.
     argv: list[str] = Field(min_length=1)
+    #: The whole restore's bound: a pull, its retries and the seed's copy end by then.
     timeout_s: PositiveFloat = 1800.0
-    #: A pull (the run's or the seed's) is killed after this long (``timeout_s`` when
-    #: unset) and run again, up to ``attempts`` runs in all. A sync skips the files it
-    #: already has, so a retry fetches only what is missing.
-    attempt_timeout_s: PositiveFloat | None = None
+    #: A pull (the run's, the seed's or another input's) is killed once nothing arrives
+    #: for this long (no output and no bytes on disk under its stamp's root), and run
+    #: again, up to ``attempts`` runs in all. A slow pull that keeps moving is never
+    #: killed before ``timeout_s``. A retry skips the files already on disk and resumes
+    #: each large object still missing from where it stopped (see
+    #: :mod:`actant.sandbox.ranged`).
+    stall_s: PositiveFloat = 60.0
     attempts: PositiveInt = 1
+    #: The bucket endpoint a retry's ranged downloads use (the pull's own ``argv`` has
+    #: it too); ``None`` is AWS.
+    endpoint_url: str | None = None
+    #: Where the entrypoint writes the :class:`RestoreSummary` as JSON.
+    summary_path: str | None = None
     stamp: StampConfig | None = None
     #: Used only when the run's prefix is empty.
     seed: SeedConfig | None = None
     #: Other inputs (read-only, never pushed), pulled alongside with the same retries;
     #: an empty one is not a failure.
     also: list[PullConfig] = []
+
+
+class Pulled(StrEnum):
+    """How a pull ended."""
+
+    FILES = "files"
+    #: The prefix has no objects: a new run.
+    EMPTY = "empty"
+    FAILED = "failed"
+
+
+class PullSummary(_Message):
+    """One pull of a restore, as it ended."""
+
+    #: The pulled prefix (``s3://bucket/prefix/``), or the command's last argument.
+    source: str
+    outcome: Pulled
+    #: Objects this pull fetched, across its attempts.
+    objects: int = 0
+    #: Objects its listing found; ``None`` without a listing.
+    listed: int | None = None
+    #: The listed objects' total size.
+    bytes: int | None = None
+    seconds: float = 0.0
+    attempts: int = 0
+    #: Attempts killed because nothing arrived for ``stall_s``.
+    stalls: int = 0
+    #: Large objects a retry finished with ranged downloads.
+    resumed: int = 0
+    error: str | None = None
+
+    def line(self) -> str:
+        listed = "?" if self.listed is None else str(self.listed)
+        size = "?" if self.bytes is None else f"{self.bytes / 1e6:.1f} MB"
+        text = (
+            f"{self.source} {self.outcome}: {self.objects}/{listed} objects, {size}, "
+            f"{self.seconds:.1f}s, {self.attempts} attempts ({max(0, self.attempts - 1)} "
+            f"retries, {self.stalls} stalls, {self.resumed} resumed)"
+        )
+        # One line, so the tail of a failed sandbox's stderr holds the whole summary.
+        return text if self.error is None else f"{text}: {' '.join(self.error[-500:].split())}"
+
+
+class RestoreSummary(_Message):
+    """What a sandbox's restore did: on the ``ModalSandbox`` it opened, and in the error
+    of one whose restore failed."""
+
+    ok: bool
+    seconds: float
+    pulls: list[PullSummary] = Field(default_factory=list)
+
+    def line(self) -> str:
+        pulls = "; ".join(pull.line() for pull in self.pulls)
+        return f"restore {'ok' if self.ok else 'failed'} in {self.seconds:.1f}s: {pulls}"
 
 
 class EntryConfig(_Message):

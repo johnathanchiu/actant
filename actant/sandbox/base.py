@@ -17,6 +17,7 @@ definitions and tools can name these types without cycles.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -160,11 +161,17 @@ class SandboxSpec:
     #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
     #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
     seed: str | None = None
-    #: ``disk_sync``: each pull of the restore (or of the seed) is killed after this many
-    #: seconds and run again, up to ``restore_attempts`` runs in all; a retry fetches only
-    #: the files still missing. Keep attempts times timeout under the caller's budget.
-    restore_attempt_timeout_s: float = 60.0
+    #: ``disk_sync``: a pull of the restore (the thread's, the seed's or another input's) is
+    #: killed once nothing arrives for this many seconds, and run again, up to
+    #: ``restore_attempts`` runs in all. A slow pull that keeps moving is not killed; the
+    #: whole restore is bounded by the open's own budget. A retry fetches only what is still
+    #: missing and resumes a large object from where it stopped.
+    restore_stall_s: float = 60.0
     restore_attempts: int = 3
+    #: Deprecated alias of ``restore_stall_s`` (before 0.27.0 it bounded each attempt's
+    #: total time, which a slow large object could never fit); when set, it is the stall
+    #: window.
+    restore_attempt_timeout_s: float | None = None
     #: Upload returned images to configured storage and return durable references.
     #: False returns inline bytes; signing and retention belong to storage adapters.
     upload_images: bool = True
@@ -180,10 +187,16 @@ class SandboxSpec:
             self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
         ):
             raise ValueError("seed is a key prefix ending in '/', for disk_sync storage")
-        if not (
-            math.isfinite(self.restore_attempt_timeout_s) and self.restore_attempt_timeout_s > 0
-        ):
-            raise ValueError("restore_attempt_timeout_s must be a positive, finite number")
+        if self.restore_attempt_timeout_s is not None:
+            warnings.warn(
+                "restore_attempt_timeout_s is deprecated: it is now restore_stall_s, the time "
+                "a pull may go without receiving anything",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            object.__setattr__(self, "restore_stall_s", self.restore_attempt_timeout_s)
+        if not (math.isfinite(self.restore_stall_s) and self.restore_stall_s > 0):
+            raise ValueError("restore_stall_s must be a positive, finite number")
         if isinstance(self.restore_attempts, bool) or self.restore_attempts < 1:
             raise ValueError("restore_attempts must be at least 1")
         timeout = self.image_upload_timeout_s

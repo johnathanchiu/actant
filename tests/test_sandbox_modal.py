@@ -13,7 +13,7 @@ import pytest
 
 from actant.sandbox import Endpoint, SandboxSpec, Storage
 from actant.sandbox import host
-from actant.sandbox.entry import READY_FILE, stamp_mtimes
+from actant.sandbox.entry import READY_FILE, SUMMARY_FILE, stamp_mtimes
 import actant.sandbox.modal as modal_backend
 from actant.sandbox.protocol import (
     EntryConfig,
@@ -21,7 +21,10 @@ from actant.sandbox.protocol import (
     HostConfig,
     ImageUploadConfig,
     PushConfig,
+    Pulled,
+    PullSummary,
     RestoreConfig,
+    RestoreSummary,
     Route,
     StampConfig,
 )
@@ -58,7 +61,11 @@ class _Probe:
 
 class _FakeModal:
     def __init__(
-        self, *, ready_error: Exception | None = None, exit_code: int | None = None
+        self,
+        *,
+        ready_error: Exception | None = None,
+        exit_code: int | None = None,
+        summary: str = "",
     ) -> None:
         self.created: tuple[tuple[str, ...], dict[str, Any]] = ((), {})
         self.execs: list[tuple[tuple[str, ...], dict[str, Any]]] = []
@@ -68,8 +75,9 @@ class _FakeModal:
 
         async def exec_(*argv: str, **kwargs: Any) -> Any:
             fake.execs.append((argv, kwargs))
+            out = summary if argv == ("cat", SUMMARY_FILE) else ""
             return SimpleNamespace(
-                stdout=SimpleNamespace(read=_Aio(_async(""))),
+                stdout=SimpleNamespace(read=_Aio(_async(out))),
                 stderr=SimpleNamespace(read=_Aio(_async(""))),
                 wait=_Aio(_async(0)),
             )
@@ -178,6 +186,10 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
     )
     sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
     assert isinstance(sandbox, ModalSandbox)
+    # An image that wrote no summary (older than 0.27.0) still opens.
+    assert sandbox.restore_summary is None
+    assert [argv for argv, _ in fake.execs] == [("cat", SUMMARY_FILE)]
+    fake.execs.clear()
     args, kw = fake.created
     push = [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
     restore = [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
@@ -186,8 +198,10 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
         restore=RestoreConfig(
             argv=restore,
             timeout_s=1800,
-            attempt_timeout_s=60,
+            stall_s=60,
             attempts=3,
+            endpoint_url="https://r2.example",
+            summary_path="/tmp/actant-restore.json",
             stamp=StampConfig(
                 argv=["s5cmd", "--json", *S5[1:], "ls", "s3://b/sandboxes/t1/*"],
                 prefix="s3://b/sandboxes/t1/",
@@ -276,7 +290,17 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
 async def test_disk_sync_without_service_waits_for_the_restore_marker(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:
-    fake = _FakeModal()
+    summary = RestoreSummary(
+        ok=True,
+        seconds=212.5,
+        pulls=[
+            PullSummary(
+                source="s3://b/sandboxes/t1/", outcome=Pulled.FILES, objects=441, listed=441,
+                bytes=480_000_000, seconds=212.5, attempts=2, stalls=1, resumed=1,
+            )
+        ],
+    )  # fmt: skip
+    fake = _FakeModal(summary=summary.model_dump_json())
     _use(monkeypatch, fake)
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
     sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
@@ -284,6 +308,12 @@ async def test_disk_sync_without_service_waits_for_the_restore_marker(
     config = EntryConfig.model_validate_json(args[3])
     assert config.restore is not None and config.host is None
     assert kw["readiness_probe"] == _Probe(exec_argv=("test", "-f", READY_FILE))
+    # The restore's summary is read back onto the handle.
+    assert isinstance(sandbox, ModalSandbox) and sandbox.restore_summary == summary
+    assert "441/441 objects, 480.0 MB, 212.5s, 2 attempts (1 retries, 1 stalls, 1 resumed)" in (
+        summary.line()
+    )
+    fake.execs.clear()
     assert await sandbox.endpoint() is None and fake.execs == []
     # Without network, s5cmd may reach only the bucket endpoint.
     assert kw["outbound_domain_allowlist"] == ["r2.example"]

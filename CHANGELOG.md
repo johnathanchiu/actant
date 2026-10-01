@@ -4,6 +4,27 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.27.0
+
+- A `disk_sync` restore kills a pull only when it stalls, not after a fixed time. Before, a
+  pull was killed after `restore_attempt_timeout_s` however fast it was moving, and each retry
+  started an unfinished object over: a 120 MB object on a slow bucket connection failed every
+  attempt and the sandbox exited. Now an attempt is killed once nothing arrives (no output and
+  no bytes on disk) for `SandboxSpec.restore_stall_s` (default 60); the whole restore is
+  bounded by the open's budget (`RestoreConfig.timeout_s`). `restore_attempt_timeout_s` is a
+  deprecated alias: when set, it is the stall window. `RestoreConfig.attempt_timeout_s` is
+  replaced by `stall_s`.
+- A restore's retry resumes each large object (32 MiB or more) still missing with ranged
+  downloads appended to a partial file, so a stalled part continues from its last byte, never
+  from zero; files already on disk are skipped as before. This needs the `sandbox` extra
+  (boto3) in the sandbox image; without it a retry falls back to s5cmd alone. s5cmd's
+  temporary files from killed attempts are removed, so a push no longer uploads them.
+- A restore reports a `RestoreSummary` (per pull: objects, listed, bytes, seconds, attempts,
+  stalls, resumed): the last line of the sandbox's stderr, so a failed open's error ends with
+  it, and `ModalSandbox.restore_summary` after a successful open (also logged at INFO).
+  `RestoreConfig` gains `stall_s`, `endpoint_url` and `summary_path`, so the sandbox image
+  needs this release too.
+
 ## 0.26.1
 
 - Cancelling a thread also cancels its persisted descendants across agents and workers.

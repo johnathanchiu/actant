@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import socket
 import subprocess
+import time
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -200,3 +201,30 @@ def test_a_mount_is_neither_restored_nor_pushed(endpoint: str, tmp_path: Path) -
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == [
         "capture/f.jpg", "new.txt", "room.py"
     ]  # fmt: skip
+
+
+def test_a_ranged_fetch_resumes_a_partial_object_from_a_real_s3_api(
+    endpoint: str, provider: ModalSandboxProvider, tmp_path: Path
+) -> None:
+    """Range, If-Match (from s5cmd's bare listed ETag) and Content-Range, against moto."""
+    from actant.sandbox import ranged
+    from actant.sandbox.entry import ListedObject
+
+    data = bytes(range(256)) * 4096  # 1 MiB
+    (tmp_path / "big.bin").write_bytes(data)
+    url = f"s3://{provider.bucket}/big/big.bin"
+    assert _s5(endpoint, "cp", str(tmp_path / "big.bin"), url).returncode == 0
+    listed = subprocess.run(
+        ["s5cmd", "--json", "--endpoint-url", endpoint, "ls", url],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    item = ListedObject.model_validate_json(listed.splitlines()[0])
+    assert item.etag is not None and not item.etag.startswith('"')
+    target = tmp_path / "out" / "big.bin"
+    target.parent.mkdir()
+    ranged.partial_path(target).write_bytes(data[:300_000])
+    s3 = ranged.client(endpoint, 10)
+    fetched = ranged.fetch(
+        s3, url, item.size, target, deadline=time.monotonic() + 30, tries=2, etag=item.etag
+    )
+    assert fetched == len(data) - 300_000 and target.read_bytes() == data

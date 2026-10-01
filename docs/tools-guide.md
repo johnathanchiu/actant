@@ -378,12 +378,17 @@ JSON of an `actant.sandbox.StorageStatus` (read it with
 
 Warn when `consecutive_failures` is non-zero. The final push on shutdown is
 bounded the same way, so shutdown finishes even when storage is unreachable;
-`Sandbox.sync` and `close` never wait without bound. Each pull of a restore is
-killed after `restore_attempt_timeout_s` (default 60) and run again, up to
-`restore_attempts` (default 3) runs; a retry fetches only the files still
-missing, and progress (`restore: 812/1040 objects (attempt 1/3)`) goes to the
-sandbox's stderr. A restore that still fails fails startup. Restored files take
-their objects' mtimes, so a push uploads only files changed since.
+`Sandbox.sync` and `close` never wait without bound. A pull of a restore is
+killed only when it stalls: nothing arrives for `restore_stall_s` (default 60).
+A slow pull that keeps moving runs on until the open's own budget. A stalled
+pull runs again, up to `restore_attempts` (default 3) runs; a retry skips the
+files already on disk and resumes each large object still missing from where it
+stopped, with ranged downloads (boto3, the `sandbox` extra). Progress
+(`restore: 812/1040 objects (attempt 1/3)`) goes to the sandbox's stderr. The
+restore's summary (objects, bytes, seconds, attempts, stalls, resumed objects) is
+`ModalSandbox.restore_summary` after an open, logged at INFO, and the last line of
+a failed open's error. A restore that still fails fails startup. Restored files
+take their objects' mtimes, so a push uploads only files changed since.
 
 A disk can be made of more than the thread's prefix. Override
 `ModalSandboxProvider.restore_plan(thread_id)` to return `Restore(source, path,

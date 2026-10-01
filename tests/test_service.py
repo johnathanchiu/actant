@@ -25,8 +25,10 @@ from actant.sandbox.protocol import (
     Header,
     HostConfig,
     PullConfig,
+    Pulled,
     PushConfig,
     RestoreConfig,
+    RestoreSummary,
     Route,
     SeedConfig,
     StampConfig,
@@ -613,6 +615,7 @@ def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
     from actant.sandbox import entry
 
     monkeypatch.setattr(entry, "PROGRESS_INTERVAL_S", 0.1)
+    monkeypatch.setattr(entry, "CHECK_INTERVAL_S", 0.1)
     runs = tmp_path / "runs"
     pull = (
         "import os, time\n"
@@ -630,7 +633,7 @@ def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
     )
     config = RestoreConfig(
         argv=[sys.executable, "-c", pull],
-        attempt_timeout_s=1,
+        stall_s=1,
         attempts=3,
         stamp=StampConfig(
             argv=[sys.executable, "-c", f"print({listed!r})"],
@@ -639,27 +642,77 @@ def test_a_stalled_pull_is_retried_and_fetches_only_what_is_missing(
         ),
     )
     started = time.monotonic()
-    assert entry.restore(config)
-    assert time.monotonic() - started < 10
+    summary = entry.restore_summary(config)
+    assert summary.ok and time.monotonic() - started < 10
     assert runs.read_text() == ".."
+    [pulled] = summary.pulls
+    assert (pulled.objects, pulled.listed, pulled.bytes) == (2, 2, 6)
+    assert (pulled.attempts, pulled.stalls, pulled.resumed) == (2, 1, 0)
     err = capsys.readouterr().err
-    assert "restore attempt 1/3 timed out after 1s" in err
+    assert "restore attempt 1/3 stalled: nothing arrived for 1s" in err
     assert "restore: 1/2 objects (attempt 1/3)" in err
     assert "restore: 2/2 objects (attempt 2/3)" in err
     assert int((tmp_path / "b.txt").stat().st_mtime) == 1767323045
 
 
 def test_a_pull_that_stalls_on_every_attempt_fails_startup(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from actant.sandbox.entry import restore
+    from actant.sandbox import entry
 
+    monkeypatch.setattr(entry, "CHECK_INTERVAL_S", 0.1)
     runs = tmp_path / "runs"
     stall = f"import time; open({str(runs)!r}, 'a').write('.'); time.sleep(60)"
-    config = RestoreConfig(argv=[sys.executable, "-c", stall], attempt_timeout_s=0.5, attempts=2)
-    assert not restore(config)
+    config = RestoreConfig(argv=[sys.executable, "-c", stall], stall_s=0.5, attempts=2)
+    started = time.monotonic()
+    summary = entry.restore_summary(config)
+    assert not summary.ok and time.monotonic() - started < 10  # two stall windows, not 60 s
     assert runs.read_text() == ".."
-    assert "restore timed out after 0.5s" in capsys.readouterr().err
+    [pulled] = summary.pulls
+    assert pulled.outcome == Pulled.FAILED and (pulled.attempts, pulled.stalls) == (2, 2)
+    err = capsys.readouterr().err
+    assert "restore stalled: nothing arrived for 0.5s" in err
+    # The summary is stderr's last line, so the tail of a failed sandbox's log has it.
+    assert err.splitlines()[-1] == summary.line()
+    assert "restore failed in" in summary.line() and "2 attempts (1 retries, 2 stalls" in err
+
+
+def test_a_slow_pull_that_keeps_moving_outlives_the_stall_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-10-01 failure: one large object trickling in for longer than a fixed
+    per-attempt limit. Bytes keep arriving on disk, so the attempt is never killed."""
+    from actant.sandbox import entry
+
+    monkeypatch.setattr(entry, "CHECK_INTERVAL_S", 0.1)
+    big = tmp_path / "structform.npz"
+    trickle = _script(
+        "import time\n"
+        f"with open({str(big)!r}, 'wb') as out:\n"
+        "    for _ in range(25):\n"
+        "        out.write(b'x' * 1000); out.flush(); time.sleep(0.1)\n"
+    )
+    stamp = StampConfig(argv=_script("pass"), prefix="s3://b/t/", root=str(tmp_path))
+    config = RestoreConfig(argv=trickle, stall_s=0.5, attempts=1, stamp=stamp)
+    started = time.monotonic()
+    summary = entry.restore_summary(config)
+    assert summary.ok and time.monotonic() - started >= 2.5  # five stall windows long
+    assert big.stat().st_size == 25_000
+    assert summary.pulls[0].stalls == 0 and summary.pulls[0].attempts == 1
+
+
+def test_entry_writes_the_restore_summary_where_asked(tmp_path: Path) -> None:
+    where = tmp_path / "summary.json"
+    denied = _script("import sys; sys.exit('denied')")
+    config = EntryConfig(restore=RestoreConfig(argv=denied, summary_path=str(where)))
+    done = subprocess.run(
+        [sys.executable, "-m", "actant.sandbox.entry", config.model_dump_json()],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )  # fmt: skip
+    summary = RestoreSummary.model_validate_json(where.read_text())
+    assert done.returncode == 1 and not summary.ok
+    assert summary.pulls[0].outcome == Pulled.FAILED and "denied" in (summary.pulls[0].error or "")
+    assert done.stderr.splitlines()[-1] == summary.line()
 
 
 def test_restore_pulls_its_other_inputs_alongside_and_fails_if_one_fails(
