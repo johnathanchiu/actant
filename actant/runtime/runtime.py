@@ -11,6 +11,7 @@ from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxR
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
+from actant.runtime.cancellation import record_cancelled
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.events.publisher import EventSink, EventSource
 from actant.runtime.gate import TurnGate
@@ -229,6 +230,10 @@ class AgentRuntime:
     async def cancel_thread(self, agent_id: str, thread_id: str) -> None:
         """Stop a thread and its persisted descendants, across agents and workers.
 
+        The stores record the cancel before this returns: open tool calls are closed
+        with a paired result and the thread is ``CANCELLED`` (``record_cancelled``), so
+        a caller has no repair of its own to do, even when the workflow had closed.
+
         Threads end when their work is done, so cancelling is routinely
         aimed at a workflow that has already closed -- Temporal raises for
         that, and it is not an error worth propagating: the caller asked for
@@ -250,6 +255,7 @@ class AgentRuntime:
             except KeyError:
                 raise ThreadNotFoundError(thread_id) from error
 
+        await record_cancelled(self.stores, agent_id, thread_id)
         await self._cancel_children(thread_id)
 
     async def _cancel_children(self, thread_id: str) -> None:

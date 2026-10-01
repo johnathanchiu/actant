@@ -4,6 +4,12 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `AgentRuntime.cancel_thread` records the cancel in the stores before it returns: open
+  tool calls are closed with a paired tool result and the thread is `CANCELLED`, also
+  for a thread whose workflow had already closed. A host no longer repairs these itself.
+
 ## 0.30.0
 
 - `SandboxSpec.region` places a Modal sandbox (`"us"`, `"us-east"`, or several);
