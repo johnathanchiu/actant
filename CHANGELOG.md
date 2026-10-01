@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.31.0
 
 - `AgentRuntime.cancel_thread` records the cancel in the stores before it returns: open
   tool calls are closed with a paired tool result and the thread is `CANCELLED`, also
