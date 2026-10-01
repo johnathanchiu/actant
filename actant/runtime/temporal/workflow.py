@@ -561,7 +561,13 @@ class AgentThreadWorkflow:
         try:
             return await handle
         except ActivityError as error:
-            workflow.logger.warning("background summary failed: %s", error.__cause__ or error)
+            cause = error.__cause__ or error
+            workflow.logger.warning(
+                "actant.compaction.background_failed thread=%s error=%s: %s",
+                self._thread_id,
+                type(cause).__name__,
+                cause,
+            )
             return None
 
     async def _store_summary_when_idle(self, payload: ThreadInput) -> None:

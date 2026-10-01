@@ -19,6 +19,7 @@ traceback rather than a replayable history.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from dataclasses import replace
 
@@ -42,6 +43,8 @@ from actant.runtime.temporal.types import (
 )
 
 __all__ = ["LocalRun", "LocalThreadRuntime"]
+
+logger = logging.getLogger(__name__)
 
 
 class LocalRun:
@@ -225,7 +228,15 @@ class LocalThreadRuntime:
             return None
         try:
             return await task
-        except Exception:  # a failed summary changed nothing; the hard limit still compacts
+        except (
+            Exception
+        ) as error:  # a failed summary changed nothing; the hard limit still compacts
+            logger.warning(
+                "actant.compaction.background_failed thread=%s error=%s: %s",
+                payload.thread_id,
+                type(error).__name__,
+                error,
+            )
             return None
 
     async def _run_tool_group(self, payload: ThreadInput, turn: TurnResult) -> bool:

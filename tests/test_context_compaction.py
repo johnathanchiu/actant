@@ -9,10 +9,12 @@ the compaction row; and a history recorded without compaction replays unchanged.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
 from temporalio.client import WorkflowHistory
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
@@ -486,6 +488,7 @@ class _AheadLLM(FakeLLM):
         self.release.set()
         # Hold summaries until this many turns have started, then let one finish.
         self.release_at: int | None = None
+        self.fail = False
 
     async def complete(
         self,
@@ -501,6 +504,8 @@ class _AheadLLM(FakeLLM):
             self.summaries.append(list(messages))
             await self.release.wait()
             await asyncio.sleep(self.summary_s)
+            if self.fail:
+                raise RuntimeError("summarizer down")
             return Message(role="assistant", content="SUMMARY")
         self.turns.append(list(messages))
         if len(self.turns) == self.release_at:
@@ -614,3 +619,19 @@ async def test_the_workflow_writes_a_summary_ahead_stores_it_idle_and_replays() 
     stored = await stores.messages.list_for_thread(_AGENT, _THREAD)
     assert [m.kind for m in stored] == ["message"] * 4 + ["compaction"]
     await Replayer(workflows=[AgentThreadWorkflow]).replay_workflow(history)
+
+
+async def test_a_failed_background_summary_is_logged_and_changes_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    s = _ahead([_call("a", input_tokens=6_000), _says("done", input_tokens=6_100)])
+    llm = s.llm
+    assert isinstance(llm, _AheadLLM)
+    llm.fail = True
+    with caplog.at_level(logging.WARNING):
+        assert await s.run("first", _AHEAD) is RunOutcome.COMPLETED
+
+    assert await s.compactions() == []
+    [record] = [r for r in caplog.records if "background_failed" in r.getMessage()]
+    assert f"thread={_THREAD}" in record.getMessage()
+    assert "summarizer down" in record.getMessage()
