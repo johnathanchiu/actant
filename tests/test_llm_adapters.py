@@ -498,3 +498,33 @@ def test_message_from_raw_keeps_null_content() -> None:
 
     assert message.content is None
     assert Message.from_raw(message.to_dict()).to_dict() == message.to_dict()
+
+
+async def test_anthropic_leaves_a_429_to_the_sdk_retries() -> None:
+    """The SDK retries a 429 itself, honoring retry-after; the provider adds no second layer,
+    which used to send each refused request twice the SDK's attempts."""
+    import anthropic
+    import httpx
+
+    from actant.llm.rate_limit import RateLimitConfig, RateLimiter
+
+    sent: list[httpx.Request] = []
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(
+            429,
+            headers={"retry-after-ms": "1"},
+            json={"type": "error", "error": {"type": "rate_limit_error", "message": "slow"}},
+        )
+
+    client = anthropic.AsyncAnthropic(
+        api_key="test",
+        max_retries=2,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(refuse)),
+    )
+    limiter = RateLimiter(RateLimitConfig(tokens_per_minute=10_000_000, requests_per_minute=1_000))
+    provider = AnthropicProvider(model_id="claude-opus-5-5", client=client, rate_limiter=limiter)
+    with pytest.raises(anthropic.RateLimitError):
+        await provider.complete("system", [Message(role="user", content="hi")], [])
+    assert len(sent) == 3  # the SDK's first try and its two retries, nothing more

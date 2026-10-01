@@ -5,8 +5,8 @@ exceed the per-minute budget, so we don't burn credits on retries
 after a 429.
 
 Estimates aren't always right (especially for reasoning models that
-spend tokens internally). On a miss the provider catches
-``RateLimitError``, sleeps the retry-after, and retries within its call budget. The
+spend tokens internally). A miss is a 429 the provider's retries absorb, honoring its
+retry-after: the SDK's own for Anthropic, the provider's attempts for OpenAI. The
 limiter is provider-agnostic — wire it in from the application
 layer and pass a single shared instance per ``(provider, model)``
 pair to every caller for that model.

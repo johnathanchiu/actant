@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -218,27 +217,13 @@ class AnthropicProvider:
         if self._rate_limiter is None:
             message, _ = await self._stream(params, listener)
             return message
+        # A 429 is retried by the SDK itself (``max_retries``, honoring retry-after), inside
+        # this one reservation; a second layer here would multiply its attempts.
         estimated = self._estimate_tokens(messages, params)
-        try:
-            async with self._rate_limiter.reserve(estimated) as reservation:
-                message, actual = await self._stream(params, listener)
-                reservation.record_actual(actual)
-                return message
-        except anthropic.RateLimitError as exc:
-            # Estimate missed: honor retry-after once, then let a second miss raise.
-            wait = _parse_retry_after(exc) or 5.0
-            logger.warning(
-                "actant.anthropic.rate_limit_miss model=%s wait_secs=%.2f error=%s",
-                self.model_id,
-                wait,
-                exc,
-            )
-            await asyncio.sleep(wait + 0.5)
-            estimated_retry = self._estimate_tokens(messages, params)
-            async with self._rate_limiter.reserve(estimated_retry) as reservation:
-                message, actual = await self._stream(params, listener)
-                reservation.record_actual(actual)
-                return message
+        async with self._rate_limiter.reserve(estimated) as reservation:
+            message, actual = await self._stream(params, listener)
+            reservation.record_actual(actual)
+            return message
 
     async def _stream(
         self,
@@ -339,21 +324,6 @@ class AnthropicProvider:
             input_estimate *= 2
         output_ceiling = int(params.get("max_tokens") or MAX_TOKENS)
         return input_estimate + output_ceiling
-
-
-def _parse_retry_after(exc: anthropic.RateLimitError) -> float | None:
-    """The server's retry-after seconds, or None."""
-    response = getattr(exc, "response", None)
-    if response is None:
-        return None
-    headers = getattr(response, "headers", {}) or {}
-    raw = headers.get("retry-after") or headers.get("Retry-After")
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
 
 
 def _message_chars(message: Message) -> int:
