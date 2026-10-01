@@ -114,18 +114,13 @@ class RunActivities:
             max_turns = max(1, payload.max_turns or 1)
         if payload.max_turns is not None:
             max_turns = min(max_turns, max(1, payload.max_turns))
-        try:
-            await self.context.stores.runs.create(
-                payload.agent_id,
-                payload.thread_id,
-                run_id=payload.run_id,
-                max_turns=max_turns,
-            )
-        except Exception:
-            try:
-                await self.context.stores.runs.get(payload.run_id)
-            except Exception:
-                raise
+        # Idempotent: a retried start finds the run its first attempt created.
+        await self.context.stores.runs.create(
+            payload.agent_id,
+            payload.thread_id,
+            run_id=payload.run_id,
+            max_turns=max_turns,
+        )
         thread = await self.context.stores.threads.get_or_create(
             payload.agent_id, payload.thread_id
         )

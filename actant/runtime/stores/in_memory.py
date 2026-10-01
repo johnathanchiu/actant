@@ -101,8 +101,7 @@ class InMemoryRunStore:
             thread_id=thread_id,
             max_turns=max(1, max_turns),
         )
-        self._runs[run_id] = run
-        return run
+        return self._runs.setdefault(run_id, run)
 
     async def get(self, run_id: str) -> AgentRun:
         return self._runs[run_id]

@@ -312,3 +312,12 @@ async def test_child_lineage_crosses_agents(stores: SQLAlchemyRuntimeStores) -> 
     children = await stores.threads.list_children("parent")
     assert [(row.agent_id, row.id) for row in children] == [("child-agent", "child")]
     assert await stores.threads.list_children("missing") == []
+
+
+async def test_creating_a_run_again_returns_the_first_unchanged(
+    stores: SQLAlchemyRuntimeStores,
+) -> None:
+    await stores.threads.get_or_create("a", "t")
+    await stores.runs.create("a", "t", run_id="r", max_turns=3)
+    again = await stores.runs.create("a", "t", run_id="r", max_turns=9)
+    assert again.id == "r" and again.max_turns == 3

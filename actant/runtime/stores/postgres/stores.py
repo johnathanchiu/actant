@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from sqlalchemy import literal, or_, select, tuple_, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -121,8 +122,9 @@ class SQLAlchemyRunStore:
         run = AgentRun(id=run_id, agent_id=agent_id, thread_id=thread_id, max_turns=max_turns)
         async with self.session_factory() as session:
             async with session.begin():
-                session.add(
-                    ActantRunModel(
+                await session.execute(
+                    insert(ActantRunModel)
+                    .values(
                         run_id=run.id,
                         agent_id=run.agent_id,
                         thread_id=run.thread_id,
@@ -130,8 +132,9 @@ class SQLAlchemyRunStore:
                         turn_count=run.turn_count,
                         max_turns=run.max_turns,
                     )
+                    .on_conflict_do_nothing(index_elements=[ActantRunModel.run_id])
                 )
-        return run
+        return await self.get(run_id)
 
     async def get(self, run_id: str) -> AgentRun:
         async with self.session_factory() as session:
