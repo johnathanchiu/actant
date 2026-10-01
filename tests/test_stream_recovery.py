@@ -345,6 +345,36 @@ async def test_continuously_streaming_attempt_has_a_total_deadline() -> None:
         await provider.complete("system", [], [])
 
 
+async def test_turn_budget_ends_a_stream_whose_events_never_pause() -> None:
+    """The budget's cancel can land just as an event arrives. It must still end the turn,
+    not be lost while the stream keeps going (``asyncio.wait_for`` on Python 3.11 loses it).
+    A real socket: the race needs the event to arrive through the loop's transport."""
+    *opening, delta = [event for event in _events(*_text("x"))[:4] if isinstance(event, dict)]
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+        for number in range(100_000):
+            event = opening[number] if number < len(opening) else delta
+            payload = json.dumps({"sequence_number": number, **event})
+            writer.write(f"event: {event['type']}\ndata: {payload}\n\n".encode())
+            await writer.drain()
+            await asyncio.sleep(0)
+        writer.close()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = openai.AsyncOpenAI(api_key="test", base_url=f"http://127.0.0.1:{port}/v1")
+    provider = OpenAIProvider("gpt-6-astra", client=client, turn_s=0.2, idle_s=5.0, attempts=1)
+    started = asyncio.get_running_loop().time()
+    try:
+        with pytest.raises(TimeoutError):
+            await provider.complete("system", [], [], listener=StreamListener())
+        assert asyncio.get_running_loop().time() - started < 2
+    finally:
+        server.close()
+
+
 async def test_whitespace_loop_is_interrupted() -> None:
     call = {
         "type": "response.output_item.added",
