@@ -18,7 +18,7 @@ from actant.blocks import AssetBlock, InlineImageBlock, PromptBlock, TextBlock, 
 from actant.llm.messages import Message
 from actant.runtime.session import message_to_parts, parts_to_messages
 from actant.storage.s3 import S3AssetResolver, S3Client
-from actant.storage.sigv4 import SigningKeys, presign_get
+from actant.storage.sigv4 import SigningKeys, check_endpoint, presign_get
 from datetime import datetime, timezone
 from typing import Literal, cast
 from urllib.parse import parse_qs, quote, urlsplit
@@ -188,6 +188,9 @@ KEYS = [
         ("https://account.r2.cloudflarestorage.com", "virtual"),
         ("https://host:443", "virtual"),
         ("http://127.0.0.1:9000", "path"),
+        ("https://project.storage.supabase.co/storage/v1/s3", "path"),
+        ("https://project.storage.supabase.co/storage/v1/s3/", "path"),
+        ("http://127.0.0.1:9000/s3", "virtual"),
     ],
 )
 @pytest.mark.parametrize("token", [None, "session/token+=="])
@@ -209,9 +212,9 @@ def test_crt_signature_matches_botocores_signer_at_the_same_time(
     origin = urlsplit(endpoint)
     path = "/" + quote(key, safe="/~")
     url = (
-        f"{origin.scheme}://bucket.{origin.netloc}{path}"
+        f"{origin.scheme}://bucket.{origin.netloc}{origin.path.rstrip('/')}{path}"
         if style == "virtual"
-        else f"{endpoint}/bucket{path}"
+        else f"{endpoint.rstrip('/')}/bucket{path}"
     )
     request = AWSRequest(method="GET", url=url)
     credentials = Credentials("test-key", "test-secret", token)
@@ -233,6 +236,50 @@ def test_crt_signature_matches_botocores_signer_at_the_same_time(
     assert (ours.scheme, ours.netloc, ours.path) == (theirs.scheme, theirs.netloc, theirs.path)
     assert parse_qs(ours.query) == parse_qs(theirs.query)
     assert ("X-Amz-Security-Token" in parse_qs(ours.query)) == (token is not None)
+
+
+def test_supabase_endpoint_signs_under_its_path_prefix() -> None:
+    url = presign_get(
+        "https://project.storage.supabase.co/storage/v1/s3",
+        "us-east-1",
+        SigningKeys("test-key", "test-secret"),
+        "bucket",
+        "images/a.png",
+        signed_at=1_800_000_000,
+        expires_s=3600,
+    )
+    parts = urlsplit(url)
+    assert parts.netloc == "project.storage.supabase.co"
+    assert parts.path == "/storage/v1/s3/bucket/images/a.png"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://account.r2.cloudflarestorage.com",
+        "https://account.r2.cloudflarestorage.com/",
+        "http://127.0.0.1:9000",
+        "https://project.storage.supabase.co/storage/v1/s3",
+    ],
+)
+def test_endpoint_may_carry_a_path_prefix(endpoint: str) -> None:
+    check_endpoint(endpoint)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "s3://bucket",
+        "https://",
+        "https://user:pass@host/s3",
+        "https://host/s3?x=1",
+        "https://host/s3#f",
+        "host/s3",
+    ],
+)
+def test_endpoint_rejects_non_origins(endpoint: str) -> None:
+    with pytest.raises(ValueError, match="endpoint_url"):
+        check_endpoint(endpoint)
 
 
 async def test_one_url_per_window_never_near_expiry() -> None:
