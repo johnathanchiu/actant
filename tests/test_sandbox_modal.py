@@ -500,6 +500,15 @@ def test_a_restore_plan_pulls_every_entry_and_pushes_only_its_own() -> None:
     ]  # fmt: skip
 
 
+def test_the_spec_sets_the_restore_budget() -> None:
+    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, restore_timeout_s=420)
+    restore = provider.entry_config(spec, "t1").restore
+    assert restore is not None and restore.timeout_s == 420
+    with pytest.raises(ValueError, match="restore_timeout_s"):
+        SandboxSpec(restore_timeout_s=0)
+
+
 def test_a_restore_pulled_again_keeps_files_already_on_the_disk_at_their_size() -> None:
     provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)

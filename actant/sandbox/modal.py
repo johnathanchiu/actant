@@ -86,8 +86,6 @@ MOUNT_PATH = "/mnt/sandbox"
 DISK_PATH = "/root/sandbox"
 THREAD_TAG = "actant_thread"
 _log = logging.getLogger(__name__)
-#: How long the restore (and the readiness wait around it) may take.
-SYNC_TIMEOUT_S = 1800
 #: A pull's s5cmd flags. A failed request (one part of an object: a ranged read) is
 #: retried on its own, keeping the parts already fetched; 16 MiB parts bound what a
 #: retry refetches, and 8 at a time keep one large object moving.
@@ -197,7 +195,7 @@ class ModalSandboxProvider:
     )
 
     async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
-        # An open waits up to SYNC_TIMEOUT_S on its restore: the caller's activity beats.
+        # An open waits up to spec.restore_timeout_s on its restore: the caller's activity beats.
         async with heartbeating():
             return await self._open(spec, thread_id)
 
@@ -269,7 +267,7 @@ class ModalSandboxProvider:
         )
         if probe is not None:
             try:
-                await sandbox.wait_until_ready.aio(timeout=SYNC_TIMEOUT_S)
+                await sandbox.wait_until_ready.aio(timeout=spec.restore_timeout_s)
             except Exception as exc:
                 detail = ""
                 if await sandbox.poll.aio() is not None:  # exited: its stderr is complete
@@ -354,7 +352,7 @@ class ModalSandboxProvider:
             pushed, others, mounts = plan.pushed, plan.others, plan.mounts
             restore = RestoreConfig(
                 argv=self._pull_argv(pushed, mounts, size_only=size_only),
-                timeout_s=SYNC_TIMEOUT_S,
+                timeout_s=spec.restore_timeout_s,
                 stamp=self._stamp_config(pushed, mounts),
                 seed=None if spec.seed is None else self._seed_config(pushed, spec.seed, mounts),
                 also=[
