@@ -8,7 +8,6 @@ end."
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from enum import StrEnum
 
 
@@ -31,10 +30,6 @@ class RunStatus(StrEnum):
     EXHAUSTED = "exhausted"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass
