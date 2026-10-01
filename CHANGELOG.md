@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.0
 
 - `CompactionConfig(summarizer=..., summary_tokens=...)`: a compaction summary written on a
   model client the worker registers by name (`AgentRuntime(summarizers={"fast": client})`,
