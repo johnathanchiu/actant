@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import mimetypes
 from typing import Any, cast
@@ -10,6 +9,7 @@ from typing import Any, cast
 from temporalio import activity
 
 from actant.agents import AgentDefinition
+from actant.heartbeat import heartbeating
 from actant.runtime.events.runtime import RuntimeEvents
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
@@ -33,8 +33,6 @@ from actant.tools.admission import (
 )
 from actant.tools.base import CallContext, MetadataKey, Tool, ToolInvocation, ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
-
-HEARTBEAT_SECONDS = 30.0
 
 
 class ToolActivities:
@@ -169,20 +167,18 @@ class ToolActivities:
         # too (an image builds on first use). Heartbeats keep Temporal from
         # mistaking a long healthy activity for a dead worker, and let a
         # cancellation reach it; they start before anything slow.
-        beat = asyncio.create_task(_heartbeat())
-        try:
+        async with heartbeating():
             try:
-                ctx = await self._call_context(agent, tool, record)
-                invocation = await tool.build(record.args, ctx)
+                try:
+                    ctx = await self._call_context(agent, tool, record)
+                    invocation = await tool.build(record.args, ctx)
+                except Exception as exc:  # noqa: BLE001
+                    return await self._execute_failed(record.id, f"Tool build error: {exc}")
+                result = await invocation.execute()
             except Exception as exc:  # noqa: BLE001
-                return await self._execute_failed(record.id, f"Tool build error: {exc}")
-            result = await invocation.execute()
-        except Exception as exc:  # noqa: BLE001
-            result = ToolResult.fail(f"Tool execution error: {exc}")
-        else:
-            result = await self._materialise(agent, record, ctx, result)
-        finally:
-            beat.cancel()
+                result = ToolResult.fail(f"Tool execution error: {exc}")
+            else:
+                result = await self._materialise(agent, record, ctx, result)
 
         result.tool_call_id = record.id
         status = ToolCallStatus.COMPLETED if result.error is None else ToolCallStatus.FAILED
@@ -388,13 +384,3 @@ def _outcome(tool_call_id: str, result: ToolResult) -> ExecuteOutcome:
 
 def _outcome_from_record(record: ToolCallRecord) -> ExecuteOutcome:
     return _outcome(record.id, _result_from_record(record))
-
-
-async def _heartbeat() -> None:
-    while True:
-        await asyncio.sleep(HEARTBEAT_SECONDS)
-        try:
-            activity.heartbeat()
-        except RuntimeError:
-            # Not inside an activity (a direct call from a test); nothing to report to.
-            return
