@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.32.0
 
 - `SandboxRunner(client=...)` takes a shared `httpx.AsyncClient`. Runners made per call
   (one per stage or tool call) reuse its open connections to the sandbox host instead of
