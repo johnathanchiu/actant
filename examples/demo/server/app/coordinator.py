@@ -25,6 +25,7 @@ from actant.runtime.stores.postgres import (
     SQLAlchemyMessageStore,
     SQLAlchemyRunStore,
     SQLAlchemyThreadStore,
+    SQLAlchemySandboxStore,
     SQLAlchemyToolCallStore,
     create_schema,
 )
@@ -68,6 +69,7 @@ class _DemoStores:
     runs: SQLAlchemyRunStore
     messages: SQLAlchemyMessageStore
     tool_calls: SQLAlchemyToolCallStore
+    sandboxes: SQLAlchemySandboxStore
     publisher: InMemoryEventPublisher
 
 
@@ -306,6 +308,7 @@ async def build_coordinator() -> DemoCoordinator:
         runs=SQLAlchemyRunStore(session_factory),
         messages=SQLAlchemyMessageStore(session_factory),
         tool_calls=SQLAlchemyToolCallStore(session_factory),
+        sandboxes=SQLAlchemySandboxStore(session_factory),
         publisher=InMemoryEventPublisher(),
     )
 

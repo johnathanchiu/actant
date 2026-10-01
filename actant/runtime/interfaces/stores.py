@@ -18,6 +18,7 @@ from actant.runtime.types.threads import (
     MessageRecord,
     RunStatus,
 )
+from actant.sandbox.store import SandboxStore
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 from collections.abc import Sequence
 
@@ -179,3 +180,8 @@ class RuntimeStores(Protocol):
 
     @property
     def tool_calls(self) -> ToolCallStore: ...
+
+    @property
+    def sandboxes(self) -> SandboxStore:
+        """Keyed sandboxes (``actant.sandbox.registry``), recorded beside the projections."""
+        ...
