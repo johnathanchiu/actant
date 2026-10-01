@@ -235,7 +235,7 @@ def _url_error(message: str) -> httpx.Response:
     )
 
 
-async def test_an_image_url_fetch_timeout_retries_but_a_bad_url_does_not() -> None:
+async def test_an_image_url_fetch_failure_retries_and_a_bad_url_raises() -> None:
     timeout = _url_error(
         "Unable to download content from the provided URL before the timeout. Check that "
         "the URL is publicly accessible and responds promptly, or upload the file and "
@@ -247,6 +247,12 @@ async def test_an_image_url_fetch_timeout_retries_but_a_bad_url_does_not() -> No
 
     missing = _url_error("Error while downloading https://bucket.test/missing.png.")
     provider, requests = _provider([missing] * 2, attempts=2)
+    with pytest.raises(openai.BadRequestError):
+        await provider.complete("system", [], [])
+    assert len(requests) == 2
+
+    other = httpx.Response(400, json={"error": {"message": "bad", "code": "invalid_value"}})
+    provider, requests = _provider([other] * 2, attempts=2)
     with pytest.raises(openai.BadRequestError):
         await provider.complete("system", [], [])
     assert len(requests) == 1
