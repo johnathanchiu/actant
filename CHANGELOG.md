@@ -4,6 +4,28 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A turn's `turn_s` now ends a stream whose events never pause. On Python 3.11 the
+  stream's idle bounds (`asyncio.wait_for`) could swallow the budget's cancel when it
+  landed as an event arrived; they are nested `asyncio.timeout`s now.
+- `AnthropicProvider(turn_s=...)` bounds a whole call, the SDK's retries included.
+- `TemporalRuntimeConfig.activity_timeouts` (`ActivityTimeouts`) sets the model turn,
+  compaction and tool call activities' timeouts and the tool heartbeat timeout, which
+  were fixed at 10 minutes and 2 minutes. Defaults are unchanged.
+- `actant.heartbeat.heartbeating()` beats the current Temporal activity on a timer. A
+  Modal sandbox's open, `exec` and `sync` and every service-host call now beat the
+  activity they run in.
+- An image upload is timed from when its thread starts it, not while it queues for one.
+  `image_upload_timeout_s` is each attempt's connect and read timeout, and boto's 3
+  attempts run inside the upload's budget.
+- `OpenAIProvider(azure=True)` declares an Azure OpenAI deployment reached through a
+  plain `AsyncOpenAI` client, for Azure's 50-image request limit.
+- `ModalSandboxProvider.entry_config(..., size_only=True)` builds the restore's pulls
+  with `--size-only`, for pulling again into a sandbox that is already up.
+- `SandboxRegistry.close(..., spec=...)` also closes a thread's sandbox that another
+  worker opened.
+
 ## 0.27.0
 
 - A sandbox restore pull is no longer killed after a fixed time and restarted from
