@@ -6,6 +6,15 @@ affect users.
 
 ## Unreleased
 
+- `CompactionConfig(summarizer=..., summary_tokens=...)`: a compaction summary written on a
+  model client the worker registers by name (`AgentRuntime(summarizers={"fast": client})`,
+  configured with the model and reasoning effort the app wants), with its output capped.
+  A request that client cannot take (its declared window or image limit) is summarized on
+  the agent's model; a summary that reaches the cap, or a summarizer call that fails, is
+  written again on the agent's model with the default cap, so a summary is never cut
+  short. The capped prompt asks for a summary that fits. Each summary call logs its model,
+  seconds and tokens (`actant.compaction.summary`).
+
 - `CompactionConfig(background=...)`: compaction written ahead of need. Past that fraction
   of the window (or of the image limit) a turn still runs, and a summary of everything
   before the open turn is written beside the next turns (new activities

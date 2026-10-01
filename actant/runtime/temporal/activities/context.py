@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from temporalio.exceptions import ApplicationError
 
@@ -11,6 +11,7 @@ from actant.assets import AssetResolver
 from actant.runtime.events.publisher import EventSink
 from actant.runtime.events.publisher import ScopedEventSink
 from actant.runtime.events.runtime import RuntimeEvents
+from actant.llm.base import LLMClient
 from actant.llm.messages import Message
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.gate import TurnGate
@@ -40,6 +41,7 @@ class ActivityContext:
         sandboxes: SandboxRegistry | None = None,
         artifact_sink: ArtifactSink | None = None,
         compaction_instructions: str = "",
+        summarizers: Mapping[str, LLMClient] | None = None,
         cancel_children: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.cancel_children = cancel_children
@@ -54,6 +56,9 @@ class ActivityContext:
         self.artifact_sink = artifact_sink
         # Appended to the built-in prompt of context compaction's summary call.
         self.compaction_instructions = compaction_instructions
+        # Model clients a compaction may summarize on (``CompactionConfig.summarizer``),
+        # by name; each configured as the app wants a summary made (model, effort).
+        self.summarizers: Mapping[str, LLMClient] = dict(summarizers or {})
 
     async def agent(self, agent_id: str, thread_id: str) -> AgentDefinition:
         if self.resolve_agent is None:

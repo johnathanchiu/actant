@@ -104,6 +104,7 @@ class _Setup:
         context_window_tokens: int | None = 10_000,
         max_images_per_request: int | None = None,
         llm: FakeLLM | None = None,
+        summarizers: dict[str, FakeLLM] | None = None,
     ) -> None:
         self.llm = llm or FakeLLM(
             replies,
@@ -124,6 +125,7 @@ class _Setup:
                 stores=self.stores,
                 resolve_agent=static_agents({_AGENT: self.agent}),
                 event_sink=self.events,
+                summarizers=summarizers,
             )
         )
 
@@ -635,3 +637,68 @@ async def test_a_failed_background_summary_is_logged_and_changes_nothing(
     [record] = [r for r in caplog.records if "background_failed" in r.getMessage()]
     assert f"thread={_THREAD}" in record.getMessage()
     assert "summarizer down" in record.getMessage()
+
+
+# === on a summarizer of its own ===
+
+
+async def test_a_named_summarizer_writes_the_summary_capped_and_told_its_length() -> None:
+    fast = FakeLLM([_says("FAST SUMMARY", input_tokens=9_000)], context_window_tokens=400_000)
+    s = _Setup([_call("a", input_tokens=9_500), _says("done")], summarizers={"fast": fast})
+    config = CompactionConfig(summarizer="fast", summary_tokens=2_000)
+    assert await s.run("first", config) is RunOutcome.COMPLETED
+
+    [(_, block)] = await s.compactions()
+    assert block.summary == "FAST SUMMARY"
+    assert len(s.llm.calls) == 2  # the two turns; the summary was not the agent's
+    [(system, request, tools)] = fast.calls
+    assert (system, tools) == (_PERSONA, [])
+    assert fast.max_output_tokens == [2_000]
+    assert "about 1500 words" in str(request[-1].content)
+
+
+async def test_a_request_the_summarizer_cannot_take_is_summarized_on_the_agents_model() -> None:
+    small = FakeLLM([], context_window_tokens=1_000)  # under the 2,000-token cap alone
+    s = _Setup(
+        [_call("a", input_tokens=9_500), _says("SUMMARY"), _says("done")],
+        summarizers={"small": small},
+    )
+    await s.run("first", CompactionConfig(summarizer="small", summary_tokens=2_000))
+
+    assert small.calls == []
+    [(_, block)] = await s.compactions()
+    assert block.summary == "SUMMARY"
+
+
+async def test_a_summary_cut_short_at_the_cap_is_written_again_whole(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fast = FakeLLM([FakeResponse(text="half a summ", output_tokens=1_000)])
+    s = _Setup(
+        [_call("a", input_tokens=9_500), _says("WHOLE SUMMARY"), _says("done")],
+        summarizers={"fast": fast},
+    )
+    with caplog.at_level(logging.WARNING):
+        await s.run("first", CompactionConfig(summarizer="fast", summary_tokens=1_000))
+
+    [(_, block)] = await s.compactions()
+    assert block.summary == "WHOLE SUMMARY"
+    assert s.llm.max_output_tokens[1] is not None and s.llm.max_output_tokens[1] > 1_000
+    assert any("summary_retried" in r.getMessage() for r in caplog.records)
+
+
+async def test_an_unregistered_summarizer_fails_the_compaction_and_drops_nothing() -> None:
+    s = _Setup([_call("a", input_tokens=9_500)])
+    assert await s.run("first", CompactionConfig(summarizer="nope")) is RunOutcome.FAILED
+    assert await s.compactions() == []
+
+
+async def test_a_summarizer_that_fails_falls_back_to_the_agents_model() -> None:
+    down = FakeLLM([])  # no reply queued: the call raises, as a refused capped answer does
+    s = _Setup(
+        [_call("a", input_tokens=9_500), _says("SUMMARY"), _says("done")],
+        summarizers={"down": down},
+    )
+    assert await s.run("first", CompactionConfig(summarizer="down")) is RunOutcome.COMPLETED
+    [(_, block)] = await s.compactions()
+    assert block.summary == "SUMMARY" and len(down.calls) == 1

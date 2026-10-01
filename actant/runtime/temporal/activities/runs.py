@@ -15,6 +15,7 @@ from actant.agents import AgentDefinition
 from actant.blocks import BLOCKS, Block, CompactionBlock
 from actant.assets import AssetContext, prepare_messages
 from actant.core import JSONObject, new_id
+from actant.llm.base import LLMClient
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall as LLMToolCall
 from actant.runtime.compaction import (
@@ -35,6 +36,7 @@ from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
     ActivityName,
     CompactContextInput,
+    CompactionConfig,
     CompactionOutcome,
     CompactionTrigger,
     ContextSummary,
@@ -372,8 +374,9 @@ class RunActivities:
         )
 
     async def _summarize(self, payload: CompactContextInput) -> ContextSummary:
-        """One call on the agent's own model, with no tools, summarizing the view
-        through the trigger's boundary (``through``, else before ``carried``)."""
+        """One call with no tools, on the configured summarizer or the agent's own model,
+        summarizing the view through the trigger's boundary (``through``, else before
+        ``carried``)."""
         trigger = payload.trigger
         agent = await self.context.agent(payload.agent_id, payload.thread_id)
         view = build_view(
@@ -390,36 +393,126 @@ class RunActivities:
         through = view.ids[cut - 1]
         if through is None:
             raise ApplicationError("nothing to summarize", non_retryable=True)
+        config = payload.config
+        instructions = self.context.compaction_instructions
+        if config.summary_tokens is not None:
+            length = (
+                f"Fit the summary in about {config.summary_tokens * 3 // 4} words: lists over "
+                "prose, every open item and key fact kept, nothing narrated."
+            )
+            instructions = f"{instructions}\n\n{length}" if instructions else length
         request = await self._prepare(
-            compaction_request(view.messages[:cut], self.context.compaction_instructions),
+            compaction_request(view.messages[:cut], instructions),
             payload.agent_id,
             payload.thread_id,
             payload.run_id,
             payload.turn_id,
         )
-        window, _ = _limits(agent)
-        max_output = None
-        if window is not None:
-            used = measure_request(agent.persona, request, usage_from=view.usage_from).tokens
-            max_output = min(SUMMARY_MAX_OUTPUT_TOKENS, window - used)
-            if max_output < 1:
-                raise ApplicationError(
-                    f"no room in the {window}-token window for a summary of {used} tokens",
-                    non_retryable=True,
-                )
+        measure = measure_request(agent.persona, request, usage_from=view.usage_from)
+        llm = self._summarizer(agent, config, measure.tokens, count_images(request))
+        fast = llm is not agent.llm or config.summary_tokens is not None
+        reason = "it ran into the cap"
         try:
-            response = await agent.llm.complete(
-                agent.persona, request, [], None, max_output_tokens=max_output
+            summary = await self._summary_call(
+                agent, llm, request, measure.tokens, config.summary_tokens
             )
-        except Exception as exc:
-            # Never fall back to dropping context: the run fails and says why.
-            raise ApplicationError(f"the summary call failed: {exc}", non_retryable=True) from exc
-        summary = response.content.strip() if isinstance(response.content, str) else ""
+        except ApplicationError as error:
+            if not fast:
+                raise
+            # A provider may refuse an answer that reaches the cap rather than return it.
+            summary, reason = None, str(error)
+        if summary is None:
+            # Cut short at the cap, or the summarizer failed: written again, whole, on the
+            # agent's own model with the default cap.
+            logger.warning(
+                "actant.compaction.summary_retried agent=%s thread=%s model=%s cap=%s why=%s",
+                agent.id,
+                payload.thread_id,
+                llm.model_id,
+                config.summary_tokens,
+                reason,
+            )
+            request = await self._prepare(
+                compaction_request(view.messages[:cut], self.context.compaction_instructions),
+                payload.agent_id,
+                payload.thread_id,
+                payload.run_id,
+                payload.turn_id,
+            )
+            summary = await self._summary_call(agent, agent.llm, request, measure.tokens, None)
         if not summary:
             raise ApplicationError("the summary call returned no summary", non_retryable=True)
         return ContextSummary(
             summary=summary, through=through, base=view.compaction_id, trigger=trigger
         )
+
+    def _summarizer(
+        self, agent: AgentDefinition, config: CompactionConfig, tokens: int, images: int
+    ) -> LLMClient:
+        """The client the summary is written on: the configured summarizer when it can take
+        the request (its declared window and image limit), else the agent's own model."""
+
+        if config.summarizer is None:
+            return agent.llm
+        llm = self.context.summarizers.get(config.summarizer)
+        if llm is None:
+            raise ApplicationError(
+                f"no summarizer named {config.summarizer!r} is registered", non_retryable=True
+            )
+        window = _client_limit(llm, "context_window_tokens")
+        max_images = _client_limit(llm, "max_images_per_request")
+        output = config.summary_tokens or SUMMARY_MAX_OUTPUT_TOKENS
+        if (window is not None and tokens + output > window) or (
+            max_images is not None and images > max_images
+        ):
+            logger.info(
+                "actant.compaction.summarizer_too_small agent=%s model=%s tokens=%s images=%s",
+                agent.id,
+                llm.model_id,
+                tokens,
+                images,
+            )
+            return agent.llm
+        return llm
+
+    async def _summary_call(
+        self,
+        agent: AgentDefinition,
+        llm: LLMClient,
+        request: list[Message],
+        tokens: int,
+        cap: int | None,
+    ) -> str | None:
+        """The summary, or ``None`` when it used its whole ``cap`` (cut short)."""
+
+        window = _client_limit(llm, "context_window_tokens")
+        max_output = min(cap or SUMMARY_MAX_OUTPUT_TOKENS, SUMMARY_MAX_OUTPUT_TOKENS)
+        if window is not None:
+            max_output = min(max_output, window - tokens)
+            if max_output < 1:
+                raise ApplicationError(
+                    f"no room in the {window}-token window for a summary of {tokens} tokens",
+                    non_retryable=True,
+                )
+        started = time.perf_counter()
+        try:
+            response = await llm.complete(
+                agent.persona, request, [], None, max_output_tokens=max_output
+            )
+        except Exception as exc:
+            # Never fall back to dropping context: the run fails and says why.
+            raise ApplicationError(f"the summary call failed: {exc}", non_retryable=True) from exc
+        logger.info(
+            "actant.compaction.summary agent=%s model=%s seconds=%.1f input=%s output=%s",
+            agent.id,
+            llm.model_id,
+            time.perf_counter() - started,
+            response.input_tokens,
+            response.output_tokens,
+        )
+        if cap is not None and (response.output_tokens or 0) >= max_output:
+            return None
+        return response.content.strip() if isinstance(response.content, str) else ""
 
     async def _store_summary(
         self,
@@ -583,6 +676,11 @@ class RunActivities:
 def _provider_limit(agent: AgentDefinition, name: str) -> int | None:
     """A limit the model client declares, when it does (``LLMClient`` does not require it)."""
     value = getattr(agent.llm, name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _client_limit(llm: LLMClient, name: str) -> int | None:
+    value = getattr(llm, name, None)
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
