@@ -539,7 +539,7 @@ def _is_transient(error: Exception) -> bool:
         return (
             error.status_code in (408, 409, 429)
             or error.status_code >= 500
-            or _is_image_fetch_timeout(error)
+            or _is_image_fetch_failure(error)
         )
     if isinstance(error, (TimeoutError, openai.APIConnectionError, httpx.TransportError)):
         return True
@@ -554,19 +554,15 @@ def _is_transient(error: Exception) -> bool:
     return False
 
 
-def _is_image_fetch_timeout(error: openai.APIStatusError) -> bool:
-    """OpenAI's 400 when it could not download an ``image_url`` in time.
+def _is_image_fetch_failure(error: openai.APIStatusError) -> bool:
+    """OpenAI's 400 when it could not download an ``image_url``.
 
-    It is a timeout on OpenAI's side fetching a URL that is fine (a presigned image,
-    say), and the same request succeeds again; the API gives it no code of its own, so
-    it is told from a bad URL by its message.
+    Most often a timeout on OpenAI's side fetching a URL that is fine (a presigned image,
+    say), and the same request succeeds again. The API gives a timeout no code of its own,
+    so it cannot be told from a bad URL by its fields: both are retried, and a bad URL
+    fails every attempt and raises its own error.
     """
-    return (
-        error.status_code == 400
-        and error.code == "invalid_value"
-        and error.param == "url"
-        and "timeout" in error.message.lower()
-    )
+    return error.status_code == 400 and error.code == "invalid_value" and error.param == "url"
 
 
 def _extract_reasoning_item(item: object) -> ToolSchema | None:

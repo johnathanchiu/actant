@@ -12,6 +12,9 @@ affect users.
 - Breaking: `SandboxSpec.restore_attempt_timeout_s` and `restore_attempts`, and
   `RestoreConfig.attempt_timeout_s` and `attempts`, are removed. They were deprecated
   and ignored since 0.27.0; drop them from any spec that still sets them.
+- `OpenAIProvider` retries every 400 that says it could not download an `image_url`
+  (`code="invalid_value"`, `param="url"`), not only one whose message says "timeout".
+  A bad URL now fails each of the call's attempts before its error is raised.
 
 ## 0.30.0
 
