@@ -26,6 +26,12 @@ affect users.
   (`OpenAIProvider(context_window_tokens=..., max_images_per_request=...)`; `azure=True`
   sets the 50-image limit). Recorded workflow inputs that still carry them replay
   unchanged; the fields are ignored.
+- Breaking: removed dead code nothing in actant used: `actant.inbox` (`InboxMessage`),
+  `Agent`, `ModelConfig` and `ContextPolicy` (also from `actant`), the
+  `AgentDefinition.context_policy` and `persona_version` fields,
+  `AgentStore` and `InMemoryAgentStore` (and `InMemoryRuntimeStores.agents`), which stored
+  only `Agent`, `ToolCallStore.get_by_thread_and_turn`, the no-op
+  `SQLAlchemyEventPublisher`, and `RuntimeStores.publisher` (no runtime path read it).
 
 ## 0.30.0
 

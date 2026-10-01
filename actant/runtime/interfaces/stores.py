@@ -10,10 +10,8 @@ from __future__ import annotations
 from typing import Protocol
 
 from actant.blocks import Block, CompactionBlock
-from actant.agents import Agent
 from actant.core import JSONObject
 from actant.llm.messages import Message
-from actant.runtime.events.publisher import EventPublisher
 from actant.runtime.types.threads import (
     AgentRun,
     AgentThread,
@@ -22,12 +20,6 @@ from actant.runtime.types.threads import (
 )
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 from collections.abc import Sequence
-
-
-class AgentStore(Protocol):
-    async def save(self, agent: Agent) -> None: ...
-
-    async def get(self, agent_id: str) -> Agent: ...
 
 
 class ThreadStore(Protocol):
@@ -172,10 +164,6 @@ class ToolCallStore(Protocol):
 
     async def get_by_run(self, run_id: str) -> list[ToolCallRecord]: ...
 
-    async def get_by_thread_and_turn(
-        self, thread_id: str, turn_id: str
-    ) -> list[ToolCallRecord]: ...
-
     async def get_open_for_thread(self, agent_id: str, thread_id: str) -> list[ToolCallRecord]: ...
 
 
@@ -191,6 +179,3 @@ class RuntimeStores(Protocol):
 
     @property
     def tool_calls(self) -> ToolCallStore: ...
-
-    @property
-    def publisher(self) -> EventPublisher: ...

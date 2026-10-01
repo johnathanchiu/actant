@@ -2,7 +2,6 @@
 
 from actant.runtime.events.publisher import EventPublisher
 from actant.runtime.interfaces.stores import (
-    AgentStore,
     MessageStore,
     RunStore,
     RuntimeStores,
@@ -11,7 +10,6 @@ from actant.runtime.interfaces.stores import (
 )
 
 __all__ = [
-    "AgentStore",
     "EventPublisher",
     "MessageStore",
     "RunStore",
