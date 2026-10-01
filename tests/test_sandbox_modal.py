@@ -627,3 +627,33 @@ def test_mounts_are_checked_against_the_plan_and_each_other() -> None:
             provider.sync_argv("t1")
     fine = _Over(app_name="app", bucket="b", mounts=("capture",), restores=("inputs",))
     assert "root/sandbox/capture/*" in fine.sync_argv("t1")
+
+
+def test_push_exclude_keeps_folders_out_of_every_push() -> None:
+    provider = _ScenePlan(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        services={"tools": "pkg.mod:Tools"},
+        push_exclude=("renders", "cache/frames"),
+    )
+    host = provider.entry_config(spec, "t1").host
+    assert host is not None and host.push is not None
+    push = host.push
+    assert push.argv == [
+        *S5, "sync",
+        "--exclude", "root/sandbox/capture/*",
+        "--exclude", "root/sandbox/renders/*",
+        "--exclude", "root/sandbox/cache/frames/*",
+        f"{DISK_PATH}/", "s3://b/sandboxes/t1/",
+    ]  # fmt: skip
+    # nothing excluded by default: the push is as before
+    assert provider.sync_argv("t1") == [
+        *S5, "sync", "--exclude", "root/sandbox/capture/*", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize("folder", ["", "/abs", "a/../b", "./a", "a//b"])
+def test_push_exclude_holds_relative_folders(folder: str) -> None:
+    with pytest.raises(ValueError, match="push_exclude"):
+        SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, push_exclude=(folder,))

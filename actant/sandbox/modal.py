@@ -311,7 +311,7 @@ class ModalSandboxProvider:
             sandbox,
             spec.env,
             root=DISK_PATH if disk_sync else MOUNT_PATH,
-            sync_argv=self.sync_argv(thread_id) if disk_sync else None,
+            sync_argv=self.sync_argv(thread_id, spec.push_exclude) if disk_sync else None,
             sync_timeout_s=spec.sync_timeout_s,
             scrub_env=spec.scrub_env,
             service_port=spec.service_port if spec.services else None,
@@ -364,7 +364,7 @@ class ModalSandboxProvider:
                 ],
             )
             push = PushConfig(
-                argv=self.sync_argv(thread_id),
+                argv=self.sync_argv(thread_id, spec.push_exclude),
                 interval_s=spec.sync_interval_s,
                 timeout_s=spec.sync_timeout_s,
             )
@@ -423,8 +423,9 @@ class ModalSandboxProvider:
         endpoint = ["--endpoint-url", self.endpoint_url] if self.endpoint_url else []
         return ["s5cmd", *endpoint, *args]
 
-    def sync_argv(self, thread_id: str) -> list[str]:
-        """Push the plan's pushed entry to its prefix, excluding the other entries inside it.
+    def sync_argv(self, thread_id: str, exclude: Sequence[str] = ()) -> list[str]:
+        """Push the plan's pushed entry to its prefix, excluding the other entries inside it
+        and the folders in ``exclude`` (relative to it, ``SandboxSpec.push_exclude``).
         Files removed locally stay in the bucket: mirroring (``--delete``) needs S3's batch
         DeleteObjects, which Supabase's S3 gateway does not serve (``InvalidRequest: must
         have required property 'Body'``) and one such push failure loses a finished run's
@@ -432,6 +433,7 @@ class ModalSandboxProvider:
         plan = self._plan(thread_id)
         pushed = plan.pushed
         skipped = [r.path for r in plan.others] + [m.path for m in plan.mounts]
+        skipped += [f"{pushed.path}/{folder}" if pushed.path else folder for folder in exclude]
         # s5cmd 2.3 matches a local file's absolute path, less its leading "/".
         excludes = [
             arg
