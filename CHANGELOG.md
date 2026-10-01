@@ -18,6 +18,9 @@ affect users.
 - `SandboxSpec.restore_timeout_s` (default 1800, unchanged) sets how long a `disk_sync`
   restore on open may take; it was fixed in the Modal provider. Give a tool that opens
   the sandbox at least this much `ActivityTimeouts.tool_s`.
+- `RunStore.create` is idempotent: a `run_id` that exists returns that run unchanged.
+  `start_run` relies on it on a retry instead of catching any error from `create` and
+  reading the run back. A custom `RunStore` must do the same.
 
 ## 0.30.0
 

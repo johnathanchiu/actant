@@ -65,7 +65,9 @@ class RunStore(Protocol):
         *,
         run_id: str,
         max_turns: int,
-    ) -> AgentRun: ...
+    ) -> AgentRun:
+        """The new run; if ``run_id`` exists already, that run, unchanged."""
+        ...
 
     async def get(self, run_id: str) -> AgentRun: ...
 
