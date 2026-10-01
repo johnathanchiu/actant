@@ -15,7 +15,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from temporalio.client import WorkflowHistory
+from temporalio.client import WorkflowFailureError, WorkflowHistory
+from temporalio.exceptions import ActivityError, ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
 
@@ -44,7 +45,9 @@ from actant.runtime.temporal.types import (
     RunOutcome,
     TemporalRuntimeConfig,
     ThreadInput,
+    UNREGISTERED_SUMMARIZER,
 )
+from actant.runtime.types.threads import RunStatus
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.tools import RecallImageTool, ToolRegistry, tool
 from actant.tools.base import CallContext
@@ -718,10 +721,96 @@ async def test_a_summary_cut_short_at_the_cap_is_written_again_whole(
     assert any("summary_retried" in r.getMessage() for r in caplog.records)
 
 
-async def test_an_unregistered_summarizer_fails_the_compaction_and_drops_nothing() -> None:
+async def test_an_unregistered_summarizer_fails_before_a_run_opens() -> None:
     s = _Setup([_call("a", input_tokens=9_500)])
-    assert await s.run("first", CompactionConfig(summarizer="nope")) is RunOutcome.FAILED
-    assert await s.compactions() == []
+    with pytest.raises(ApplicationError, match="no summarizer named 'nope'") as raised:
+        await s.run("first", CompactionConfig(summarizer="nope"))
+    assert raised.value.type == UNREGISTERED_SUMMARIZER and raised.value.non_retryable
+    assert s.llm.calls == [] and await s.stores.runs.list_for_thread(_AGENT, _THREAD) == []
+
+
+async def _in_a_workflow(
+    llm: FakeLLM,
+    compaction: CompactionConfig,
+    summarizers: dict[str, FakeLLM] | None = None,
+) -> tuple[InMemoryRuntimeStores, BaseException | None]:
+    """One message through the workflow; the stores, and what the thread failed with."""
+
+    agent = AgentDefinition(
+        id=_AGENT, name="Compacting", persona=_PERSONA, llm=llm, tools=ToolRegistry([note])
+    )
+    stores = InMemoryRuntimeStores()
+    context = ActivityContext(
+        stores=stores, resolve_agent=static_agents({_AGENT: agent}), summarizers=summarizers
+    )
+    task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
+    async with await WorkflowEnvironment.start_local() as env:
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=TemporalRuntimeActivities(context).all,
+        ):
+            config = TemporalRuntimeConfig(task_queue=task_queue, context_compaction=compaction)
+            runtime = AgentRuntime(client=env.client, stores=stores, config=config)
+            workflow_id = await runtime.send_message(_AGENT, _THREAD, "first")
+            try:
+                await asyncio.wait_for(
+                    env.client.get_workflow_handle(workflow_id).result(), timeout=30.0
+                )
+            except WorkflowFailureError as error:
+                return stores, error.cause
+    return stores, None
+
+
+async def test_the_workflow_fails_once_on_an_unregistered_summarizer_and_opens_no_run() -> None:
+    llm = FakeLLM([_call("a", input_tokens=9_500)], context_window_tokens=10_000)
+    stores, failed = await _in_a_workflow(llm, CompactionConfig(summarizer="nope"))
+    assert isinstance(failed, ActivityError)
+    cause = failed.cause
+    assert isinstance(cause, ApplicationError) and cause.type == UNREGISTERED_SUMMARIZER
+    assert "no summarizer named 'nope'" in str(cause)
+    assert llm.calls == [] and await stores.runs.list_for_thread(_AGENT, _THREAD) == []
+
+
+class _FlakySummaryLLM(FakeLLM):
+    """Its first summary call (a call without tools) fails, as a provider outage does."""
+
+    def __init__(self, replies: list[FakeResponse]) -> None:
+        super().__init__(replies, context_window_tokens=10_000)
+        self.failed = False
+
+    async def complete(
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: list[dict],
+        listener: StreamListener | None = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
+    ) -> Message:
+        if not tools and not self.failed:
+            self.failed = True
+            raise RuntimeError("provider unavailable")
+        return await super().complete(
+            system,
+            messages,
+            tools,
+            listener,
+            allowed_tools=allowed_tools,
+            max_output_tokens=max_output_tokens,
+        )
+
+
+async def test_a_failed_summary_call_backs_off_and_compacts_within_the_same_run() -> None:
+    llm = _FlakySummaryLLM([_call("a", input_tokens=9_500), _says("SUMMARY"), _says("done")])
+    stores, failed = await _in_a_workflow(llm, _WINDOW)
+    assert failed is None and llm.failed
+    [run] = await stores.runs.list_for_thread(_AGENT, _THREAD)
+    assert run.status is RunStatus.IDLE and run.turn_count == 2
+    stored = await stores.messages.list_for_thread(_AGENT, _THREAD)
+    assert [m.kind for m in stored].count("compaction") == 1
 
 
 async def test_a_summarizer_that_fails_falls_back_to_the_agents_model() -> None:
