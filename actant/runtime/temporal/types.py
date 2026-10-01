@@ -49,6 +49,15 @@ class CompactionConfig:
 
         CompactionConfig(threshold=0.9, keep=["brief", "tool:read_checklist"])
 
+    With ``background``, the summary is written ahead of need: once a request
+    passes that fraction of the window (or of the image limit), a summary of
+    everything before the open turn starts beside the turns, which keep
+    running on the full context. It is swapped in at the next turn boundary
+    after it is ready, with every message stored since kept after it. A turn
+    waits on a summary only when it would cross ``threshold`` itself::
+
+        CompactionConfig(threshold=0.9, background=0.5, keep=["tool:checklist"])
+
     The limits are the model client's: its ``context_window_tokens`` and
     ``max_images_per_request`` (``OpenAIProvider`` takes both); a limit the
     client does not declare is not checked. Unrelated to
@@ -57,6 +66,11 @@ class CompactionConfig:
 
     threshold: float = 0.9
     keep: list[str] = field(default_factory=list)
+    background: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.background is not None and not 0 < self.background < self.threshold:
+            raise ValueError("background must be above 0 and below threshold")
 
 
 @dataclass(frozen=True)
@@ -108,6 +122,8 @@ class ActivityName(StrEnum):
     START_RUN = "start_run"
     RUN_TURN = "run_turn"
     COMPACT_CONTEXT = "compact_context"
+    SUMMARIZE_CONTEXT = "summarize_context"
+    STORE_SUMMARY = "store_summary"
     ADMIT_TOOL = "admit_tool"
     EXECUTE_TOOL = "execute_tool"
     RESOLVE_TOOL = "resolve_tool"
@@ -271,6 +287,12 @@ class RunTurnInput:
     # Set when the workflow calls this turn again after compacting for it:
     # the turn gate already admitted it, and it must not ask to compact twice.
     compacted: bool = False
+    # A background summary that is ready: stored as the compaction row before
+    # anything else this turn does (``ContextSummary``).
+    summary: ContextSummary | None = None
+    # The turn gate already admitted this turn (it is run again after waiting
+    # on a background summary); it is measured again.
+    admitted: bool = False
 
 
 @dataclass(frozen=True)
@@ -287,6 +309,9 @@ class CompactionTrigger:
     tokens: int
     images: int
     carried: list[str] = field(default_factory=list)
+    # A background trigger's boundary: the last stored message the summary
+    # replaces. Later messages are all kept when it is stored.
+    through: str | None = None
 
 
 @dataclass(frozen=True)
@@ -297,6 +322,29 @@ class CompactContextInput:
     turn_id: str
     turn_index: int
     trigger: CompactionTrigger
+    config: CompactionConfig = field(default_factory=CompactionConfig)
+
+
+@dataclass(frozen=True)
+class ContextSummary:
+    """A background summary, written but not yet stored.
+
+    ``base`` is the compaction row the summarized view started from; a summary
+    whose base is no longer the latest is stale and dropped unstored.
+    """
+
+    summary: str
+    through: str
+    base: str | None
+    trigger: CompactionTrigger
+
+
+@dataclass(frozen=True)
+class StoreSummaryInput:
+    agent_id: str
+    thread_id: str
+    run_id: str
+    summary: ContextSummary
     config: CompactionConfig = field(default_factory=CompactionConfig)
 
 
@@ -337,6 +385,9 @@ class TurnResult:
     # The request this turn would send crosses a compaction limit. Nothing
     # was sent: the workflow compacts, then runs the turn again.
     compaction: CompactionTrigger | None = None
+    # The request passed ``CompactionConfig.background``: the turn ran, and the
+    # workflow starts a summary beside the next turns if none is running.
+    summarize: CompactionTrigger | None = None
 
 
 @dataclass(frozen=True)

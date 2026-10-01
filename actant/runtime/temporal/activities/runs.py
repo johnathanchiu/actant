@@ -37,12 +37,13 @@ from actant.runtime.temporal.types import (
     CompactContextInput,
     CompactionOutcome,
     CompactionTrigger,
-    CompactionConfig,
+    ContextSummary,
     FinalizeRunInput,
     RunOutcome,
     RunTurnInput,
     StartRunInput,
     StartedRun,
+    StoreSummaryInput,
     ToolCallSpec,
     TurnResult,
 )
@@ -150,6 +151,19 @@ class RunActivities:
         )
 
         compaction = payload.context_compaction
+        if payload.summary is not None:
+            # A background summary is ready: it is stored before this turn's
+            # messages, so they land after its row.
+            await self._store_summary(
+                payload.agent_id,
+                payload.thread_id,
+                payload.run_id,
+                payload.summary,
+                compaction.keep if compaction is not None else [],
+                turn_id=payload.turn_id,
+                turn_index=payload.turn_index,
+            )
+            phases.end("summary")
         # A compacting thread measures before storing new messages, so that when
         # it compacts they land after the compaction row.
         measuring = compaction is not None and not payload.compacted
@@ -168,7 +182,7 @@ class RunActivities:
             phases.end("inbound")
 
         # A turn run again after compaction was already admitted.
-        if self.context.turn_gate is not None and not payload.compacted:
+        if self.context.turn_gate is not None and not (payload.compacted or payload.admitted):
             reason = await self.context.turn_gate(
                 TurnStart(
                     agent_id=payload.agent_id,
@@ -206,8 +220,9 @@ class RunActivities:
             view, payload.agent_id, payload.thread_id, payload.run_id, payload.turn_id
         )
         phases.end("assets")
+        ahead: CompactionTrigger | None = None
         if compaction is not None and model_view is not None and measuring:
-            trigger = _compaction_trigger(agent, compaction, model_view, view, messages)
+            trigger = _compaction_trigger(agent, compaction.threshold, model_view, view, messages)
             if trigger is not None:
                 # Nothing is sent or stored: the workflow compacts, then runs this
                 # turn again with the same new messages.
@@ -215,6 +230,10 @@ class RunActivities:
                     turn_id=payload.turn_id,
                     turn_index=payload.turn_index,
                     compaction=trigger,
+                )
+            if compaction.background is not None:
+                ahead = _compaction_trigger(
+                    agent, compaction.background, model_view, view, messages, ahead=True
                 )
             await self._append_inbound(payload, inbound, events)
             phases.end("inbound")
@@ -282,12 +301,16 @@ class RunActivities:
                 )
                 await events.on_user_message(FINISH_REMINDER)
                 return TurnResult(
-                    turn_id=payload.turn_id, turn_index=payload.turn_index, reminded=True
+                    turn_id=payload.turn_id,
+                    turn_index=payload.turn_index,
+                    reminded=True,
+                    summarize=ahead,
                 )
             return TurnResult(
                 turn_id=payload.turn_id,
                 turn_index=payload.turn_index,
                 stop_reason=STOPPED_WITHOUT_FINISHING,
+                summarize=ahead,
             )
 
         return TurnResult(
@@ -304,6 +327,7 @@ class RunActivities:
                 )
                 for record in records
             ],
+            summarize=ahead,
         )
 
     @activity.defn(name=ActivityName.COMPACT_CONTEXT)
@@ -316,12 +340,56 @@ class RunActivities:
         it is rejected anyway the activity fails, non-retryable, and the thread
         keeps its full context.
         """
+        summary = await self._summarize(payload)
+        outcome = await self._store_summary(
+            payload.agent_id,
+            payload.thread_id,
+            payload.run_id,
+            summary,
+            payload.config.keep,
+            turn_id=payload.turn_id,
+            turn_index=payload.turn_index,
+        )
+        if outcome is None:
+            raise ApplicationError("the context was compacted meanwhile", non_retryable=True)
+        return outcome
+
+    @activity.defn(name=ActivityName.SUMMARIZE_CONTEXT)
+    async def summarize_context(self, payload: CompactContextInput) -> ContextSummary:
+        """Write a summary of everything through the trigger's boundary, beside the
+        turns, and store nothing: the workflow stores it at a turn boundary."""
+        return await self._summarize(payload)
+
+    @activity.defn(name=ActivityName.STORE_SUMMARY)
+    async def store_summary(self, payload: StoreSummaryInput) -> None:
+        """Store a ready background summary while no run is open."""
+        await self._store_summary(
+            payload.agent_id,
+            payload.thread_id,
+            payload.run_id,
+            payload.summary,
+            payload.config.keep,
+        )
+
+    async def _summarize(self, payload: CompactContextInput) -> ContextSummary:
+        """One call on the agent's own model, with no tools, summarizing the view
+        through the trigger's boundary (``through``, else before ``carried``)."""
         trigger = payload.trigger
         agent = await self.context.agent(payload.agent_id, payload.thread_id)
         view = build_view(
             await self.context.stores.messages.list_for_model(payload.agent_id, payload.thread_id)
         )
-        cut = view.ids.index(trigger.carried[0]) if trigger.carried else len(view.messages)
+        if trigger.through is not None:
+            if trigger.through not in view.ids:
+                raise ApplicationError(
+                    "the summary's boundary left the context", non_retryable=True
+                )
+            cut = view.ids.index(trigger.through) + 1
+        else:
+            cut = view.ids.index(trigger.carried[0]) if trigger.carried else len(view.messages)
+        through = view.ids[cut - 1]
+        if through is None:
+            raise ApplicationError("nothing to summarize", non_retryable=True)
         request = await self._prepare(
             compaction_request(view.messages[:cut], self.context.compaction_instructions),
             payload.agent_id,
@@ -349,19 +417,48 @@ class RunActivities:
         summary = response.content.strip() if isinstance(response.content, str) else ""
         if not summary:
             raise ApplicationError("the summary call returned no summary", non_retryable=True)
+        return ContextSummary(
+            summary=summary, through=through, base=view.compaction_id, trigger=trigger
+        )
 
+    async def _store_summary(
+        self,
+        agent_id: str,
+        thread_id: str,
+        run_id: str,
+        summary: ContextSummary,
+        keep: list[str],
+        *,
+        turn_id: str | None = None,
+        turn_index: int | None = None,
+    ) -> CompactionOutcome | None:
+        """Append the compaction row for ``summary``. It replaces the messages through
+        its boundary; every message the model sees after the boundary is kept, with
+        the latest one of each ``keep`` tag before it. ``None``, storing nothing, when
+        the context was compacted since the summary started."""
+        rows = await self.context.stores.messages.list_for_model(agent_id, thread_id)
+        latest = next((m.id for m in reversed(rows) if m.kind == "compaction"), None)
+        if latest != summary.base:
+            logger.info(
+                "actant.compaction.stale agent=%s thread=%s base=%s latest=%s",
+                agent_id,
+                thread_id,
+                summary.base,
+                latest,
+            )
+            return None
         # The one full-history read: the latest message of each kept tag may be
         # older than any compaction since.
-        history = await self.context.stores.messages.list_for_thread(
-            payload.agent_id, payload.thread_id
-        )
+        history = await self.context.stores.messages.list_for_thread(agent_id, thread_id)
         ids = [m.id for m in history]
-        before = ids.index(trigger.carried[0]) if trigger.carried else len(history)
-        chosen = {*kept_ids(history, before, payload.config.keep), *trigger.carried}
+        before = ids.index(summary.through) + 1
+        visible = {m.id for m in rows if m.kind == "message"}
+        chosen = {*kept_ids(history, before, keep), *(i for i in ids[before:] if i in visible)}
         kept = sorted(chosen, key=ids.index)
+        trigger = summary.trigger
         block = CompactionBlock(
-            summary=summary,
-            kept=kept,
+            summary=summary.summary,
+            kept=[i for i in kept if i is not None],
             reason=trigger.reason,
             tokens_before=trigger.tokens,
             images_before=trigger.images,
@@ -370,22 +467,15 @@ class RunActivities:
         )
         row = Message(role="user", content=[block], kind="compaction")
         fresh = build_view([*(m for m in history if m.id in chosen), row])
-        prepared = await self._prepare(
-            fresh.messages, payload.agent_id, payload.thread_id, payload.run_id, payload.turn_id
-        )
+        prepared = await self._prepare(fresh.messages, agent_id, thread_id, run_id, turn_id or "")
+        agent = await self.context.agent(agent_id, thread_id)
         after = measure_request(agent.persona, fresh.messages, usage_from=fresh.usage_from)
         block = block.model_copy(
             update={"tokens_after": after.tokens, "images_after": count_images(prepared)}
         )
-        record = await self.context.stores.messages.append_compaction(
-            payload.agent_id, payload.thread_id, block
-        )
-        thread = await self.context.stores.threads.get_or_create(
-            payload.agent_id, payload.thread_id
-        )
-        events = self.context.events(
-            thread, run_id=payload.run_id, turn_id=payload.turn_id, turn_index=payload.turn_index
-        )
+        record = await self.context.stores.messages.append_compaction(agent_id, thread_id, block)
+        thread = await self.context.stores.threads.get_or_create(agent_id, thread_id)
+        events = self.context.events(thread, run_id=run_id, turn_id=turn_id, turn_index=turn_index)
         await events.on_context_compacted(record.id, block)
         return CompactionOutcome(record.id, block.tokens_after, block.images_after)
 
@@ -505,12 +595,17 @@ def _limits(agent: AgentDefinition) -> tuple[int | None, int | None]:
 
 def _compaction_trigger(
     agent: AgentDefinition,
-    config: CompactionConfig,
+    fraction: float,
     model_view: ModelView,
     request: list[Message],
     prepared: list[Message],
+    *,
+    ahead: bool = False,
 ) -> CompactionTrigger | None:
-    """Whether the request about to be sent crosses a limit, and what to carry if so."""
+    """Whether the request about to be sent crosses a limit, and what to carry if so.
+
+    ``ahead`` measures against ``fraction`` of the image limit too, for a background
+    summary, and names its boundary (``through``)."""
     window, max_images = _limits(agent)
     if window is None and max_images is None:
         return None
@@ -520,12 +615,20 @@ def _compaction_trigger(
         measure,
         context_window_tokens=window,
         max_images_per_request=max_images,
-        threshold=config.threshold,
+        threshold=fraction,
+        image_threshold=fraction if ahead else 1.0,
     )
     if reason is None:
         return None
     floor = 1 if model_view.compaction is not None else 0
     start = pending_start(model_view.messages, floor=floor)
+    if ahead:
+        through = model_view.ids[start - 1] if start > floor else None
+        if through is None:
+            return None
+        return CompactionTrigger(
+            reason=reason, tokens=measure.tokens, images=measure.images, through=through
+        )
     if start <= floor:
         # Nothing stored before the pending messages but the last summary: a new
         # one could replace nothing, and dropping content is not allowed.

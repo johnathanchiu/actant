@@ -101,8 +101,9 @@ class _Setup:
         *,
         context_window_tokens: int | None = 10_000,
         max_images_per_request: int | None = None,
+        llm: FakeLLM | None = None,
     ) -> None:
-        self.llm = FakeLLM(
+        self.llm = llm or FakeLLM(
             replies,
             context_window_tokens=context_window_tokens,
             max_images_per_request=max_images_per_request,
@@ -464,4 +465,152 @@ async def test_a_history_recorded_before_compaction_existed_replays() -> None:
         "thread-recorded",
         (_HISTORIES / "tool_turns_before_compaction.json").read_text(),
     )
+    await Replayer(workflows=[AgentThreadWorkflow]).replay_workflow(history)
+
+
+# === written ahead, in the background ===
+
+_AHEAD = CompactionConfig(background=0.5)
+
+
+class _AheadLLM(FakeLLM):
+    """Turns answer from the queue; a summary call (no tools) answers ``SUMMARY``
+    after ``summary_s``, beside the turns."""
+
+    def __init__(self, replies: list[FakeResponse], *, summary_s: float = 0.0) -> None:
+        super().__init__(replies, context_window_tokens=10_000)
+        self.summary_s = summary_s
+        self.summaries: list[list[Message]] = []
+        self.turns: list[list[Message]] = []
+        self.release = asyncio.Event()
+        self.release.set()
+        # Hold summaries until this many turns have started, then let one finish.
+        self.release_at: int | None = None
+
+    async def complete(
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: list[dict],
+        listener: StreamListener | None = None,
+        *,
+        allowed_tools: tuple[str, ...] = (),
+        max_output_tokens: int | None = None,
+    ) -> Message:
+        if not tools:
+            self.summaries.append(list(messages))
+            await self.release.wait()
+            await asyncio.sleep(self.summary_s)
+            return Message(role="assistant", content="SUMMARY")
+        self.turns.append(list(messages))
+        if len(self.turns) == self.release_at:
+            self.release.set()
+            await asyncio.sleep(0.05)
+        return await super().complete(
+            system,
+            messages,
+            tools,
+            listener,
+            allowed_tools=allowed_tools,
+            max_output_tokens=max_output_tokens,
+        )
+
+
+def _ahead(replies: list[FakeResponse], *, summary_s: float = 0.0) -> _Setup:
+    return _Setup([], llm=_AheadLLM(replies, summary_s=summary_s))
+
+
+def test_background_sits_below_the_threshold() -> None:
+    for bad in (0.0, 0.9, 0.95):
+        try:
+            CompactionConfig(background=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"background={bad} was accepted")
+
+
+async def test_a_summary_written_ahead_never_holds_a_turn_and_lands_at_a_boundary() -> None:
+    s = _ahead(
+        [
+            _call("a", input_tokens=6_000),  # past 50%: the next turn starts a summary
+            _call("b", input_tokens=6_100),
+            _call("c", input_tokens=6_200),
+            _says("done", input_tokens=500),
+        ]
+    )
+    llm = s.llm
+    assert isinstance(llm, _AheadLLM)
+    llm.release.clear()
+    llm.release_at = 3
+    assert await s.run("first", _AHEAD) is RunOutcome.COMPLETED
+
+    # One summary, of what preceded the turn open when it started.
+    [request] = llm.summaries
+    assert _texts(request) == ["first", COMPACTION_PROMPT]
+    # Turns 2 and 3 ran on the full context while it was written.
+    assert all(_texts(turn)[0] == "first" for turn in llm.turns[:3])
+    stored = await s.stored()
+    [(index, block)] = await s.compactions()
+    # Stored at the first boundary after it was ready; everything after "first" kept.
+    assert index == 7 and block.kept == [m.id for m in stored[1:7]]
+    assert llm.turns[3] == [summary_message("SUMMARY"), *stored[1:7]]
+    assert block.tokens_before > 5_000
+
+
+async def test_the_hard_limit_waits_for_the_summary_in_flight_instead_of_a_second() -> None:
+    s = _ahead(
+        [
+            _call("a", input_tokens=6_000),
+            _call("b", input_tokens=9_500),  # the next request crosses 90%
+            _says("done", input_tokens=500),
+        ],
+        summary_s=0.2,
+    )
+    llm = s.llm
+    assert isinstance(llm, _AheadLLM)
+    assert await s.run("first", _AHEAD) is RunOutcome.COMPLETED
+
+    assert len(llm.summaries) == 1 and len(await s.compactions()) == 1
+    stored = await s.stored()
+    _, block = (await s.compactions())[0]
+    assert block.kept == [m.id for m in stored[1:5]]
+    assert llm.turns[2][0] == summary_message("SUMMARY")
+
+
+async def test_a_summary_still_being_written_is_stored_once_the_run_ends() -> None:
+    s = _ahead([_call("a", input_tokens=6_000), _says("done", input_tokens=6_100)])
+    assert await s.run("first", _AHEAD) is RunOutcome.COMPLETED
+
+    stored = await s.stored()
+    [(index, block)] = await s.compactions()
+    assert index == 4 and block.kept == [m.id for m in stored[1:4]]
+
+
+async def test_the_workflow_writes_a_summary_ahead_stores_it_idle_and_replays() -> None:
+    llm = _AheadLLM([_call("a", input_tokens=6_000), _says("done", input_tokens=6_100)])
+    agent = AgentDefinition(
+        id=_AGENT, name="Compacting", persona=_PERSONA, llm=llm, tools=ToolRegistry([note])
+    )
+    stores = InMemoryRuntimeStores()
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({_AGENT: agent}))
+    )
+    task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
+    async with await WorkflowEnvironment.start_local() as env:
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[AgentThreadWorkflow],
+            activities=activities.all,
+        ):
+            config = TemporalRuntimeConfig(task_queue=task_queue, context_compaction=_AHEAD)
+            runtime = AgentRuntime(client=env.client, stores=stores, config=config)
+            workflow_id = await runtime.send_message(_AGENT, _THREAD, "first")
+            handle = env.client.get_workflow_handle(workflow_id)
+            await asyncio.wait_for(handle.result(), timeout=20.0)
+            history = await handle.fetch_history()
+
+    assert len(llm.summaries) == 1 and len(llm.turns) == 2
+    stored = await stores.messages.list_for_thread(_AGENT, _THREAD)
+    assert [m.kind for m in stored] == ["message"] * 4 + ["compaction"]
     await Replayer(workflows=[AgentThreadWorkflow]).replay_workflow(history)
