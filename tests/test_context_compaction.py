@@ -53,7 +53,7 @@ _AGENT = "compacting"
 _THREAD = "t1"
 _PERSONA = "You are careful."
 _IMAGE = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA=="}}
-_WINDOW = CompactionConfig(context_window_tokens=10_000)
+_WINDOW = CompactionConfig()
 
 
 @tool
@@ -99,7 +99,7 @@ class _Setup:
         self,
         replies: list[FakeResponse],
         *,
-        context_window_tokens: int | None = None,
+        context_window_tokens: int | None = 10_000,
         max_images_per_request: int | None = None,
     ) -> None:
         self.llm = FakeLLM(
@@ -187,8 +187,12 @@ async def test_the_token_fraction_triggers_one_summary_call_within_the_margin() 
 
 
 async def test_the_image_limit_triggers_and_the_summary_call_stays_under_it() -> None:
-    s = _Setup([_says("two seen", input_tokens=10), _says("SUMMARY"), _says("three")])
-    limits = CompactionConfig(context_window_tokens=1_000_000, max_images_per_request=2)
+    s = _Setup(
+        [_says("two seen", input_tokens=10), _says("SUMMARY"), _says("three")],
+        context_window_tokens=1_000_000,
+        max_images_per_request=2,
+    )
+    limits = CompactionConfig()
     await s.run([{"type": "text", "text": "look"}, _IMAGE, _IMAGE], limits)
     assert await s.compactions() == []
 
@@ -206,18 +210,22 @@ async def test_the_image_limit_triggers_and_the_summary_call_stays_under_it() ->
     assert fresh == [summary_message("SUMMARY"), stored[3]]
 
 
-async def test_the_provider_supplies_limits_the_config_leaves_unset() -> None:
-    s = _Setup(
-        [_call("a", input_tokens=9_500), _says("SUMMARY"), _says("done")],
-        context_window_tokens=10_000,
-    )
+async def test_the_provider_declares_the_limits_and_none_is_not_checked() -> None:
+    s = _Setup([_call("a", input_tokens=9_500), _says("SUMMARY"), _says("done")])
     await s.run("first", CompactionConfig())
     assert len(await s.compactions()) == 1
 
+    unlimited = _Setup([_call("a", input_tokens=9_500), _says("done")], context_window_tokens=None)
+    await unlimited.run("first", CompactionConfig())
+    assert await unlimited.compactions() == []
+
 
 async def test_nothing_fires_below_both_limits_or_without_the_setting() -> None:
-    s = _Setup([_call("a", input_tokens=8_000), _says("done", input_tokens=8_500)])
-    limits = CompactionConfig(context_window_tokens=10_000, max_images_per_request=3)
+    s = _Setup(
+        [_call("a", input_tokens=8_000), _says("done", input_tokens=8_500)],
+        max_images_per_request=3,
+    )
+    limits = CompactionConfig()
     await s.run([{"type": "text", "text": "look"}, _IMAGE, _IMAGE, _IMAGE], limits)
     assert len(s.llm.calls) == 2 and all(tools for _, _, tools in s.llm.calls)
 
@@ -244,7 +252,7 @@ async def test_the_view_is_summary_then_the_latest_of_each_kept_tag_then_the_res
             _says("next done"),
         ]
     )
-    keep = CompactionConfig(context_window_tokens=10_000, keep=["brief", "tool:note"])
+    keep = CompactionConfig(keep=["brief", "tool:note"])
     await s.run("the brief", keep, tag="brief")
     await s.run("next", keep)
 
@@ -314,7 +322,7 @@ async def test_list_for_model_reads_from_the_latest_compaction_row_plus_its_kept
             _says("three"),
         ]
     )
-    keep = CompactionConfig(context_window_tokens=10_000, keep=["brief"])
+    keep = CompactionConfig(keep=["brief"])
     await s.run("the brief", keep, tag="brief")
     await s.run("second", keep)
     await s.run("third", keep)
@@ -351,7 +359,7 @@ class _GatedLLM(FakeLLM):
     """Holds the summary call until the test releases it."""
 
     def __init__(self, replies: list[FakeResponse]) -> None:
-        super().__init__(replies)
+        super().__init__(replies, context_window_tokens=10_000)
         self.summarizing = asyncio.Event()
         self.release = asyncio.Event()
 

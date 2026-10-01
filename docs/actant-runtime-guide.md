@@ -374,13 +374,10 @@ summarizing compaction, and it is off unless a thread opts in:
 ```python
 from actant.runtime import AgentRuntime, CompactionConfig, TemporalRuntimeConfig
 
+# The limits are the model client's: Azure OpenAI rejects more than 50 images.
+llm = OpenAIProvider("gpt-x", client=client, azure=True, context_window_tokens=1_000_000)
 config = TemporalRuntimeConfig(
-    context_compaction=CompactionConfig(
-        context_window_tokens=1_000_000,
-        max_images_per_request=50,  # Azure OpenAI rejects a request with more
-        threshold=0.9,
-        keep=["brief", "tool:read_checklist"],
-    )
+    context_compaction=CompactionConfig(threshold=0.9, keep=["brief", "tool:read_checklist"])
 )
 runtime = AgentRuntime(client=client, stores=stores, config=config, resolve_agent=resolve_agent)
 await runtime.thread(agent_id, thread_id).send(brief, tag="brief")
@@ -389,8 +386,8 @@ await runtime.thread(agent_id, thread_id).send(brief, tag="brief")
 Before each model call, the turn activity measures the request it is about to
 send: the last turn's reported input and output tokens plus an estimate of what
 was added since, and an exact count of its images. When it would pass
-`threshold` of `context_window_tokens`, or carry more than
-`max_images_per_request` images, nothing is sent or stored. The workflow runs
+`threshold` of the model client's `context_window_tokens`, or carry more than
+its `max_images_per_request` images, nothing is sent or stored. The workflow runs
 `compact_context`: one call on the agent's own model, with no tools, over the
 context up to the last model reply, answering the built-in prompt (the goal,
 decisions and why, what was verified, every open item, next steps, key facts,

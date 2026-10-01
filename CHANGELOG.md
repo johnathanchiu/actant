@@ -21,6 +21,11 @@ affect users.
 - `RunStore.create` is idempotent: a `run_id` that exists returns that run unchanged.
   `start_run` relies on it on a retry instead of catching any error from `create` and
   reading the run back. A custom `RunStore` must do the same.
+- Breaking: `CompactionConfig.context_window_tokens` and `max_images_per_request` are
+  removed. A model's limits have one source, its client: pass them to the provider
+  (`OpenAIProvider(context_window_tokens=..., max_images_per_request=...)`; `azure=True`
+  sets the 50-image limit). Recorded workflow inputs that still carry them replay
+  unchanged; the fields are ignored.
 
 ## 0.30.0
 
