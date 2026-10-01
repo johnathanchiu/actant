@@ -110,8 +110,19 @@ class SandboxRegistry:
             self._live[(agent_id, thread_id)] = _Verified(sandbox, time.monotonic())
             return sandbox
 
-    async def close(self, agent_id: str, thread_id: str, *, forget: bool = False) -> None:
+    async def close(
+        self,
+        agent_id: str,
+        thread_id: str,
+        *,
+        forget: bool = False,
+        spec: SandboxSpec | None = None,
+    ) -> None:
         """Release the live handle; with ``forget`` also clear the persisted id.
+
+        With ``spec``, a sandbox this process holds no handle for (another worker
+        opened it) is attached by its persisted id and closed as well, instead of
+        idling until its backend reclaims it.
 
         The id is cleared first and the close never raises: a sandbox the
         backend already reclaimed must not keep a cancellation retrying. An
@@ -126,13 +137,18 @@ class SandboxRegistry:
             await asyncio.wait({resolving}, timeout=CANCEL_WAIT_S)
             if resolving.done() and not resolving.cancelled():
                 resolving.exception()  # retrieved: its callers already saw it
-        if forget:
-            thread = await self._threads.get_or_create(agent_id, thread_id)
-            if thread.sandbox_id is not None:
-                await self._threads.claim_sandbox(
-                    agent_id, thread_id, expected=thread.sandbox_id, sandbox_id=None
-                )
+        persisted = None
+        if forget or spec is not None:
+            persisted = (await self._threads.get_or_create(agent_id, thread_id)).sandbox_id
+        if forget and persisted is not None:
+            await self._threads.claim_sandbox(
+                agent_id, thread_id, expected=persisted, sandbox_id=None
+            )
         verified = self._live.pop(key, None)
-        if verified is not None:
+        sandbox = verified.sandbox if verified is not None else None
+        if sandbox is None and spec is not None and persisted is not None:
             with contextlib.suppress(Exception):
-                await verified.sandbox.close()
+                sandbox = await self.provider(spec.backend).attach(spec, persisted)
+        if sandbox is not None:
+            with contextlib.suppress(Exception):
+                await sandbox.close()

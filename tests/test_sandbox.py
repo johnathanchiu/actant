@@ -282,3 +282,31 @@ async def test_close_cancels_an_in_flight_open_instead_of_waiting_for_it() -> No
     # The caller that was waiting is told why, not handed a cancellation of its own.
     with pytest.raises(RuntimeError, match="closed while opening"):
         await opening
+
+
+@pytest.mark.asyncio
+async def test_registry_closes_a_sandbox_another_worker_opened(tmp_path: Path) -> None:
+    stores = InMemoryRuntimeStores()
+    provider = _Recording(tmp_path)
+    spec = SandboxSpec(backend="fake")
+    opened = await SandboxRegistry({"fake": provider}, stores.threads).for_thread(spec, "a", "t")
+    elsewhere = SandboxRegistry({"fake": provider}, stores.threads)
+    # Without a spec, a handle this process never held is left alone.
+    await elsewhere.close("a", "t")
+    assert opened.id not in _Closable.closed and provider.attached == []
+    await elsewhere.close("a", "t", forget=True, spec=spec)
+    assert opened.id in _Closable.closed and provider.attached == [opened.id]
+    assert (await stores.threads.get("a", "t")).sandbox_id is None
+
+
+@pytest.mark.asyncio
+async def test_registry_close_by_spec_survives_a_reclaimed_sandbox(tmp_path: Path) -> None:
+    stores = InMemoryRuntimeStores()
+    provider = _Recording(tmp_path)
+    spec = SandboxSpec(backend="fake")
+    opened = await SandboxRegistry({"fake": provider}, stores.threads).for_thread(spec, "a", "t")
+    provider.gone.add(opened.id)
+    await SandboxRegistry({"fake": provider}, stores.threads).close(
+        "a", "t", forget=True, spec=spec
+    )
+    assert (await stores.threads.get("a", "t")).sandbox_id is None
