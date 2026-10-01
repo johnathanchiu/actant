@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `S3AssetResolver` and `presign_get` accept an S3 endpoint with a path prefix, such as
+  Supabase Storage's `https://<project>.storage.supabase.co/storage/v1/s3`; the prefix
+  leads the presigned URL's path and its signature. Endpoints with credentials, a query or
+  a fragment are still rejected.
+
 ## 0.33.0
 
 - `CompactionConfig(summarizer=..., summary_tokens=...)`: a compaction summary written on a

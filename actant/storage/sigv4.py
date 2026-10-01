@@ -44,15 +44,21 @@ class SigningKeys:
 
 
 def check_endpoint(endpoint_url: str) -> None:
+    """An http(s) origin, optionally with a path prefix: S3-compatible gateways such as
+    Supabase Storage (``https://<project>.storage.supabase.co/storage/v1/s3``) serve S3
+    under one. No credentials, query or fragment."""
     endpoint = urlsplit(endpoint_url)
     if (
         endpoint.scheme not in DEFAULT_PORTS
         or not endpoint.hostname
-        or endpoint.path.strip("/")
+        or "@" in endpoint.netloc
         or endpoint.query
         or endpoint.fragment
     ):
-        raise ValueError("endpoint_url must be a bare http(s) origin")
+        raise ValueError(
+            "endpoint_url must be an http(s) origin with an optional path, "
+            "without credentials, query or fragment"
+        )
 
 
 def presign_get(
@@ -66,7 +72,10 @@ def presign_get(
     expires_s: int,
     addressing_style: AddressingStyle = "path",
 ) -> str:
-    """A presigned GET URL for ``bucket/key``, signed at ``signed_at`` (Unix seconds)."""
+    """A presigned GET URL for ``bucket/key``, signed at ``signed_at`` (Unix seconds).
+
+    An endpoint path prefix comes first in the URL and the signed path, as botocore sends
+    it: ``<prefix>/<bucket>/<key>`` path-style, ``<prefix>/<key>`` virtual-hosted."""
     check_endpoint(endpoint_url)
     if not 0 < expires_s <= MAX_EXPIRES_S:
         raise ValueError(f"expires_s must be between 1 and {MAX_EXPIRES_S} seconds")
@@ -75,11 +84,14 @@ def presign_get(
     host = endpoint.hostname or ""
     if endpoint.port is not None and endpoint.port != DEFAULT_PORTS[endpoint.scheme]:
         host = f"{host}:{endpoint.port}"
+    # The prefix is sent as the endpoint spells it, already URI-encoded.
+    prefix = endpoint.path.rstrip("/")
     netloc, path = endpoint.netloc, "/" + quote(key, safe=PATH_SAFE)
     if addressing_style == "virtual":
         netloc, host = f"{bucket}.{netloc}", f"{bucket}.{host}"
     else:
         path = f"/{bucket}{path}"
+    path = prefix + path
 
     config = AwsSigningConfig(
         algorithm=AwsSigningAlgorithm.V4,
