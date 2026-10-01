@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.28.0
 
 - A turn's `turn_s` now ends a stream whose events never pause. On Python 3.11 the
   stream's idle bounds (`asyncio.wait_for`) could swallow the budget's cancel when it
