@@ -639,6 +639,37 @@ async def test_a_failed_background_summary_is_logged_and_changes_nothing(
     assert "summarizer down" in record.getMessage()
 
 
+# === on an app's own prompt ===
+
+
+async def test_an_apps_prompt_replaces_the_generic_one() -> None:
+    s = _Setup([_call("a", input_tokens=9_500), _says("SUMMARY"), _says("done")])
+    await s.run("first", CompactionConfig(prompt="Keep the plan."))
+
+    _, request, _ = s.llm.calls[1]
+    assert _texts(request) == ["first", "Keep the plan."]
+
+
+async def test_an_apps_prompt_is_kept_when_the_capped_summary_is_written_again() -> None:
+    fast = FakeLLM([FakeResponse(text="half a summ", output_tokens=1_000)])
+    s = _Setup(
+        [_call("a", input_tokens=9_500), _says("WHOLE SUMMARY"), _says("done")],
+        summarizers={"fast": fast},
+    )
+    config = CompactionConfig(summarizer="fast", summary_tokens=1_000, prompt="Keep the plan.")
+    await s.run("first", config)
+
+    [(_, capped, _)] = fast.calls
+    assert str(capped[-1].content).startswith("Keep the plan.\n\nFit the summary")
+    _, whole, _ = s.llm.calls[1]
+    assert _texts(whole) == ["first", "Keep the plan."]
+
+
+def test_an_empty_prompt_is_refused() -> None:
+    with pytest.raises(ValueError, match="prompt"):
+        CompactionConfig(prompt="  ")
+
+
 # === on a summarizer of its own ===
 
 

@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `CompactionConfig(prompt=...)`: an app's own summary instruction in place of actant's
+  generic `COMPACTION_PROMPT`, for an app that knows what its agents must carry across a
+  compaction (and what they can fetch again). `None`, the default, keeps the generic one;
+  `compaction_instructions` and the `summary_tokens` length line still follow it. Recorded
+  in the thread's input with the rest of the config; an empty prompt is refused.
+
 ## 0.33.1
 
 - `S3AssetResolver` and `presign_get` accept an S3 endpoint with a path prefix, such as
