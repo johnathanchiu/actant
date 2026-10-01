@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from actant.sandbox import SandboxSpec, Storage
+from actant.sandbox.base import Location, Mount, Restore
 from actant.sandbox.store import InMemorySandboxStore, spec_from_json, spec_to_json
 
 
@@ -19,6 +20,11 @@ def test_a_spec_round_trips_through_json_without_its_image() -> None:
         services={"room": "pkg.mod:Room"},
         push_exclude=("renders",),
         gpu="L4",
+        restore=(
+            Restore(Location("b", "work/s1/"), "room", push=True),
+            Restore(Location("b", "captures/c1/"), "room/capture", push=False),
+        ),
+        mounts=(Mount(Location("b", "frames/"), "frames"),),
     )
     data = spec_to_json(spec)
     assert "image" not in data and data["storage"] == "disk_sync"

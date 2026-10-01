@@ -117,6 +117,62 @@ class Storage(StrEnum):
 
 
 @dataclass(frozen=True)
+class Location:
+    """A key prefix in a bucket: ``prefix`` is empty (the whole bucket) or ends in ``/``."""
+
+    bucket: str
+    prefix: str
+
+    def __post_init__(self) -> None:
+        if not self.bucket or (self.prefix and not self.prefix.endswith("/")):
+            raise ValueError(f"a location is a bucket and a prefix ending in '/': {self!r}")
+
+    @property
+    def url(self) -> str:
+        return f"s3://{self.bucket}/{self.prefix}"
+
+
+def _check_path(path: str, what: str) -> None:
+    if path and any(part in ("", ".", "..") for part in path.split("/")):
+        raise ValueError(f"a {what} path is relative and normalized: {path!r}")
+
+
+def inside(path: str, parent: str) -> bool:
+    """Whether ``path`` is ``parent`` or under it (both relative to the disk's root)."""
+    return not parent or path == parent or path.startswith(f"{parent}/")
+
+
+@dataclass(frozen=True)
+class Restore:
+    """One entry of a ``disk_sync`` restore plan: ``source`` pulled into ``path`` (relative
+    to the disk's root, ``""`` for the root). Only the ``push`` entry is pushed back, and
+    its push skips the other entries' paths."""
+
+    source: Location
+    path: str
+    push: bool
+
+    def __post_init__(self) -> None:
+        _check_path(self.path, "restore")
+
+
+@dataclass(frozen=True)
+class Mount:
+    """A read-only bucket prefix mounted at ``path`` (relative to the disk's root, never
+    the root) of a ``disk_sync`` disk, with ``CloudBucketMount``: files are fetched when
+    read, so opening costs nothing however large ``source`` is. No pull, push or mtime
+    stamp touches ``path``."""
+
+    source: Location
+    path: str
+
+    def __post_init__(self) -> None:
+        if not self.path:
+            raise ValueError("a mount path is not the disk's root")
+        _check_path(self.path, "mount")
+
+
+@dataclass(frozen=True)
 class SandboxSpec:
     """What an agent's tools need from their sandbox. Lives on the agent definition.
 
@@ -171,6 +227,13 @@ class SandboxSpec:
     #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
     #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
     seed: str | None = None
+    #: ``disk_sync``: what the disk is made of, recorded with the sandbox: entries pulled at
+    #: open, exactly one of them pushed back (the workspace; a ``seed`` fills it). Empty: the
+    #: key's own prefix under the provider's ``key_prefix``, at the root.
+    restore: tuple[Restore, ...] = ()
+    #: ``disk_sync``: read-only prefixes mounted into the disk, for inputs too large to pull.
+    #: A mount's path is inside no other mount's, and no restore entry's is at or under it.
+    mounts: tuple[Mount, ...] = ()
     #: Upload returned images to configured storage and return durable references.
     #: False returns inline bytes; signing and retention belong to storage adapters.
     upload_images: bool = True
