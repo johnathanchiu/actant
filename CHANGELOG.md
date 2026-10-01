@@ -15,6 +15,9 @@ affect users.
 - `OpenAIProvider` retries every 400 that says it could not download an `image_url`
   (`code="invalid_value"`, `param="url"`), not only one whose message says "timeout".
   A bad URL now fails each of the call's attempts before its error is raised.
+- `SandboxSpec.restore_timeout_s` (default 1800, unchanged) sets how long a `disk_sync`
+  restore on open may take; it was fixed in the Modal provider. Give a tool that opens
+  the sandbox at least this much `ActivityTimeouts.tool_s`.
 
 ## 0.30.0
 
