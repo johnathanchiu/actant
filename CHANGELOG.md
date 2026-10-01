@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.2
 
 - `CompactionConfig(prompt=...)`: an app's own summary instruction in place of actant's
   generic `COMPACTION_PROMPT`, for an app that knows what its agents must carry across a
