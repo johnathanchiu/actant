@@ -370,6 +370,10 @@ class ModalSandboxProvider:
     def sync_argv(self, spec: SandboxSpec, sandbox_id: str) -> list[str]:
         """Push the plan's pushed entry to its prefix, excluding the other entries inside it
         and the spec's ``push_exclude`` folders (relative to it).
+        Links are never followed: a link only points at a file the disk already holds (a
+        pushed one, which the push sends at its own path) or one that is not the pushed
+        entry's to send (a restore entry pulled read-only, an excluded folder, a mount), and
+        following one would upload that file again under the link's path.
         Files removed locally stay in the bucket: mirroring (``--delete``) needs S3's batch
         DeleteObjects, which Supabase's S3 gateway does not serve (``InvalidRequest: must
         have required property 'Body'``) and one such push failure loses a finished run's
@@ -387,7 +391,9 @@ class ModalSandboxProvider:
             if _inside(path, pushed.path)
             for arg in ("--exclude", f"{_disk(path).lstrip('/')}/*")
         ]
-        return self._s5cmd("sync", *excludes, f"{_disk(pushed.path)}/", pushed.source.url)
+        return self._s5cmd(
+            "sync", "--no-follow-symlinks", *excludes, f"{_disk(pushed.path)}/", pushed.source.url
+        )
 
     def _seed_config(self, pushed: Restore, seed: str, mounts: Sequence[Mount]) -> SeedConfig:
         """Pull ``seed`` onto a new disk while copying it into its pushed prefix."""
