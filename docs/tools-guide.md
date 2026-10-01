@@ -242,14 +242,20 @@ runtime = AgentRuntime(
     resolve_agent=resolve_agent,
     sandboxes=SandboxRegistry(
         {"modal": ModalSandboxProvider("my-app", bucket="agents", secret_name="r2")},
-        stores.threads,
+        stores.sandboxes,
     ),
     artifact_sink=my_sink,
 )
 ```
 
-The sandbox id is stored on the thread, so another worker reattaches rather
-than opening a second one over the same files. An exec's `timeout` must stay
+A sandbox has an id its owner picks, an opaque string. A thread's own sandbox
+has the thread's id; the registry records each sandbox's backend id and spec in
+`stores.sandboxes`, so another worker reattaches rather than opening a second
+one over the same files. A product that owns a sandbox itself opens it under an
+id of its own (`await registry.open("scan_42", spec)`), closes it when it is
+done (`registry.close("scan_42")`), and anything else working in it attaches
+(`registry.attach("scan_42")`) and never closes it; a thread works in it when
+started with `ThreadInput(sandbox_id="scan_42")`. An exec's `timeout` must stay
 under the ten-minute tool activity. Mounted buckets write whole files only
 (no append, no seek), which is what `write` promises anyway.
 

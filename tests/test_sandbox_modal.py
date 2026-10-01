@@ -141,7 +141,7 @@ async def test_mount_without_service_has_no_entrypoint(
 ) -> None:
     fake = _FakeModal()
     _use(monkeypatch, fake)
-    sandbox = await provider.open(SandboxSpec(backend="modal"), agent_id="a", thread_id="t1")
+    sandbox = await provider.open(SandboxSpec(backend="modal"), sandbox_id="t1")
     assert isinstance(sandbox, ModalSandbox) and await sandbox.endpoint() is None
     args, kw = fake.created
     assert args == () and kw["readiness_probe"] is None
@@ -180,7 +180,7 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
         sync_interval_s=30,
         sync_timeout_s=120,
     )
-    sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
+    sandbox = await provider.open(spec, sandbox_id="t1")
     assert isinstance(sandbox, ModalSandbox)
     args, kw = fake.created
     push = [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
@@ -282,7 +282,7 @@ async def test_disk_sync_without_service_waits_for_the_restore_marker(
     fake = _FakeModal()
     _use(monkeypatch, fake)
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
-    sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
+    sandbox = await provider.open(spec, sandbox_id="t1")
     args, kw = fake.created
     config = EntryConfig.model_validate_json(args[3])
     assert config.restore is not None and config.host is None
@@ -291,9 +291,7 @@ async def test_disk_sync_without_service_waits_for_the_restore_marker(
     # Without network, s5cmd may reach only the bucket endpoint.
     assert kw["outbound_domain_allowlist"] == ["r2.example"]
     with pytest.raises(ValueError, match="endpoint_url"):
-        await ModalSandboxProvider(app_name="app", bucket="b").open(
-            spec, agent_id="a", thread_id="t"
-        )
+        await ModalSandboxProvider(app_name="app", bucket="b").open(spec, sandbox_id="t")
 
 
 async def test_open_fails_with_the_entrypoint_stderr_when_never_ready(
@@ -303,7 +301,7 @@ async def test_open_fails_with_the_entrypoint_stderr_when_never_ready(
     _use(monkeypatch, fake)
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, services={"t": "pkg:T"})
     with pytest.raises(RuntimeError, match="access denied"):
-        await provider.open(spec, agent_id="a", thread_id="t1")
+        await provider.open(spec, sandbox_id="t1")
     assert fake.terminated
 
 
@@ -319,7 +317,7 @@ async def test_open_cancelled_before_ready_terminates_the_sandbox(
     fake.sandbox.wait_until_ready = _Aio(never_ready)
     _use(monkeypatch, fake)
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
-    opening = asyncio.ensure_future(provider.open(spec, agent_id="a", thread_id="t1"))
+    opening = asyncio.ensure_future(provider.open(spec, sandbox_id="t1"))
     while not fake.created[1]:
         await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -346,13 +344,11 @@ async def test_inline_bucket_env(monkeypatch: pytest.MonkeyPatch) -> None:
         endpoint_url="https://abc.trycloudflare.com",
         bucket_env={"AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"},
     )
-    await provider.open(
-        SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), agent_id="a", thread_id="t"
-    )
+    await provider.open(SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), sandbox_id="t")
     creds = {"AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"}
     assert fake.created[1]["secrets"] == [("dict", creds)]
 
-    await provider.open(SandboxSpec(backend="modal"), agent_id="a", thread_id="t")
+    await provider.open(SandboxSpec(backend="modal"), sandbox_id="t")
     assert fake.created[1]["secrets"] == []
     assert fake.created[1]["volumes"][MOUNT_PATH][2]["secret"] == ("dict", creds)
 
@@ -368,7 +364,7 @@ async def test_disk_sync_uploads_references_without_public_signing_configuration
     spec = SandboxSpec(
         backend="modal", storage=Storage.DISK_SYNC, services={"t": "pkg:T"}, network=True
     )
-    await provider.open(spec, agent_id="a", thread_id="t")
+    await provider.open(spec, sandbox_id="t")
     config = EntryConfig.model_validate_json(fake.created[0][3]).host
     assert config is not None and config.images is not None
     assert config.images.destination == "s3://b/actant-images/t/"
@@ -379,12 +375,12 @@ async def test_disk_sync_uploads_references_without_public_signing_configuration
         network=True,
         upload_images=False,
     )
-    await provider.open(bytes_only, agent_id="a", thread_id="t")
+    await provider.open(bytes_only, sandbox_id="t")
     host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
     assert host_config is not None and host_config.images is None
     # Mounted storage never uploads images, so it needs no public endpoint either.
     mounted = SandboxSpec(backend="modal", services={"t": "pkg:T"})
-    await provider.open(mounted, agent_id="a", thread_id="t")
+    await provider.open(mounted, sandbox_id="t")
     host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
     assert host_config is not None and host_config.images is None
 
@@ -400,7 +396,7 @@ async def test_disk_sync_uploads_references_without_public_signing_configuration
         network=True,
         image_upload_timeout_s=2.5,
     )
-    await public.open(timed, agent_id="a", thread_id="t")
+    await public.open(timed, sandbox_id="t")
     host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
     assert host_config is not None and host_config.images is not None
     assert host_config.images.timeout_s == 2.5
@@ -429,7 +425,7 @@ async def test_sync_and_close_are_bounded_when_modal_hangs(
     fake = _FakeModal()
     _use(monkeypatch, fake)
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, sync_timeout_s=0.1)
-    sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
+    sandbox = await provider.open(spec, sandbox_id="t1")
     monkeypatch.setattr(modal_backend, "API_SLACK_S", 0.1)
 
     async def hang(*_: Any, **__: Any) -> Any:
@@ -452,7 +448,7 @@ async def test_a_seed_restores_and_copies_only_into_an_empty_thread_prefix(
     fake = _FakeModal()
     _use(monkeypatch, fake)
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
-    await provider.open(spec, agent_id="a", thread_id="t1")
+    await provider.open(spec, sandbox_id="t1")
     config = EntryConfig.model_validate_json(fake.created[0][3])
     restore = config.restore
     assert restore is not None and restore.seed is not None and restore.seed.stamp is not None
@@ -554,7 +550,7 @@ async def test_a_mount_is_read_only_and_no_pull_push_or_stamp_touches_it(
         app_name="app", bucket="b", endpoint_url="https://r2.example", secret_name="r2"
     )
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
-    await provider.open(spec, agent_id="a", thread_id="t1")
+    await provider.open(spec, sandbox_id="t1")
     args, kw = fake.created
     assert kw["volumes"] == {
         f"{DISK_PATH}/capture": (

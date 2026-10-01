@@ -66,21 +66,25 @@ class ActivityContext:
             raise ApplicationError("resolver returned a different agent id", non_retryable=True)
         return agent
 
-    async def sandbox_for(self, agent: AgentDefinition, thread_id: str) -> Sandbox:
-        """The thread's sandbox, opened on first use. Refused, not retried, when
-        the agent declares no spec or the worker registered no providers."""
+    async def sandbox_for(self, agent: AgentDefinition, thread: AgentThread) -> Sandbox:
+        """The sandbox the thread names (``AgentThread.sandbox_id``), attached; else its
+        own, keyed by its thread id and opened on first use. Refused, not retried, when
+        the worker registered no providers, or the thread names none and the agent
+        declares no spec."""
+        if self.sandboxes is None:
+            raise ApplicationError(
+                "a tool needs a sandbox but the worker registered no sandbox providers",
+                non_retryable=True,
+            )
+        if thread.sandbox_id is not None:
+            return await self.sandboxes.attach(thread.sandbox_id)
         if agent.sandbox is None:
             raise ApplicationError(
                 f"agent {agent.id!r} has a tool that needs a sandbox but declares no "
                 "AgentDefinition.sandbox",
                 non_retryable=True,
             )
-        if self.sandboxes is None:
-            raise ApplicationError(
-                "a tool needs a sandbox but the worker registered no sandbox providers",
-                non_retryable=True,
-            )
-        return await self.sandboxes.for_thread(agent.sandbox, agent.id, thread_id)
+        return await self.sandboxes.open(thread.id, agent.sandbox)
 
     def events(
         self,

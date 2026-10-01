@@ -42,8 +42,9 @@ class AgentThread:
     parent_thread_id: str | None = None
     parent_turn_id: str | None = None
     parent_tool_call_id: str | None = None
-    #: The thread's sandbox, when a sandboxed tool has opened one; a worker
-    #: reattaches by it instead of opening a second sandbox over the same files.
+    #: The id of a sandbox the thread works in but does not own (opened by a product
+    #: through ``SandboxRegistry.open``): its tools attach to it and never close it.
+    #: ``None``: the thread's own sandbox, under the thread's id, opened on first use.
     sandbox_id: str | None = None
 
 

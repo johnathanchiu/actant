@@ -76,7 +76,7 @@ from actant.sandbox.registry import SandboxRegistry
 
 sandboxes = SandboxRegistry(
     {"local": LocalSandboxProvider(Path("/srv/workspaces"))},
-    stores.threads,
+    stores.sandboxes,
 )
 ```
 

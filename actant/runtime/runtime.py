@@ -147,12 +147,15 @@ class AgentRuntime:
         *,
         parent_thread_id: str | None = None,
         tag: str | None = None,
+        sandbox_id: str | None = None,
     ) -> str:
         """Signal the thread workflow with a new inbound message.
 
         ``parent_thread_id`` marks the thread as a subagent's; pass it when
         starting a sub-thread so the runtime records the link and its tools
-        see ``CallContext.parent_thread_id``.
+        see ``CallContext.parent_thread_id``. ``sandbox_id`` names a sandbox the
+        caller opened (``SandboxRegistry.open``) for the thread to work in; it is
+        recorded on the thread's first run and the thread never closes it.
 
         Uses ``signal_with_start`` so the workflow is created on first
         contact and signalled on every subsequent call. Idempotent:
@@ -174,6 +177,7 @@ class AgentRuntime:
             external_resolution_timeout_seconds=(self.config.external_resolution_timeout_seconds),
             history_size_threshold=self.config.history_size_threshold,
             parent_thread_id=parent_thread_id,
+            sandbox_id=sandbox_id,
             interleave_inbox=self.config.interleave_inbox,
             context_compaction=self.config.context_compaction,
             activity_timeouts=self.config.activity_timeouts,

@@ -24,7 +24,12 @@ from actant.llm.providers.fake import FakeLLM, FakeResponse
 from actant.runtime.completion import RunCompletion
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.temporal.activities import TemporalRuntimeActivities
-from actant.runtime.temporal.types import InboundMessage, ThreadInput
+from actant.runtime.temporal.activities.threads import ThreadActivities
+from actant.runtime.temporal.types import (
+    ApplyThreadCancellationInput,
+    InboundMessage,
+    ThreadInput,
+)
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.sandbox import ArtifactRef, LocalSandboxProvider, Sandbox, SandboxSpec
 from actant.sandbox.registry import SandboxRegistry
@@ -78,11 +83,14 @@ class _Setup:
     completions: list[RunCompletion]
     client: object
     task_queue: str
+    sandboxes: SandboxRegistry
 
-    async def start(self, message: str, max_turns: int = 6):  # type: ignore[no-untyped-def]
+    async def start(  # type: ignore[no-untyped-def]
+        self, message: str, max_turns: int = 6, sandbox_id: str | None = None
+    ):
         return await cast("object", self.client).start_workflow(  # type: ignore[attr-defined]
             AgentThreadWorkflow.run,
-            ThreadInput(_AGENT, _THREAD, max_turns_per_run=max_turns),
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=max_turns, sandbox_id=sandbox_id),
             id=f"thread-{uuid.uuid4().hex}",
             task_queue=self.task_queue,
             start_signal="inbound",
@@ -101,6 +109,7 @@ async def _run(agent: AgentDefinition, body: Callable[[_Setup], Awaitable[None]]
     stores = InMemoryRuntimeStores()
     sink = _Sink()
     completions: list[RunCompletion] = []
+    sandboxes = SandboxRegistry({"local": LocalSandboxProvider()}, stores.sandboxes)
 
     async def on_complete(completion: RunCompletion) -> None:
         completions.append(completion)
@@ -110,7 +119,7 @@ async def _run(agent: AgentDefinition, body: Callable[[_Setup], Awaitable[None]]
             stores=stores,
             resolve_agent=static_agents({agent.id: agent}),
             run_completion_handler=on_complete,
-            sandboxes=SandboxRegistry({"local": LocalSandboxProvider()}, stores.threads),
+            sandboxes=sandboxes,
             artifact_sink=sink,
         )
     )
@@ -122,7 +131,7 @@ async def _run(agent: AgentDefinition, body: Callable[[_Setup], Awaitable[None]]
             workflows=[AgentThreadWorkflow],
             activities=activities.all,
         ):
-            await body(_Setup(stores, sink, completions, env.client, task_queue))
+            await body(_Setup(stores, sink, completions, env.client, task_queue, sandboxes))
 
 
 @pytest.mark.asyncio
@@ -138,9 +147,39 @@ async def test_a_sandboxed_tool_writes_into_the_threads_sandbox(tmp_path: Path) 
         handle = await s.start("go")
         completion = await s.finished()
         assert completion.succeeded
-        thread = await s.stores.threads.get(_AGENT, _THREAD)
-        assert thread.sandbox_id == str(tmp_path / _THREAD)
+        # A thread's own sandbox is keyed by its thread id.
+        record = await s.stores.sandboxes.get(_THREAD)
+        assert record is not None and record.provider_id == str(tmp_path / _THREAD)
         assert (tmp_path / _THREAD / "out" / "a.txt").read_text() == "hello"
+        await asyncio.wait_for(handle.result(), timeout=5.0)
+
+    await _run(agent, body)
+
+
+@pytest.mark.asyncio
+async def test_a_thread_works_in_the_sandbox_it_names_and_never_closes_it(tmp_path: Path) -> None:
+    write = _call("write_file", '{"path": "out/a.txt", "text": "hello"}')
+    agent = _agent(
+        FakeLLM([FakeResponse(tool_calls=[write]), FakeResponse(text="done")]),
+        [write_file],
+        mount=tmp_path / "own",
+    )
+
+    async def body(s: _Setup) -> None:
+        opened = await s.sandboxes.open(
+            "scan_1", SandboxSpec(backend="local", mount=str(tmp_path))
+        )
+        handle = await s.start("go", sandbox_id="scan_1")
+        assert (await s.finished()).succeeded
+        assert (tmp_path / "scan_1" / "out" / "a.txt").read_text() == "hello"
+        thread = await s.stores.threads.get(_AGENT, _THREAD)
+        assert thread.sandbox_id == "scan_1"
+        assert await s.stores.sandboxes.get(_THREAD) is None  # no sandbox of its own
+        await ThreadActivities(
+            ActivityContext(stores=s.stores, sandboxes=s.sandboxes)
+        ).apply_thread_cancellation(ApplyThreadCancellationInput(_AGENT, _THREAD))
+        record = await s.stores.sandboxes.get("scan_1")
+        assert record is not None and record.provider_id == opened.id
         await asyncio.wait_for(handle.result(), timeout=5.0)
 
     await _run(agent, body)

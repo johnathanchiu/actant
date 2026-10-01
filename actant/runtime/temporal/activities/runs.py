@@ -128,6 +128,8 @@ class RunActivities:
         thread.status = ThreadStatus.ACTIVE
         if payload.parent_thread_id and thread.parent_thread_id is None:
             thread.parent_thread_id = payload.parent_thread_id
+        if payload.sandbox_id and thread.sandbox_id is None:
+            thread.sandbox_id = payload.sandbox_id
         await self.context.stores.threads.update(thread)
         run = await self.context.stores.runs.get(payload.run_id)
         return StartedRun(thread.turn_count, run.max_turns, resolution_error)

@@ -199,10 +199,10 @@ class ToolActivities:
     ) -> CallContext:
         """What the tool is being built for. The sandbox is opened only for tools
         that declared they need it, so a plain tool never waits on one."""
+        thread = await self.context.stores.threads.get(record.agent_id, record.thread_id)
         sandbox = None
         if getattr(tool, "needs_sandbox", False):
-            sandbox = await self.context.sandbox_for(agent, record.thread_id)
-        thread = await self.context.stores.threads.get(record.agent_id, record.thread_id)
+            sandbox = await self.context.sandbox_for(agent, thread)
         return CallContext(
             agent_id=record.agent_id,
             thread_id=record.thread_id,
@@ -242,7 +242,8 @@ class ToolActivities:
             return failed
         sandbox = ctx.sandbox
         if sandbox is None:
-            sandbox = await self.context.sandbox_for(agent, record.thread_id)
+            thread = await self.context.stores.threads.get(record.agent_id, record.thread_id)
+            sandbox = await self.context.sandbox_for(agent, thread)
         refs: list[dict[str, object]] = []
         for path in paths:
             try:

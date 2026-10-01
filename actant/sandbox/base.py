@@ -1,13 +1,14 @@
 """Sandboxes: where an agent's tools read, write and run code.
 
-One sandbox per thread. A tool that needs one declares it (``needs_sandbox``,
-or a ``Sandbox`` parameter on a function tool) and the runtime hands it the
-thread's sandbox through its :class:`~actant.tools.base.CallContext`. Tools
-that do not need one never see one.
+A sandbox is owned by a key (:mod:`actant.sandbox.registry`): a thread's own
+id, or a key a product opened and the thread names. A tool that needs one
+declares it (``needs_sandbox``, or a ``Sandbox`` parameter on a function tool)
+and the runtime hands it the thread's sandbox through its ``CallContext``.
+Tools that do not need one never see one.
 
-The filesystem a sandbox exposes is the thread's working directory. Every
-backend keys it by thread under the spec's ``mount``: a directory for the
-local backend, a bucket prefix mounted into the container for cloud backends.
+The filesystem a sandbox exposes is its working directory. Every backend keys
+it by the sandbox's key under the spec's ``mount``: a directory for the local
+backend, a bucket prefix mounted into the container for cloud backends.
 The worker holds no files; it reads results back through the same handle.
 
 This module is a leaf: it imports nothing from the runtime, so agent
@@ -217,10 +218,13 @@ class ImageBucket:
 class SandboxProvider(Protocol):
     """Opens sandboxes for a backend and reattaches to ones that already exist."""
 
-    async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox: ...
+    async def open(self, spec: SandboxSpec, *, sandbox_id: str) -> Sandbox:
+        """A new sandbox for ``sandbox_id`` (see :mod:`actant.sandbox.registry`): its files
+        under the spec's ``mount`` by that id, unless the spec says where they are."""
+        ...
 
-    async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
-        """The live sandbox with this id. Raises ``KeyError`` when it is gone."""
+    async def attach(self, spec: SandboxSpec, provider_id: str) -> Sandbox:
+        """The live sandbox with this backend id. Raises ``KeyError`` when it is gone."""
         ...
 
 
