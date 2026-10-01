@@ -65,10 +65,7 @@ from actant.runtime.temporal.types import (
     TurnResult,
 )
 
-_RUN_TURN_TIMEOUT = timedelta(minutes=10)
-_COMPACT_TIMEOUT = timedelta(minutes=10)
-_TOOL_TIMEOUT = timedelta(minutes=10)
-_TOOL_HEARTBEAT_TIMEOUT = timedelta(minutes=2)
+_ADMIT_TIMEOUT = timedelta(minutes=10)
 _FINALIZE_TIMEOUT = timedelta(seconds=60)
 _PROJECTION_TIMEOUT = timedelta(seconds=30)
 
@@ -248,7 +245,7 @@ class AgentThreadWorkflow:
                 turn = await workflow.execute_activity_method(
                     RunActivities.run_turn,
                     turn_input,
-                    start_to_close_timeout=_RUN_TURN_TIMEOUT,
+                    start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.turn_s),
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
                 if turn.compaction is not None:
@@ -267,7 +264,9 @@ class AgentThreadWorkflow:
                             trigger=turn.compaction,
                             config=payload.context_compaction or CompactionConfig(),
                         ),
-                        start_to_close_timeout=_COMPACT_TIMEOUT,
+                        start_to_close_timeout=timedelta(
+                            seconds=payload.activity_timeouts.compact_s
+                        ),
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
                     # The same turn, from the fresh context; it may not compact
@@ -278,7 +277,7 @@ class AgentThreadWorkflow:
                     turn = await workflow.execute_activity_method(
                         RunActivities.run_turn,
                         replace(turn_input, new_messages=new_messages, compacted=True),
-                        start_to_close_timeout=_RUN_TURN_TIMEOUT,
+                        start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.turn_s),
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
             except Exception as error:
@@ -344,7 +343,7 @@ class AgentThreadWorkflow:
                     run_id=run_id,
                     tool_call_id=spec.id,
                 ),
-                start_to_close_timeout=_TOOL_TIMEOUT,
+                start_to_close_timeout=_ADMIT_TIMEOUT,
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
             for spec in turn.tool_calls
@@ -376,11 +375,13 @@ class AgentThreadWorkflow:
                             run_id=run_id,
                             tool_call_id=spec.id,
                         ),
-                        start_to_close_timeout=_TOOL_TIMEOUT,
+                        start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.tool_s),
                         # The activity heartbeats while a tool runs, so a
                         # worker that dies mid-tool is noticed in minutes
-                        # rather than at the ten-minute ceiling.
-                        heartbeat_timeout=_TOOL_HEARTBEAT_TIMEOUT,
+                        # rather than at the tool's ceiling.
+                        heartbeat_timeout=timedelta(
+                            seconds=payload.activity_timeouts.tool_heartbeat_s
+                        ),
                         retry_policy=RetryPolicy(maximum_attempts=1),
                     )
                 )
@@ -459,7 +460,7 @@ class AgentThreadWorkflow:
                 tool_call_id=tool_call_id,
                 resolution=resolution,
             ),
-            start_to_close_timeout=_TOOL_TIMEOUT,
+            start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.tool_s),
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
         self._resolving_tool_ids.discard(tool_call_id)
@@ -512,6 +513,7 @@ class AgentThreadWorkflow:
                 turn_count_total=self._turn_count_total,
                 interleave_inbox=payload.interleave_inbox,
                 context_compaction=payload.context_compaction,
+                activity_timeouts=payload.activity_timeouts,
             )
         )
 

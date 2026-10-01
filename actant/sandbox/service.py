@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     import httpx
 
 import actant.sandbox.host as host
+from actant.heartbeat import heartbeating
 from actant.sandbox.base import Endpoint, Sandbox
 from actant.sandbox.protocol import CallRequest, CallResponse, Route
 
@@ -212,6 +213,14 @@ def _body(
 
 
 async def _send(
+    endpoint: Endpoint, body: bytes, timeout: float, client: httpx.AsyncClient | None = None
+) -> tuple[int | None, CallResponse]:
+    """One call to a service host; a long one beats the caller's activity while it runs."""
+    async with heartbeating():
+        return await _post(endpoint, body, timeout, client)
+
+
+async def _post(
     endpoint: Endpoint, body: bytes, timeout: float, client: httpx.AsyncClient | None = None
 ) -> tuple[int | None, CallResponse]:
     import httpx
