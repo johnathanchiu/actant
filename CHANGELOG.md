@@ -4,6 +4,18 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `CompactionConfig(background=...)`: compaction written ahead of need. Past that fraction
+  of the window (or of the image limit) a turn still runs, and a summary of everything
+  before the open turn is written beside the next turns (new activities
+  `summarize_context` and `store_summary`). It is stored at the next turn boundary after
+  it is ready, with every message since kept after it, or when the thread goes idle. A
+  turn waits on a summary only at `threshold`, and then on the one already in flight.
+  Off by default; `keep` and the threshold behave as before. `RunTurnInput` gains
+  `summary` and `admitted`, `TurnResult` gains `summarize`, `CompactionTrigger` gains
+  `through`.
+
 ## 0.32.0
 
 - `SandboxRunner(client=...)` takes a shared `httpx.AsyncClient`. Runners made per call

@@ -415,6 +415,29 @@ sent as a user message labelled as retained, its content verbatim: a tool
 result without its call is rejected by providers, and replaying the old call
 out of place (with its siblings and reasoning items) is not safe either.
 
+### Writing the summary ahead
+
+A compaction at the threshold holds the turn that triggered it for as long as
+the summary call takes (minutes on a long context). `background` writes it
+ahead instead:
+
+```python
+CompactionConfig(threshold=0.9, background=0.5, keep=["tool:checklist"])
+```
+
+When a request passes `background` of the window, or of the image limit, the
+turn still runs, and the workflow starts `summarize_context` beside the next
+turns: the same summary call over everything before the open turn, storing
+nothing. Turns keep running on the full context. At the first turn boundary
+after it is ready, the next `run_turn` stores it as the compaction row before
+anything else; every message the model sees after the summary's boundary is
+kept, so nothing that arrived meanwhile is lost. If the thread goes idle first,
+the workflow stores it before closing. One summary is written at a time. A
+summary whose view was compacted meanwhile is dropped unstored, and a failed
+one changes nothing. A turn that reaches `threshold` while a summary is being
+written waits for that one rather than starting a second, then is measured
+again; without one in flight it compacts as above.
+
 `messages.list_for_model` reads exactly those rows: the latest compaction row,
 then the rows at or after it plus the kept ones; `list_for_thread` remains the full transcript,
 compaction rows included. Images before the row are not sent again;

@@ -22,6 +22,8 @@ class TemporalRuntimeActivities:
             self.runs.start_run,
             self.runs.run_turn,
             self.runs.compact_context,
+            self.runs.summarize_context,
+            self.runs.store_summary,
             self.tools.admit_tool,
             self.tools.execute_tool,
             self.tools.resolve_tool,

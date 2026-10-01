@@ -79,6 +79,7 @@ class ModelView:
     ids: list[str | None]
     usage_from: int = 0
     compaction: CompactionBlock | None = None
+    compaction_id: str | None = None
 
 
 def compaction_of(message: Message) -> CompactionBlock | None:
@@ -123,7 +124,9 @@ def build_view(rows: Sequence[Message]) -> ModelView:
         return ModelView(list(rows), [m.id for m in rows])
     block = compaction_of(rows[at])
     assert block is not None
-    view = ModelView([summary_message(block.summary)], [None], compaction=block)
+    view = ModelView(
+        [summary_message(block.summary)], [None], compaction=block, compaction_id=rows[at].id
+    )
     calls = set[str]()
     for position, message in enumerate(rows):
         if message.kind == "compaction":
@@ -208,12 +211,16 @@ def crossed_limits(
     context_window_tokens: int | None,
     max_images_per_request: int | None,
     threshold: float,
+    image_threshold: float = 1.0,
 ) -> str | None:
     """``"tokens"``, ``"images"``, both joined by a comma, or ``None`` below both."""
     reasons = []
     if context_window_tokens is not None and measure.tokens > threshold * context_window_tokens:
         reasons.append("tokens")
-    if max_images_per_request is not None and measure.images > max_images_per_request:
+    if (
+        max_images_per_request is not None
+        and measure.images > image_threshold * max_images_per_request
+    ):
         reasons.append("images")
     return ",".join(reasons) or None
 
