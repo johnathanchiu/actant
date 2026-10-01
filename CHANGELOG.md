@@ -12,6 +12,11 @@ affect users.
 - Deprecated: `SandboxSpec.restore_attempt_timeout_s` / `restore_attempts` and
   `RestoreConfig.attempt_timeout_s` / `attempts` are accepted but ignored; they will
   be removed.
+- A mid-stream error that names no code (for example Azure's bare `response.failed`) is
+  retried as transient instead of failing the turn.
+- Anthropic 429s are left to the SDK's own retries rather than retried again by actant.
+- When a retry's wait would outlast the turn budget, the original failure is raised,
+  not a `TimeoutError`.
 
 ## 0.26.1
 
