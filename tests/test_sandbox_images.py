@@ -154,6 +154,26 @@ async def test_after_failure_unstarted_images_stay_inline(
     assert len(s3.puts) == 1
 
 
+async def test_an_upload_bug_does_not_stop_the_other_images(
+    s3: FakeS3, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the bucket refusing stops the unstarted images; one image's own error does not."""
+    monkeypatch.setattr(host, "UPLOAD_CONCURRENCY", 1)
+    uploader = ImageUploader(CONFIG, s3)
+    upload = uploader.upload
+
+    async def broken_first(image: Image) -> tuple[Image, str | None]:
+        if image.name == "i0.png":
+            raise ValueError("bad image")
+        return await upload(image)
+
+    monkeypatch.setattr(uploader, "upload", broken_first)
+    images = [_inline(f"i{n}.png", PNG + bytes([n])) for n in range(3)]
+    kept, error = await host.upload_images(CallResponse(images=images), uploader)
+    assert error == "i0.png: ValueError: bad image"
+    assert kept.images[0] == images[0] and len(s3.puts) == 2
+
+
 async def test_hung_upload_is_bounded_and_preserves_bytes(
     s3: FakeS3, monkeypatch: pytest.MonkeyPatch
 ) -> None:
