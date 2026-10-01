@@ -163,6 +163,9 @@ class SandboxSpec:
     #: ``disk_sync``: how long the restore on open (and the readiness wait around it) may
     #: take. A tool that opens the sandbox needs at least this in ``ActivityTimeouts.tool_s``.
     restore_timeout_s: float = 1800.0
+    #: ``disk_sync``: folders, relative to the pushed folder, that no push sends (``"renders"``,
+    #: ``"cache/frames"``): files a run can make again, or ones restored from elsewhere.
+    push_exclude: tuple[str, ...] = ()
     #: ``disk_sync``: a bucket key prefix (``"templates/base/"``) that starts a new thread.
     #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
     #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
@@ -181,6 +184,10 @@ class SandboxSpec:
             raise ValueError("sync_interval_s and sync_timeout_s must be positive")
         if not (math.isfinite(self.restore_timeout_s) and self.restore_timeout_s > 0):
             raise ValueError("restore_timeout_s must be a positive, finite number")
+        for folder in self.push_exclude:
+            parts = folder.split("/")
+            if not folder or folder.startswith("/") or any(p in ("", ".", "..") for p in parts):
+                raise ValueError(f"push_exclude holds relative folders, not {folder!r}")
         if self.seed is not None and (
             self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
         ):
