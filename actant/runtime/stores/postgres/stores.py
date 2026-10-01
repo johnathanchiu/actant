@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import literal, or_, select, tuple_, update
+from sqlalchemy import delete, literal, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,10 +30,13 @@ from actant.runtime.stores.postgres.models import (
     ActantMessageModel,
     ActantMessagePartModel,
     ActantRunModel,
+    ActantSandboxModel,
     ActantThreadModel,
     ActantToolCallModel,
 )
 from actant.runtime.types.session import PartKind
+from actant.sandbox.base import SandboxSpec
+from actant.sandbox.store import SandboxRecord, spec_from_json, spec_to_json
 from actant.runtime.types.threads import (
     AgentRun,
     AgentThread,
@@ -560,8 +563,60 @@ class SQLAlchemyToolCallStore:
             return [tool_call_from_row(row) for row in rows]
 
 
+class SQLAlchemySandboxStore:
+    """``actant.sandbox.store.SandboxStore`` over ``actant_sandboxes``."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self.session_factory = session_factory
+
+    async def get(self, key: str) -> SandboxRecord | None:
+        async with self.session_factory() as session:
+            return _sandbox_record(await session.get(ActantSandboxModel, key))
+
+    async def claim(
+        self, key: str, *, expected: str | None, sandbox_id: str, spec: SandboxSpec
+    ) -> SandboxRecord | None:
+        values = {"sandbox_id": sandbox_id, "spec": spec_to_json(spec)}
+        async with self.session_factory() as session:
+            async with session.begin():
+                if expected is None:
+                    await session.execute(
+                        insert(ActantSandboxModel)
+                        .values(key=key, **values)
+                        .on_conflict_do_nothing(index_elements=[ActantSandboxModel.key])
+                    )
+                else:
+                    # The row lock makes a racing claim re-check ``expected`` after this commits.
+                    await session.execute(
+                        update(ActantSandboxModel)
+                        .where(
+                            ActantSandboxModel.key == key,
+                            ActantSandboxModel.sandbox_id == expected,
+                        )
+                        .values(**values, updated_at=datetime.now(UTC))
+                    )
+                row = await session.execute(
+                    select(ActantSandboxModel).where(ActantSandboxModel.key == key)
+                )
+                return _sandbox_record(row.scalar_one_or_none())
+
+    async def forget(self, key: str) -> None:
+        async with self.session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(ActantSandboxModel).where(ActantSandboxModel.key == key)
+                )
+
+
+def _sandbox_record(row: ActantSandboxModel | None) -> SandboxRecord | None:
+    if row is None:
+        return None
+    return SandboxRecord(row.key, row.sandbox_id, spec_from_json(row.spec))
+
+
 class SQLAlchemyRuntimeStores:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self.sandboxes = SQLAlchemySandboxStore(session_factory)
         self.threads = SQLAlchemyThreadStore(session_factory)
         self.runs = SQLAlchemyRunStore(session_factory)
         self.messages = SQLAlchemyMessageStore(session_factory)

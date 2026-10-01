@@ -67,6 +67,22 @@ class ActantThreadModel(ActantRuntimeBase):
     )
 
 
+class ActantSandboxModel(ActantRuntimeBase):
+    """A keyed sandbox (:mod:`actant.sandbox.store`): its live id and the spec it reopens with."""
+
+    __tablename__ = "actant_sandboxes"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    sandbox_id: Mapped[str] = mapped_column(Text, nullable=False)
+    spec: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class ActantRunModel(ActantRuntimeBase):
     __tablename__ = "actant_runs"
 

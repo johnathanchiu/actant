@@ -24,6 +24,7 @@ from actant.runtime.types.threads import (
     MessageRecord,
     RunStatus,
 )
+from actant.sandbox.store import InMemorySandboxStore
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 
@@ -314,6 +315,7 @@ class InMemoryRuntimeStores:
     messages: InMemoryMessageStore = field(default_factory=InMemoryMessageStore)
     tool_calls: InMemoryToolCallStore = field(default_factory=InMemoryToolCallStore)
     publisher: InMemoryEventPublisher = field(default_factory=InMemoryEventPublisher)
+    sandboxes: InMemorySandboxStore = field(default_factory=InMemorySandboxStore)
 
     def __post_init__(self) -> None:
         # Lets the message store fan tool-call writes into the
