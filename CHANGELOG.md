@@ -4,6 +4,12 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `SandboxSpec.region` places a Modal sandbox (`"us"`, `"us-east"`, or several);
+  `None`, the default, leaves it anywhere. Modal's default also places sandboxes in
+  Europe and Asia, far from a North American bucket that `disk_sync` pulls from.
+
 ## 0.29.0
 
 - Before each model call, the time spent preparing it is logged by phase, so a slow turn

@@ -146,6 +146,7 @@ async def test_mount_without_service_has_no_entrypoint(
     args, kw = fake.created
     assert args == () and kw["readiness_probe"] is None
     assert kw["outbound_cidr_allowlist"] == [] and kw["gpu"] is None and kw["secrets"] == []
+    assert kw["region"] is None  # anywhere, unless the spec says
     assert kw["workdir"] == MOUNT_PATH and kw["env"] is None
     assert kw["volumes"][MOUNT_PATH] == (
         "mount",
@@ -171,6 +172,7 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
         services={"notes": "pkg.tools:Notes"},
         service_port=9000,
         gpu="L4",
+        region=("us-east", "us-west"),
         network=True,
         secrets=("service",),
         scrub_env=("SERVICE_KEY", "AWS_SECRET_ACCESS_KEY"),
@@ -211,6 +213,7 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
     assert kw["readiness_probe"] == _Probe(tcp=9000)
     assert "encrypted_ports" not in kw and "unencrypted_ports" not in kw
     assert kw["gpu"] == "L4" and "outbound_cidr_allowlist" not in kw
+    assert kw["region"] == ["us-east", "us-west"]
     assert kw["secrets"] == ["secret:service", "secret:r2"]
     assert kw["env"] == {"MODE": "test"} and kw["tags"] == {"actant_thread": "t1"}
     assert kw["volumes"] == {} and kw["workdir"] == DISK_PATH
