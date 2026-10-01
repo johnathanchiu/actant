@@ -8,6 +8,17 @@ from typing import Any, cast
 
 from temporalio import activity
 
+from actant.messages import (
+    DELIVERABLE_UNREADABLE,
+    NO_ARTIFACT_SINK,
+    ON_RESOLVE_FAILED,
+    RESOLUTION_TIMED_OUT,
+    TOOL_BUILD_ERROR,
+    TOOL_CALL_DENIED,
+    TOOL_CALL_NOT_WAITING,
+    TOOL_EXECUTION_ERROR,
+    TOOL_NOT_FOUND,
+)
 from actant.agents import AgentDefinition
 from actant.heartbeat import heartbeating
 from actant.runtime.events.runtime import RuntimeEvents
@@ -60,7 +71,7 @@ class ToolActivities:
         )
         tool = agent.tools.get(record.name)
         if tool is None:
-            return await self._deny(record, events, f"Tool {record.name} not found")
+            return await self._deny(record, events, TOOL_NOT_FOUND.format(name=record.name))
 
         try:
             # The same builder execution uses, so a tool that needs its call
@@ -71,7 +82,7 @@ class ToolActivities:
                 record.args, await self._call_context(agent, tool, record)
             )
         except Exception as exc:  # noqa: BLE001
-            return await self._deny(record, events, f"Tool build error: {exc}")
+            return await self._deny(record, events, TOOL_BUILD_ERROR.format(error=exc))
 
         context = TurnContext(
             agent=agent,
@@ -85,7 +96,7 @@ class ToolActivities:
         )
         decision = await _tool_decision(tool, record, invocation, context)
         if decision.kind == ToolDecisionKind.DENY:
-            return await self._deny(record, events, decision.reason or "Tool call denied")
+            return await self._deny(record, events, decision.reason or TOOL_CALL_DENIED)
         if decision.kind == ToolDecisionKind.AWAIT_HUMAN:
             request = decision.wait_request
             request_data = request.to_dict() if request is not None else None
@@ -162,7 +173,7 @@ class ToolActivities:
             return _outcome_from_record(record)
         tool = agent.tools.get(record.name)
         if tool is None:
-            return await self._execute_failed(record.id, f"Tool {record.name} not found")
+            return await self._execute_failed(record.id, TOOL_NOT_FOUND.format(name=record.name))
         # A tool that runs code can take minutes, and opening its sandbox can
         # too (an image builds on first use). Heartbeats keep Temporal from
         # mistaking a long healthy activity for a dead worker, and let a
@@ -173,10 +184,12 @@ class ToolActivities:
                     ctx = await self._call_context(agent, tool, record)
                     invocation = await tool.build(record.args, ctx)
                 except Exception as exc:  # noqa: BLE001
-                    return await self._execute_failed(record.id, f"Tool build error: {exc}")
+                    return await self._execute_failed(
+                        record.id, TOOL_BUILD_ERROR.format(error=exc)
+                    )
                 result = await invocation.execute()
             except Exception as exc:  # noqa: BLE001
-                result = ToolResult.fail(f"Tool execution error: {exc}")
+                result = ToolResult.fail(TOOL_EXECUTION_ERROR.format(error=exc))
             else:
                 result = await self._materialise(agent, record, ctx, result)
 
@@ -233,9 +246,7 @@ class ToolActivities:
         if not paths:
             return result
         if self.context.artifact_sink is None:
-            failed = ToolResult.fail(
-                "deliverables were listed but the worker has no artifact sink"
-            )
+            failed = ToolResult.fail(NO_ARTIFACT_SINK)
             failed.metadata = {
                 k: v for k, v in result.metadata.items() if k != MetadataKey.TERMINAL
             }
@@ -248,7 +259,7 @@ class ToolActivities:
             try:
                 data = await sandbox.read(path)
             except Exception as exc:  # noqa: BLE001 -- the path is the model's claim
-                failed = ToolResult.fail(f"deliverable {path!r} could not be read: {exc}")
+                failed = ToolResult.fail(DELIVERABLE_UNREADABLE.format(path=path, error=exc))
                 failed.metadata = {
                     k: v for k, v in result.metadata.items() if k != MetadataKey.TERMINAL
                 }
@@ -284,11 +295,11 @@ class ToolActivities:
             return _outcome_from_record(record)
         if record.status is not ToolCallStatus.WAITING:
             return await self._execute_failed(
-                record.id, f"Tool call is {record.status.value}, not waiting"
+                record.id, TOOL_CALL_NOT_WAITING.format(status=record.status.value)
             )
 
         if payload.resolution is None:
-            result = ToolResult.fail("Deferred tool resolution timed out")
+            result = ToolResult.fail(RESOLUTION_TIMED_OUT)
         else:
             resolution = ToolResolution(
                 approved=payload.resolution.approved,
@@ -327,7 +338,7 @@ class ToolActivities:
                     return await cast(Any, resolve)(record, resolution, ctx=ctx)
                 return await resolve(record, resolution)
         except Exception as error:
-            return ToolResult.fail(f"on_resolve failed: {error}")
+            return ToolResult.fail(ON_RESOLVE_FAILED.format(error=error))
         output: dict[str, object] = {
             "approved": resolution.approved,
             "answer": resolution.answer,

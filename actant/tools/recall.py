@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from actant.messages import NO_IMAGE_WITH_ID
 from actant.blocks import AssetBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message
@@ -46,7 +47,7 @@ class _RecallImageInvocation(BaseToolInvocation[JSONObject, object]):
                     block.storage_key,
                 ):
                     return ToolResult(output={"recalled": wanted}, content_blocks=[block])
-        return ToolResult.fail(f"no image with id {wanted!r} in this thread")
+        return ToolResult.fail(NO_IMAGE_WITH_ID.format(id=wanted))
 
 
 class RecallImageTool(BaseDeclarativeTool):

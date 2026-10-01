@@ -11,6 +11,7 @@ from typing import cast
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from actant.messages import FINISH_REMINDER
 from actant.agents import AgentDefinition
 from actant.blocks import BLOCKS, Block, CompactionBlock
 from actant.assets import AssetContext, prepare_messages
@@ -51,12 +52,6 @@ from actant.runtime.types.threads import RunStatus, ThreadStatus
 from actant.tools.base import MetadataKey
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
-FINISH_REMINDER = (
-    "<finish_required>\n"
-    "This run ends only when you call `finish` with your summary and deliverable paths, "
-    "or when a tool result is terminal. Call `finish` now, or keep working with your tools.\n"
-    "</finish_required>"
-)
 STOPPED_WITHOUT_FINISHING = "stopped without finishing"
 
 logger = logging.getLogger(__name__)

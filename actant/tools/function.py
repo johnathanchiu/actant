@@ -10,6 +10,7 @@ from typing import TypeAlias, TypeVar, cast, get_type_hints, overload
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
+from actant.messages import TOOL_NEEDS_CONTEXT, TOOL_NEEDS_SANDBOX, TOOL_NOT_APPROVED
 from actant.core import JSONObject
 from actant.tools.admission import (
     ToolCallView,
@@ -142,7 +143,7 @@ class FunctionTool:
     ) -> ToolResult:
         if self.approval is not None:
             if resolution.approved is not True:
-                return ToolResult.fail("Tool call was not approved")
+                return ToolResult.fail(TOOL_NOT_APPROVED)
             return await self._execute(self._validated_params(call.args), ctx)
         if self.resolve is not None:
             return _as_result(
@@ -164,13 +165,11 @@ class FunctionTool:
         for name, kind in self._injected.items():
             if kind is Sandbox:
                 if ctx is None or ctx.sandbox is None:
-                    return ToolResult.fail(
-                        f"Tool {self.name!r} needs a sandbox and none was given"
-                    )
+                    return ToolResult.fail(TOOL_NEEDS_SANDBOX.format(name=self.name))
                 arguments[name] = ctx.sandbox
             else:
                 if ctx is None:
-                    return ToolResult.fail(f"Tool {self.name!r} needs its call context")
+                    return ToolResult.fail(TOOL_NEEDS_CONTEXT.format(name=self.name))
                 arguments[name] = ctx
         if inspect.iscoroutinefunction(self.function):
             output = await self.function(**arguments)

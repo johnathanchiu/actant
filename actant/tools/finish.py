@@ -8,6 +8,7 @@ run's completion. Agents without a sandbox can still call it with no paths.
 
 from __future__ import annotations
 
+from actant.messages import FINISH_PATHS_NOT_A_LIST
 from actant.core import JSONObject
 from actant.tools.base import (
     BaseDeclarativeTool,
@@ -31,7 +32,7 @@ class _FinishInvocation(BaseToolInvocation[JSONObject, JSONObject]):
     async def execute(self) -> ToolResult:
         paths = self.params.get("paths") or []
         if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
-            return ToolResult.fail("`paths` must be a list of workspace paths")
+            return ToolResult.fail(FINISH_PATHS_NOT_A_LIST)
         return ToolResult.ok(
             {"status": "done", "summary": self.params.get("summary", "")},
             terminal=True,
