@@ -35,6 +35,17 @@ affect users.
   ids: a thread whose sandbox was open across the upgrade opens a new one over the same
   files.
 
+- A `disk_sync` restore plan is part of the spec, so it is recorded with the sandbox and
+  every worker reopens it the same way: `SandboxSpec.restore` (entries pulled at open, one
+  pushed) and `SandboxSpec.mounts`. `Location`, `Restore` and `Mount` move to
+  `actant.sandbox.base` (still importable from `actant.sandbox.modal`). Breaking: the
+  `ModalSandboxProvider.restore_plan`/`bucket_mounts` hooks are removed (set the spec's
+  fields), and `entry_config`, `sync_argv` and `seed_marker` take `(spec, sandbox_id)`;
+  `thread_location` is `own_location`.
+- `ModalSandboxProvider(image=..., env=...)`: the image for a spec without one (a spec
+  reopened from its record has none), and environment every sandbox gets as a Modal
+  secret, never recorded with a spec.
+
 ## 0.31.0
 
 - `AgentRuntime.cancel_thread` records the cancel in the stores before it returns: open

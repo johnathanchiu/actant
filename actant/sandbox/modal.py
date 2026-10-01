@@ -1,7 +1,7 @@
 """The Modal backend: a ``modal.Sandbox`` whose files are backed by a bucket prefix.
 
 Files live in the product's object storage (S3, R2, or MinIO in development)
-under a per-key prefix, in one of two ways (``SandboxSpec.storage``):
+under a per-sandbox prefix, in one of two ways (``SandboxSpec.storage``):
 
 ``"mount"``
     The prefix is mounted with ``CloudBucketMount``. Whole-file writes only (no
@@ -129,7 +129,7 @@ class ModalSandboxProvider:
     bucket: str
     key_prefix: str = "sandboxes/"
     endpoint_url: str | None = None
-    #: Where a ``disk_sync`` host uploads returned images: ``<image_prefix><key>/``.
+    #: Where a ``disk_sync`` host uploads returned images: ``<image_prefix><sandbox_id>/``.
     image_prefix: str = "actant-images/"
     secret_name: str | None = None
     #: Inline bucket credentials (same keys as ``secret_name``), sent with
@@ -153,9 +153,9 @@ class ModalSandboxProvider:
         async with heartbeating():
             return await self._open(spec, sandbox_id)
 
-    async def _open(self, spec: SandboxSpec, key: str) -> Sandbox:
+    async def _open(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
         # Before any Modal call: a missing public endpoint fails here, not in a container.
-        config = self.entry_config(spec, key)
+        config = self.entry_config(spec, sandbox_id)
         modal = importlib.import_module("modal")
         app = await modal.App.lookup.aio(self.app_name, create_if_missing=True, client=self.client)
         if self.bucket_env is not None:
@@ -178,7 +178,7 @@ class ModalSandboxProvider:
                     secret=bucket_secret,
                     read_only=True,
                 )
-                for m in self._plan(spec, key).mounts
+                for m in self._plan(spec, sandbox_id).mounts
             }
             if bucket_secret is not None:
                 secrets.append(bucket_secret)
@@ -187,7 +187,7 @@ class ModalSandboxProvider:
             volumes = {
                 MOUNT_PATH: modal.CloudBucketMount(
                     self.bucket,
-                    key_prefix=f"{self.key_prefix}{key}/",
+                    key_prefix=f"{self.key_prefix}{sandbox_id}/",
                     bucket_endpoint_url=self.endpoint_url,
                     secret=bucket_secret,
                 )
@@ -214,8 +214,8 @@ class ModalSandboxProvider:
             # The host and s5cmd need these; ``exec`` removes ``scrub_env`` per command.
             secrets=secrets,
             env=dict(spec.env) or None,
-            # ``attach`` gets no key; the tag carries it for ``sync``.
-            tags={THREAD_TAG: key},
+            # ``attach`` gets no sandbox id; the tag carries it for ``sync``.
+            tags={THREAD_TAG: sandbox_id},
             volumes=volumes,
             workdir=root,
             readiness_probe=probe,
@@ -231,7 +231,7 @@ class ModalSandboxProvider:
                 with contextlib.suppress(Exception):
                     await sandbox.terminate.aio()
                 raise RuntimeError(
-                    f"sandbox {key} never became ready: {exc}\n{detail}"
+                    f"sandbox {sandbox_id} never became ready: {exc}\n{detail}"
                 ) from exc
             except asyncio.CancelledError:
                 # Not an ``Exception``: without this a sandbox cancelled before it was
@@ -240,7 +240,7 @@ class ModalSandboxProvider:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(asyncio.shield(sandbox.terminate.aio()), API_SLACK_S)
                 raise
-        return self._handle(sandbox, spec, key)
+        return self._handle(sandbox, spec, sandbox_id)
 
     async def attach(self, spec: SandboxSpec, provider_id: str) -> Sandbox:
         live = self._live.get(provider_id)
@@ -253,21 +253,21 @@ class ModalSandboxProvider:
             if await sandbox.poll.aio() is not None:
                 raise KeyError(provider_id)
             # A live sandbox still has its disk: nothing to restore.
-            key = (await sandbox.get_tags.aio())[THREAD_TAG]
-            return self._handle(sandbox, spec, key)
+            sandbox_id = (await sandbox.get_tags.aio())[THREAD_TAG]
+            return self._handle(sandbox, spec, sandbox_id)
         sandbox, handle = live
         if await sandbox.poll.aio() is not None:
             del self._live[provider_id]
             raise KeyError(provider_id)
         return handle
 
-    def _handle(self, sandbox: Any, spec: SandboxSpec, key: str) -> ModalSandbox:
+    def _handle(self, sandbox: Any, spec: SandboxSpec, sandbox_id: str) -> ModalSandbox:
         disk_sync = spec.storage == Storage.DISK_SYNC
         handle = ModalSandbox(
             sandbox,
             spec.env,
             root=DISK_PATH if disk_sync else MOUNT_PATH,
-            sync_argv=self.sync_argv(spec, key) if disk_sync else None,
+            sync_argv=self.sync_argv(spec, sandbox_id) if disk_sync else None,
             sync_timeout_s=spec.sync_timeout_s,
             scrub_env=spec.scrub_env,
             service_port=spec.service_port if spec.services else None,
@@ -293,7 +293,9 @@ class ModalSandboxProvider:
             )
         return {"outbound_domain_allowlist": [bucket_host]}
 
-    def entry_config(self, spec: SandboxSpec, key: str, *, size_only: bool = False) -> EntryConfig:
+    def entry_config(
+        self, spec: SandboxSpec, sandbox_id: str, *, size_only: bool = False
+    ) -> EntryConfig:
         """The entrypoint's config: restore a ``disk_sync`` disk, then serve the services.
 
         ``size_only`` compares a file already on the disk with its object by size alone
@@ -302,7 +304,7 @@ class ModalSandboxProvider:
         disk_sync = spec.storage == Storage.DISK_SYNC
         restore = push = None
         if disk_sync:
-            plan = self._plan(spec, key)
+            plan = self._plan(spec, sandbox_id)
             pushed, others, mounts = plan.pushed, plan.others, plan.mounts
             restore = RestoreConfig(
                 argv=self._pull_argv(pushed, mounts, size_only=size_only),
@@ -318,7 +320,7 @@ class ModalSandboxProvider:
                 ],
             )
             push = PushConfig(
-                argv=self.sync_argv(spec, key),
+                argv=self.sync_argv(spec, sandbox_id),
                 interval_s=spec.sync_interval_s,
                 timeout_s=spec.sync_timeout_s,
             )
@@ -330,7 +332,7 @@ class ModalSandboxProvider:
                 bind="0.0.0.0",
                 scrub=list(spec.scrub_env),
                 push=push,
-                images=host.image_upload_config(self.image_bucket(), spec, key)
+                images=host.image_upload_config(self.image_bucket(), spec, sandbox_id)
                 if disk_sync and spec.upload_images
                 else None,
             )
@@ -340,14 +342,14 @@ class ModalSandboxProvider:
         """Where a ``disk_sync`` host uploads the images its services return."""
         return ImageBucket(self.bucket, self.image_prefix, self.endpoint_url)
 
-    def key_location(self, key: str) -> Location:
-        """A key's own prefix: ``<key_prefix><key>/`` in :attr:`bucket`."""
-        return Location(self.bucket, f"{self.key_prefix}{key}/")
+    def own_location(self, sandbox_id: str) -> Location:
+        """A sandbox's own prefix: ``<key_prefix><sandbox_id>/`` in :attr:`bucket`."""
+        return Location(self.bucket, f"{self.key_prefix}{sandbox_id}/")
 
-    def _plan(self, spec: SandboxSpec, key: str) -> _Plan:
-        """The spec's restore plan (by default the key's own prefix at the root): its pushed
+    def _plan(self, spec: SandboxSpec, sandbox_id: str) -> _Plan:
+        """The spec's restore plan (by default the sandbox's own prefix at the root): its pushed
         entry, the other entries and the mounts, checked."""
-        plan = list(spec.restore) or [Restore(self.key_location(key), "", push=True)]
+        plan = list(spec.restore) or [Restore(self.own_location(sandbox_id), "", push=True)]
         mounts = list(spec.mounts)
         pushed = [r for r in plan if r.push]
         if len(pushed) != 1:
@@ -365,14 +367,14 @@ class ModalSandboxProvider:
         endpoint = ["--endpoint-url", self.endpoint_url] if self.endpoint_url else []
         return ["s5cmd", *endpoint, *args]
 
-    def sync_argv(self, spec: SandboxSpec, key: str) -> list[str]:
+    def sync_argv(self, spec: SandboxSpec, sandbox_id: str) -> list[str]:
         """Push the plan's pushed entry to its prefix, excluding the other entries inside it
         and the spec's ``push_exclude`` folders (relative to it).
         Files removed locally stay in the bucket: mirroring (``--delete``) needs S3's batch
         DeleteObjects, which Supabase's S3 gateway does not serve (``InvalidRequest: must
         have required property 'Body'``) and one such push failure loses a finished run's
         last files."""
-        plan = self._plan(spec, key)
+        plan = self._plan(spec, sandbox_id)
         pushed = plan.pushed
         skipped = [r.path for r in plan.others] + [m.path for m in plan.mounts]
         skipped += [
@@ -399,10 +401,10 @@ class ModalSandboxProvider:
             stamp=self._stamp_config(source, mounts),
         )
 
-    def seed_marker(self, spec: SandboxSpec, key: str) -> str:
+    def seed_marker(self, spec: SandboxSpec, sandbox_id: str) -> str:
         """The object that says a sandbox's seed copy finished: a sibling of its pushed prefix
         (``sandboxes/t1`` + :data:`SEED_MARKER_SUFFIX`), so no pull or push touches it."""
-        return self._marker(self._plan(spec, key).pushed.source)
+        return self._marker(self._plan(spec, sandbox_id).pushed.source)
 
     @staticmethod
     def _marker(location: Location) -> str:

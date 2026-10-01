@@ -390,39 +390,42 @@ progress (`restore: 812/1040 objects`) goes to the sandbox's stderr. A restore
 that fails or outlasts its budget fails startup. Restored files take
 their objects' mtimes, so a push uploads only files changed since.
 
-A disk can be made of more than the thread's prefix. Override
-`ModalSandboxProvider.restore_plan(thread_id)` to return `Restore(source, path,
-push)` entries, with `source` a `Location(bucket, prefix)`; the provider builds
-every s5cmd call from them. Exactly one entry is pushed (the thread's workspace,
+A disk can be made of more than the sandbox's own prefix. Set the spec's
+`restore` to `Restore(source, path, push)` entries, with `source` a
+`Location(bucket, prefix)`; the provider builds every s5cmd call from them. Exactly one entry is pushed (the thread's workspace,
 which a seed fills), and its push skips the other entries' paths:
 
 ```python
-from actant.sandbox.modal import Location, ModalSandboxProvider, Restore
+from actant.sandbox import SandboxSpec, Storage
+from actant.sandbox.base import Location, Restore
 
-
-class SceneProvider(ModalSandboxProvider):
-    def restore_plan(self, thread_id: str) -> list[Restore]:
-        return [
-            Restore(Location(self.bucket, f"captures/{thread_id}/"), "capture", push=False),
-            Restore(self.thread_location(thread_id), "", push=True),
-        ]
+spec = SandboxSpec(
+    backend="modal",
+    storage=Storage.DISK_SYNC,
+    restore=(
+        Restore(Location("agents", "captures/c1/"), "capture", push=False),
+        Restore(Location("agents", "scans/scan_42/"), "", push=True),
+    ),
+)
 ```
 
-An input too large to pull at every open (thousands of frames) can be mounted
-instead: override `bucket_mounts(thread_id)` to return `Mount(source, path)`
-entries. Each is a read-only `CloudBucketMount` at `DISK_PATH/<path>` (never the
+The plan is part of the spec, so it is recorded with the sandbox and a sandbox
+reopened by any worker is made the same way. An input too large to pull at
+every open (thousands of frames) can be mounted instead: set the spec's
+`mounts` to `Mount(source, path)` entries. Each is a read-only `CloudBucketMount` at `DISK_PATH/<path>` (never the
 root), with the provider's endpoint and bucket secret; files are fetched as they
 are read. No pull, push or mtime stamp touches a mount's path, so a thread prefix
 that still holds an old copy of the input restores without it. A restore entry
 may not sit at or under a mount, and mounts may not overlap:
 
 ```python
-from actant.sandbox.modal import Location, ModalSandboxProvider, Mount
+from actant.sandbox.base import Location, Mount
 
-
-class MountedSceneProvider(ModalSandboxProvider):
-    def bucket_mounts(self, thread_id: str) -> list[Mount]:
-        return [Mount(Location(self.bucket, f"captures/{thread_id}/"), "capture")]
+spec = SandboxSpec(
+    backend="modal",
+    storage=Storage.DISK_SYNC,
+    mounts=(Mount(Location("agents", "captures/c1/"), "capture"),),
+)
 ```
 
 ## Durable images

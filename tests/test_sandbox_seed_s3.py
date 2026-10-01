@@ -87,7 +87,7 @@ def test_a_finished_seed_copy_is_marked_and_reopens_as_an_existing_run(
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == sorted(SEED)
     assert _s5(endpoint, "ls", provider.seed_marker(SandboxSpec(), "t1")).returncode == 0
     # Stamped from the seed: the first push uploads nothing, and never touches the marker.
-    push = [arg.replace(DISK_PATH, str(first)) for arg in provider.sync_argv(spec, "t1")]
+    push = [arg.replace(DISK_PATH, str(first)) for arg in provider.sync_argv(SandboxSpec(), "t1")]
     (first / "a.txt").unlink()
     pushed = subprocess.run(push, capture_output=True, text=True, check=True).stdout
     assert pushed.split() == ["rm", f"s3://{bucket}/sandboxes/t1/a.txt"]

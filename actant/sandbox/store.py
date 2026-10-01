@@ -69,7 +69,9 @@ def spec_from_json(data: Mapping[str, Any]) -> SandboxSpec:
     args["restore"] = tuple(
         Restore(Location(**r["source"]), r["path"], r["push"]) for r in args.get("restore", ())
     )
-    args["mounts"] = tuple(Mount(Location(**m["source"]), m["path"]) for m in args.get("mounts", ()))
+    args["mounts"] = tuple(
+        Mount(Location(**m["source"]), m["path"]) for m in args.get("mounts", ())
+    )
     return SandboxSpec(**args)
 
 
