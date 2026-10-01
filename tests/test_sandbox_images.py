@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 
@@ -152,14 +154,34 @@ async def test_after_failure_unstarted_images_stay_inline(
     assert len(s3.puts) == 1
 
 
-async def test_hung_upload_is_bounded_and_preserves_bytes(s3: FakeS3) -> None:
+async def test_hung_upload_is_bounded_and_preserves_bytes(
+    s3: FakeS3, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(uploads, "UPLOAD_BACKOFF_S", 0.0)
     s3.hang = True
-    uploader = ImageUploader(CONFIG.model_copy(update={"timeout_s": 0.5}), s3)
+    uploader = ImageUploader(CONFIG.model_copy(update={"timeout_s": 0.1}), s3)
     started = time.monotonic()
     kept, error = await host.upload_images(CallResponse(images=[_inline()]), uploader)
     assert time.monotonic() - started < 5
     assert isinstance(kept.images[0].source, InlineSource)
-    assert error == "image-0: upload timed out after 0.5s"
+    assert error == "image-0: upload timed out after 0.6s"  # 3 attempts' connect and read
+
+
+async def test_an_upload_is_not_timed_while_it_waits_for_a_thread(
+    s3: FakeS3, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uploads queued behind a busy pool each get their whole budget once started."""
+    monkeypatch.setattr(uploads, "UPLOAD_BACKOFF_S", 0.0)
+    s3.hang = True
+    uploader = ImageUploader(CONFIG.model_copy(update={"timeout_s": 0.1}), s3)
+    uploader.executor = ThreadPoolExecutor(1)
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.8, s3.release.set)  # the first holds the only thread for 0.8 s
+    first, second = await asyncio.gather(
+        uploader.upload(_inline("a", PNG + b"a")), uploader.upload(_inline("b", PNG + b"b"))
+    )
+    assert first[1] == "a: upload timed out after 0.6s"
+    assert second[1] is None and isinstance(second[0].source, AssetSource)
 
 
 async def test_uploads_share_one_client_on_their_own_threads(s3: FakeS3) -> None:
@@ -184,6 +206,7 @@ def test_client_reads_the_environment_and_uses_path_style_for_an_endpoint(
     assert config.s3 == {"addressing_style": "path"}
     assert config.max_pool_connections == uploads.UPLOAD_THREADS
     assert config.read_timeout == 7.0 and config.connect_timeout == 7.0
+    assert config.retries == {"mode": "standard", "total_max_attempts": uploads.UPLOAD_ATTEMPTS}
     monkeypatch.delenv("AWS_REGION")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
     default = uploads.s3_client(None, 10.0).meta  # pyright: ignore[reportAttributeAccessIssue]

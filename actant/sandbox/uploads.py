@@ -26,6 +26,17 @@ from actant.sandbox.protocol import AssetSource, Image, ImageUploadConfig, Inlin
 
 #: Threads, and pooled S3 connections, one host's uploads share across all its calls.
 UPLOAD_THREADS = 32
+#: Requests one upload may send: boto's ``standard`` retries, each with its own
+#: connect and read timeout of ``ImageUploadConfig.timeout_s``.
+UPLOAD_ATTEMPTS = 3
+#: boto's backoff between attempts, at most: ``standard`` waits up to 2**n s, jittered.
+UPLOAD_BACKOFF_S = 4.0
+
+
+def upload_budget(timeout_s: float) -> float:
+    """How long one upload may run once its thread starts it: every attempt's connect and
+    read timeouts, and the backoff between them."""
+    return UPLOAD_ATTEMPTS * 2 * timeout_s + UPLOAD_BACKOFF_S
 
 
 class S3Client(Protocol):
@@ -36,14 +47,14 @@ class S3Client(Protocol):
 
 def s3_client(endpoint_url: str | None, timeout_s: float) -> S3Client:
     """An S3 client configured as s5cmd was: ``AWS_REGION`` (else ``AWS_DEFAULT_REGION``,
-    else ``us-east-1``), path-style addressing for a custom endpoint, and SDK timeouts no
-    longer than one upload's."""
+    else ``us-east-1``), path-style addressing for a custom endpoint, and ``timeout_s`` as
+    each attempt's connect and read timeouts."""
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
     config = Config(
         max_pool_connections=UPLOAD_THREADS,
         connect_timeout=timeout_s,
         read_timeout=timeout_s,
-        retries={"mode": "standard"},
+        retries={"mode": "standard", "total_max_attempts": UPLOAD_ATTEMPTS},
         s3={"addressing_style": "path"} if endpoint_url else None,
     )
     client = boto3.client("s3", endpoint_url=endpoint_url, region_name=region, config=config)
@@ -60,7 +71,9 @@ class ImageUploader:
     async def upload(self, image: Image) -> tuple[Image, str | None]:
         """``image`` with a durable asset source, or unchanged with the reason it could not be.
 
-        The key is ``destination`` plus the bytes' SHA-256 and the media type's extension."""
+        The key is ``destination`` plus the bytes' SHA-256 and the media type's extension. The
+        upload is timed from when its thread starts it, not while it waits for a thread: a
+        burst of images queues behind ``UPLOAD_THREADS``, and that wait is not the bucket's."""
         if not isinstance(image.source, InlineSource):
             return image, None
         data = base64.b64decode(image.source.data_b64)
@@ -74,11 +87,25 @@ class ImageUploader:
             Body=data,
             ContentType=image.media_type,
         )
-        running = asyncio.get_running_loop().run_in_executor(self.executor, put)
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+
+        def start() -> Mapping[str, object]:
+            loop.call_soon_threadsafe(started.set)
+            return put()
+
+        running = loop.run_in_executor(self.executor, start)
+        budget = upload_budget(self.config.timeout_s)
         try:
-            await asyncio.wait_for(running, self.config.timeout_s)
+            waiting = asyncio.ensure_future(started.wait())
+            try:
+                await asyncio.wait({running, waiting}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                waiting.cancel()
+            async with asyncio.timeout(budget):
+                await running
         except TimeoutError:
-            return image, f"{image.name}: upload timed out after {self.config.timeout_s:g}s"
+            return image, f"{image.name}: upload timed out after {budget:g}s"
         except (BotoCoreError, ClientError) as error:
             return image, f"{image.name}: upload failed: {error}"[:500]
         return image.model_copy(update={"source": AssetSource(storage_key=key)}), None
