@@ -30,10 +30,10 @@ workspace. A seeded file takes the seed object's time, never later than its copy
 in the run's prefix, so a push skips it too. A stamp failure only costs that
 re-upload, so it is logged, not fatal.
 
-Each pull runs at most ``restore.attempts`` times, each bounded by
-``restore.attempt_timeout_s``: one stalled object (a slow connection to the bucket)
-fails its attempt instead of the whole startup budget, and a retry skips the files
-already pulled. Progress (objects fetched of those listed) goes to stderr every
+Each pull runs once, bounded by ``restore.timeout_s``. Blips are the transfer
+client's to handle: s5cmd retries a failed request (one part of an object, a ranged
+read) without dropping the parts it already has, so a slow but moving object
+finishes. Progress (objects fetched of those listed) goes to stderr every
 :data:`PROGRESS_INTERVAL_S`, so a stall shows in the sandbox's logs.
 """
 
@@ -179,9 +179,8 @@ def _restore_own(config: RestoreConfig) -> bool:
 
 
 def pull(argv: Sequence[str], stamp_config: StampConfig | None, config: RestoreConfig) -> Pulled:
-    """Run the pull ``argv`` (again after a failed or timed-out attempt, up to
-    ``config.attempts`` runs), with the stamp's listing alongside it (into a file: a pipe
-    would stall it), then apply the listing."""
+    """Run the pull ``argv``, bounded by ``config.timeout_s``, with the stamp's listing
+    alongside it (into a file: a pipe would stall it), then apply the listing."""
     with tempfile.TemporaryFile("w+") as listing:
         lister = None
         if stamp_config is not None:
@@ -189,16 +188,9 @@ def pull(argv: Sequence[str], stamp_config: StampConfig | None, config: RestoreC
                 lister = subprocess.Popen(stamp_config.argv, stdout=listing, stderr=listing)
             except OSError as error:
                 print(f"mtime stamp skipped: could not start: {error}", file=sys.stderr)
-        progress = _Progress(listing if lister is not None else None, config.attempts)
-        timeout = config.attempt_timeout_s or config.timeout_s
-        attempt = 1
-        while True:
-            done = _pull_once(argv, timeout, progress, attempt)
-            failed = _failure(done)
-            if failed is None or attempt == config.attempts:
-                break
-            print(f"restore attempt {attempt}/{config.attempts} {failed}", file=sys.stderr)
-            attempt += 1
+        progress = _Progress(listing if lister is not None else None)
+        done = _pull_once(argv, config.timeout_s, progress)
+        failed = _failure(done)
         # s5cmd 2.3's sync exits 0 on an empty prefix, but still says so.
         empty = not isinstance(done, str) and EMPTY_PREFIX in done.stderr
         if failed is not None or empty:
@@ -215,9 +207,9 @@ def pull(argv: Sequence[str], stamp_config: StampConfig | None, config: RestoreC
 
 
 def _pull_once(
-    argv: Sequence[str], timeout: float, progress: _Progress, attempt: int
+    argv: Sequence[str], timeout: float, progress: _Progress
 ) -> subprocess.CompletedProcess[str] | str:
-    """One pull attempt, killed after ``timeout``, reporting progress while it runs."""
+    """Run the pull, killed after ``timeout``, reporting progress while it runs."""
     with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
         try:
             process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
@@ -232,10 +224,10 @@ def _pull_once(
                 if time.monotonic() >= deadline:
                     process.kill()
                     process.wait()
-                    progress.report(out, attempt, final=True)
+                    progress.report(out)
                     return f"timed out after {timeout:g}s"
-                progress.report(out, attempt, final=False)
-        progress.report(out, attempt, final=True)
+                progress.report(out)
+        progress.report(out)
         out.seek(0)
         err.seek(0)
         return subprocess.CompletedProcess(argv, process.returncode, out.read(), err.read())
@@ -248,23 +240,16 @@ def _lines(file: IO[str]) -> list[str]:
 
 
 class _Progress:
-    """Objects a pull fetched (s5cmd prints ``cp <source> <target>`` for each), across its
-    attempts, of those the stamp's listing has found so far."""
+    """Objects a pull fetched (s5cmd prints ``cp <source> <target>`` for each) of those
+    the stamp's listing has found so far."""
 
-    def __init__(self, listing: IO[str] | None, attempts: int) -> None:
+    def __init__(self, listing: IO[str] | None) -> None:
         self._listing = listing
-        self._attempts = attempts
-        self._fetched = 0  # by finished attempts
 
-    def report(self, output: IO[str], attempt: int, *, final: bool) -> None:
-        fetched = self._fetched + sum(line.startswith("cp ") for line in _lines(output))
-        if final:
-            self._fetched = fetched
+    def report(self, output: IO[str]) -> None:
+        fetched = sum(line.startswith("cp ") for line in _lines(output))
         listed = "?" if self._listing is None else str(len(_lines(self._listing)))
-        print(
-            f"restore: {fetched}/{listed} objects (attempt {attempt}/{self._attempts})",
-            file=sys.stderr,
-        )
+        print(f"restore: {fetched}/{listed} objects", file=sys.stderr)
 
 
 def stamp(

@@ -28,6 +28,7 @@ from actant.sandbox.protocol import (
 from actant.sandbox.modal import (
     DISK_PATH,
     MOUNT_PATH,
+    PULL_FLAGS,
     S5CMD_URL,
     Location,
     ModalSandbox,
@@ -132,6 +133,7 @@ def _use(monkeypatch: pytest.MonkeyPatch, fake: _FakeModal) -> None:
 
 
 S5 = ("s5cmd", "--endpoint-url", "https://r2.example")
+PULL = (*S5, *PULL_FLAGS)
 
 
 async def test_mount_without_service_has_no_entrypoint(
@@ -180,14 +182,12 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
     assert isinstance(sandbox, ModalSandbox)
     args, kw = fake.created
     push = [*S5, "sync", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
-    restore = [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
+    restore = [*PULL, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
     assert list(args[:3]) == ["python", "-m", "actant.sandbox.entry"] and len(args) == 4
     assert EntryConfig.model_validate_json(args[3]) == EntryConfig(
         restore=RestoreConfig(
             argv=restore,
             timeout_s=1800,
-            attempt_timeout_s=60,
-            attempts=3,
             stamp=StampConfig(
                 argv=["s5cmd", "--json", *S5[1:], "ls", "s3://b/sandboxes/t1/*"],
                 prefix="s3://b/sandboxes/t1/",
@@ -454,8 +454,8 @@ async def test_a_seed_restores_and_copies_only_into_an_empty_thread_prefix(
     restore = config.restore
     assert restore is not None and restore.seed is not None and restore.seed.stamp is not None
     # The thread's own prefix first; the seed only if that is empty.
-    assert restore.argv == [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
-    assert restore.seed.argv == [*S5, "sync", "s3://b/templates/base/*", f"{DISK_PATH}/"]
+    assert restore.argv == [*PULL, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
+    assert restore.seed.argv == [*PULL, "s3://b/templates/base/*", f"{DISK_PATH}/"]
     assert restore.seed.copy_argv == [*S5, "cp", "s3://b/templates/base/*", "s3://b/sandboxes/t1/"]
     assert restore.seed.stamp.prefix == "s3://b/templates/base/"
     assert restore.seed.stamp.argv[-1] == "s3://b/templates/base/*"
@@ -485,9 +485,9 @@ def test_a_restore_plan_pulls_every_entry_and_pushes_only_its_own() -> None:
     spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, seed="templates/base/")
     restore = provider.entry_config(spec, "t1").restore
     assert restore is not None and restore.seed is not None
-    assert restore.argv == [*S5, "sync", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
+    assert restore.argv == [*PULL, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
     [capture] = restore.also
-    assert capture.argv == [*S5, "sync", "s3://b/captures/c1/*", f"{DISK_PATH}/capture/"]
+    assert capture.argv == [*PULL, "s3://b/captures/c1/*", f"{DISK_PATH}/capture/"]
     assert capture.stamp is not None and capture.stamp.root == f"{DISK_PATH}/capture"
     # The seed fills the pushed entry and is marked beside its prefix.
     assert restore.seed.copy_argv[-1] == "s3://b/sandboxes/t1/"
@@ -546,10 +546,10 @@ async def test_a_mount_is_read_only_and_no_pull_push_or_stamp_touches_it(
     restore = EntryConfig.model_validate_json(args[3]).restore
     assert restore is not None and restore.seed is not None and restore.stamp is not None
     assert restore.argv == [
-        *S5, "sync", "--exclude", "sandboxes/t1/capture/*", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"
+        *PULL, "--exclude", "sandboxes/t1/capture/*", "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"
     ]  # fmt: skip
     assert restore.seed.argv == [
-        *S5, "sync", "--exclude", "templates/base/capture/*", "s3://b/templates/base/*",
+        *PULL, "--exclude", "templates/base/capture/*", "s3://b/templates/base/*",
         f"{DISK_PATH}/",
     ]  # fmt: skip
     assert restore.stamp.skip == ["s3://b/sandboxes/t1/capture/"]

@@ -4,6 +4,15 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.27.0
+
+- A sandbox restore pull is no longer killed after a fixed time and restarted from
+  zero. It runs once, bounded by the open's budget; s5cmd retries a failed part on its
+  own (`--retry-count 20`, 16 MiB parts, 8 at a time), so a slow object finishes.
+- Deprecated: `SandboxSpec.restore_attempt_timeout_s` / `restore_attempts` and
+  `RestoreConfig.attempt_timeout_s` / `attempts` are accepted but ignored; they will
+  be removed.
+
 ## 0.26.1
 
 - Cancelling a thread also cancels its persisted descendants across agents and workers.
