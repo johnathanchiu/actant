@@ -15,10 +15,6 @@ from typing import Any
 # === Configuration ===
 
 
-#: How often a running tool call's activity heartbeats.
-TOOL_HEARTBEAT_EVERY_S = 30.0
-
-
 @dataclass(frozen=True)
 class ActivityTimeouts:
     """How long one model turn, one compaction, and one tool call may run, in seconds.
@@ -26,7 +22,7 @@ class ActivityTimeouts:
     Each is the activity's ``start_to_close_timeout``: a tool that opens a sandbox
     needs at least the sandbox's own open budget here. A tool call that stops
     heartbeating for ``tool_heartbeat_s`` is treated as lost (its worker died);
-    set it longer than the tool's own beat, every ``TOOL_HEARTBEAT_EVERY_S``.
+    set it longer than the tool's own beat, every ``actant.heartbeat.HEARTBEAT_EVERY_S``.
     """
 
     turn_s: float = 600.0
