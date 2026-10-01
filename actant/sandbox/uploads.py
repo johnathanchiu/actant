@@ -70,6 +70,7 @@ class ImageUploader:
 
     async def upload(self, image: Image) -> tuple[Image, str | None]:
         """``image`` with a durable asset source, or unchanged with the reason it could not be.
+        A reason means the bucket refused the upload or did not answer within its budget.
 
         The key is ``destination`` plus the bytes' SHA-256 and the media type's extension. The
         upload is timed from when its thread starts it, not while it waits for a thread: a

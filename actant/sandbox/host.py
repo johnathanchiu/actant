@@ -321,21 +321,24 @@ async def upload_images(
     if not response.images:
         return response, None
     gate = asyncio.Semaphore(UPLOAD_CONCURRENCY)
-    failed: list[str] = []
+    bucket_failed = False
     errors: list[str] = []
 
     async def one(image: Image) -> Image:
+        nonlocal bucket_failed
         async with gate:
-            if failed:
+            if bucket_failed:
                 return image
             try:
                 uploaded, error = await uploader.upload(image)
             except Exception as exc:  # noqa: BLE001 -- an upload failure never fails the call
-                uploaded, error = image, f"{image.name}: {type(exc).__name__}: {exc}"[:500]
+                # A bug in this image's upload, not the bucket: the others still try.
+                errors.append(f"{image.name}: {type(exc).__name__}: {exc}"[:500])
+                return image
             if error is not None:
+                # ``upload`` returns a reason only when the bucket refused or timed out.
                 errors.append(error)
-                if error.startswith(f"{image.name}: upload "):
-                    failed.append(error)
+                bucket_failed = True
             return uploaded
 
     images = await asyncio.gather(*(one(image) for image in response.images))
