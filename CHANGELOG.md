@@ -29,8 +29,9 @@ affect users.
 - Breaking: removed dead code nothing in actant used: `actant.inbox` (`InboxMessage`),
   `Agent`, `ModelConfig` and `ContextPolicy` (also from `actant`), the
   `AgentDefinition.context_policy` and `persona_version` fields,
-  `ToolCallStore.get_by_thread_and_turn`, the no-op `SQLAlchemyEventPublisher`, and
-  `RuntimeStores.publisher` (no runtime path read it).
+  `AgentStore` and `InMemoryAgentStore` (and `InMemoryRuntimeStores.agents`), which stored
+  only `Agent`, `ToolCallStore.get_by_thread_and_turn`, the no-op
+  `SQLAlchemyEventPublisher`, and `RuntimeStores.publisher` (no runtime path read it).
 
 ## 0.30.0
 

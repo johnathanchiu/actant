@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Protocol
 
 from actant.blocks import Block, CompactionBlock
-from actant.agents import Agent
 from actant.core import JSONObject
 from actant.llm.messages import Message
 from actant.runtime.types.threads import (
@@ -21,12 +20,6 @@ from actant.runtime.types.threads import (
 )
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 from collections.abc import Sequence
-
-
-class AgentStore(Protocol):
-    async def save(self, agent: Agent) -> None: ...
-
-    async def get(self, agent_id: str) -> Agent: ...
 
 
 class ThreadStore(Protocol):

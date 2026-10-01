@@ -5,9 +5,8 @@ applications should provide their own stores against the projection
 contracts in ``actant.runtime.interfaces.stores``.
 """
 
+from actant.runtime.events.publisher import EventPublisher
 from actant.runtime.interfaces.stores import (
-    AgentStore,
-    EventPublisher,
     MessageStore,
     RunStore,
     RuntimeStores,
@@ -15,7 +14,6 @@ from actant.runtime.interfaces.stores import (
     ToolCallStore,
 )
 from actant.runtime.stores.in_memory import (
-    InMemoryAgentStore,
     InMemoryEventPublisher,
     InMemoryMessageStore,
     InMemoryRunStore,
@@ -29,9 +27,7 @@ from actant.runtime.stores.postgres import (
 )
 
 __all__ = [
-    "AgentStore",
     "EventPublisher",
-    "InMemoryAgentStore",
     "InMemoryEventPublisher",
     "InMemoryMessageStore",
     "InMemoryRunStore",

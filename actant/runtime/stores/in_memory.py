@@ -14,7 +14,6 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 
 from actant.blocks import BLOCKS, Block, CompactionBlock
-from actant.agents import Agent
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
 from actant.runtime.compaction import compaction_of
@@ -26,17 +25,6 @@ from actant.runtime.types.threads import (
     RunStatus,
 )
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
-
-
-class InMemoryAgentStore:
-    def __init__(self) -> None:
-        self._agents: dict[str, Agent] = {}
-
-    async def save(self, agent: Agent) -> None:
-        self._agents[agent.id] = agent
-
-    async def get(self, agent_id: str) -> Agent:
-        return self._agents[agent_id]
 
 
 class InMemoryThreadStore:
@@ -321,7 +309,6 @@ class InMemoryEventPublisher:
 
 @dataclass
 class InMemoryRuntimeStores:
-    agents: InMemoryAgentStore = field(default_factory=InMemoryAgentStore)
     threads: InMemoryThreadStore = field(default_factory=InMemoryThreadStore)
     runs: InMemoryRunStore = field(default_factory=InMemoryRunStore)
     messages: InMemoryMessageStore = field(default_factory=InMemoryMessageStore)
