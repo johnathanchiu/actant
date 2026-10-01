@@ -327,7 +327,7 @@ class RunActivities:
             payload.run_id,
             payload.turn_id,
         )
-        window, _ = _limits(agent, payload.config)
+        window, _ = _limits(agent)
         max_output = None
         if window is not None:
             used = measure_request(agent.persona, request, usage_from=view.usage_from).tokens
@@ -494,10 +494,10 @@ def _provider_limit(agent: AgentDefinition, name: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def _limits(agent: AgentDefinition, config: CompactionConfig) -> tuple[int | None, int | None]:
+def _limits(agent: AgentDefinition) -> tuple[int | None, int | None]:
     return (
-        config.context_window_tokens or _provider_limit(agent, "context_window_tokens"),
-        config.max_images_per_request or _provider_limit(agent, "max_images_per_request"),
+        _provider_limit(agent, "context_window_tokens"),
+        _provider_limit(agent, "max_images_per_request"),
     )
 
 
@@ -509,7 +509,7 @@ def _compaction_trigger(
     prepared: list[Message],
 ) -> CompactionTrigger | None:
     """Whether the request about to be sent crosses a limit, and what to carry if so."""
-    window, max_images = _limits(agent, config)
+    window, max_images = _limits(agent)
     if window is None and max_images is None:
         return None
     measure = measure_request(agent.persona, request, usage_from=model_view.usage_from)

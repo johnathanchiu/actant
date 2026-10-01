@@ -47,20 +47,14 @@ class CompactionConfig:
     messages from the boundary on. Tool results are tagged ``tool:<name>``;
     an app tags what it sends (``send_message(..., tag="brief")``)::
 
-        CompactionConfig(
-            context_window_tokens=1_000_000,
-            max_images_per_request=50,
-            keep=["brief", "tool:read_checklist"],
-        )
+        CompactionConfig(threshold=0.9, keep=["brief", "tool:read_checklist"])
 
-    ``None`` limits fall back to the model client's attributes of the same
-    names; a limit neither sets is not checked. Unrelated to
+    The limits are the model client's: its ``context_window_tokens`` and
+    ``max_images_per_request`` (``OpenAIProvider`` takes both); a limit the
+    client does not declare is not checked. Unrelated to
     ``history_size_threshold``, which rotates Temporal's event history.
     """
 
-    context_window_tokens: int | None = None
-    #: Azure OpenAI rejects more than 50 images in one request; OpenAI, 1,500.
-    max_images_per_request: int | None = None
     threshold: float = 0.9
     keep: list[str] = field(default_factory=list)
 
