@@ -184,6 +184,26 @@ async def test_sse_error_payload_is_not_retried_unless_transient() -> None:
     assert len(requests) == 2
 
 
+async def test_sse_error_payload_naming_no_code_is_retried() -> None:
+    """Azure's peak-load refusal arrives mid-stream as an ``error`` object with a message and
+    no code or type: a server failure, not the request's, so it is sent again."""
+    refusal = {
+        "type": "error",
+        "error": {"message": "The system is currently experiencing high demand."},
+    }
+    provider, requests = _provider(
+        [_events(terminal=refusal), _events(*_text("hello"))], attempts=3
+    )
+    assert (await provider.complete("system", [], [])).content == "hello"
+    assert len(requests) == 2
+
+    unknown = {"type": "error", "error": {"code": "invalid_value", "message": "bad"}}
+    provider, requests = _provider([_events(terminal=unknown)] * 3, attempts=3)
+    with pytest.raises(openai.APIError):
+        await provider.complete("system", [], [])
+    assert len(requests) == 1
+
+
 @pytest.mark.parametrize(
     "first",
     [

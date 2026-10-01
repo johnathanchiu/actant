@@ -54,7 +54,7 @@ streaming, has an `idle_s` deadline. A reasoning model emits no events while it
 thinks, so silence outside an open output item has the longer `reasoning_idle_s`
 deadline. Only transient failures retry within the budget: timeouts, connection
 errors, 408/409/429/5xx, `server_error` or `rate_limit_exceeded` failures, a stream
-that closes before its terminal event, and tool-argument whitespace loops. An
+error that names no code or type, a stream that closes before its terminal event, and tool-argument whitespace loops. An
 `incomplete` response (max output tokens, content filter) or any other failure
 raises at once. The SDK's own retries are disabled, and each attempt takes its own
 rate-limiter reservation. Only a completed attempt produces the canonical assistant
