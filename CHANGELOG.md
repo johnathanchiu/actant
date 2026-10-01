@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.1
 
 - `S3AssetResolver` and `presign_get` accept an S3 endpoint with a path prefix, such as
   Supabase Storage's `https://<project>.storage.supabase.co/storage/v1/s3`; the prefix
