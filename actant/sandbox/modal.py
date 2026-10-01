@@ -194,10 +194,10 @@ class ModalSandboxProvider:
         default_factory=dict, init=False, repr=False
     )
 
-    async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
+    async def open(self, spec: SandboxSpec, *, sandbox_id: str) -> Sandbox:
         # An open waits up to spec.restore_timeout_s on its restore: the caller's activity beats.
         async with heartbeating():
-            return await self._open(spec, thread_id)
+            return await self._open(spec, sandbox_id)
 
     async def _open(self, spec: SandboxSpec, thread_id: str) -> Sandbox:
         # Before any Modal call: a missing public endpoint fails here, not in a container.
@@ -286,23 +286,23 @@ class ModalSandboxProvider:
                 raise
         return self._handle(sandbox, spec, thread_id)
 
-    async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
-        live = self._live.get(sandbox_id)
+    async def attach(self, spec: SandboxSpec, provider_id: str) -> Sandbox:
+        live = self._live.get(provider_id)
         if live is None:
             modal = importlib.import_module("modal")
             try:
-                sandbox = await modal.Sandbox.from_id.aio(sandbox_id, client=self.client)
+                sandbox = await modal.Sandbox.from_id.aio(provider_id, client=self.client)
             except Exception as exc:  # noqa: BLE001 -- any lookup failure means "gone"
-                raise KeyError(sandbox_id) from exc
+                raise KeyError(provider_id) from exc
             if await sandbox.poll.aio() is not None:
-                raise KeyError(sandbox_id)
+                raise KeyError(provider_id)
             # A live sandbox still has its disk: nothing to restore.
             thread_id = (await sandbox.get_tags.aio())[THREAD_TAG]
             return self._handle(sandbox, spec, thread_id)
         sandbox, handle = live
         if await sandbox.poll.aio() is not None:
-            del self._live[sandbox_id]
-            raise KeyError(sandbox_id)
+            del self._live[provider_id]
+            raise KeyError(provider_id)
         return handle
 
     def _handle(self, sandbox: Any, spec: SandboxSpec, thread_id: str) -> ModalSandbox:

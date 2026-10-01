@@ -79,6 +79,7 @@ class LocalThreadRuntime:
                 run_id=run_id,
                 max_turns=payload.max_turns_per_run,
                 parent_thread_id=payload.parent_thread_id,
+                sandbox_id=payload.sandbox_id,
             )
         )
         if started.error is not None:  # an invalid definition: a terminal run, not a loop

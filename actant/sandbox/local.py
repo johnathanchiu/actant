@@ -202,7 +202,7 @@ async def _forward(stream: asyncio.StreamReader) -> None:
 
 
 class LocalSandboxProvider:
-    """Sandboxes under ``spec.mount`` (or ``root``, or a temp dir), one directory per thread.
+    """Sandboxes under ``spec.mount`` (or ``root``, or a temp dir), one directory per key.
 
     Service hosts live as long as this provider's process; ``attach`` reuses a
     running one and restarts a dead one. ``images`` makes hosts return durable asset references.
@@ -213,17 +213,16 @@ class LocalSandboxProvider:
         self.images = images
         self._live: dict[Path, LocalSandbox] = {}
 
-    async def open(self, spec: SandboxSpec, *, agent_id: str, thread_id: str) -> Sandbox:
-        del agent_id
+    async def open(self, spec: SandboxSpec, *, sandbox_id: str) -> Sandbox:
         base = Path(spec.mount) if spec.mount else (self.root or Path(tempfile.mkdtemp("-actant")))
-        root = base / thread_id
+        root = base / sandbox_id
         root.mkdir(parents=True, exist_ok=True)
         return await self._sandbox(spec, root)
 
-    async def attach(self, spec: SandboxSpec, sandbox_id: str) -> Sandbox:
-        root = Path(sandbox_id)
+    async def attach(self, spec: SandboxSpec, provider_id: str) -> Sandbox:
+        root = Path(provider_id)
         if not root.is_dir():
-            raise KeyError(sandbox_id)
+            raise KeyError(provider_id)
         return await self._sandbox(spec, root)
 
     async def _sandbox(self, spec: SandboxSpec, root: Path) -> LocalSandbox:

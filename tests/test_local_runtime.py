@@ -68,9 +68,7 @@ async def test_an_answer_with_no_tool_calls_completes_the_run():
 
 
 async def test_a_tool_call_runs_and_the_run_carries_on():
-    run, stores = await _run(
-        [_call("note", '{"text": "hello"}'), _says("done")]
-    )
+    run, stores = await _run([_call("note", '{"text": "hello"}'), _says("done")])
     assert run.outcome is RunOutcome.COMPLETED
     assert run.turn_count == 2
     messages = await stores.messages.list_for_thread("demo", "t1")

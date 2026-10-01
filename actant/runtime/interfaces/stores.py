@@ -28,20 +28,7 @@ class ThreadStore(Protocol):
 
     async def get(self, agent_id: str, thread_id: str) -> AgentThread: ...
 
-    async def update(self, thread: AgentThread) -> None:
-        """Write the thread's fields, except ``sandbox_id``: only ``claim_sandbox`` sets it."""
-        ...
-
-    async def claim_sandbox(
-        self, agent_id: str, thread_id: str, *, expected: str | None, sandbox_id: str | None
-    ) -> str | None:
-        """Set the thread's sandbox id if it is still ``expected``; return the id it holds.
-
-        A compare-and-set, so two workers that each opened a sandbox for the
-        thread agree on one: the caller whose id comes back won, the other
-        closes its sandbox and attaches the winner's.
-        """
-        ...
+    async def update(self, thread: AgentThread) -> None: ...
 
     async def list_children(self, thread_id: str) -> list[AgentThread]:
         """Direct children across agents; parent thread IDs identify the lineage."""

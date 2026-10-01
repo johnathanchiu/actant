@@ -157,21 +157,6 @@ async def test_validate_blocks_reports_only_the_rows_that_do_not_validate(
     assert "image.source.type" in errors
 
 
-async def test_claim_race_and_stale_update_preserve_single_sandbox(
-    stores: SQLAlchemyRuntimeStores,
-) -> None:
-    stale = await stores.threads.get_or_create("a", "t")
-    winners = await asyncio.gather(
-        *[
-            stores.threads.claim_sandbox("a", "t", expected=None, sandbox_id=f"sandbox-{i}")
-            for i in range(12)
-        ]
-    )
-    assert len(set(winners)) == 1
-    await stores.threads.update(stale)
-    assert (await stores.threads.get("a", "t")).sandbox_id == winners[0]
-
-
 async def test_a_sandbox_claim_race_keeps_one_provider_id_and_its_spec(
     stores: SQLAlchemyRuntimeStores,
 ) -> None:

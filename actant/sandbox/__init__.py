@@ -1,4 +1,8 @@
-"""Per-thread sandboxes for tools that run code."""
+"""Sandboxes for tools that run code, owned by keys.
+
+A standalone layer: the agent runtime depends on it, and it imports nothing from the
+runtime, threads, runs or models.
+"""
 
 from actant.sandbox.base import (
     ArtifactRef,

@@ -22,4 +22,9 @@ class ThreadActivities:
         if self.context.cancel_children is not None:
             await self.context.cancel_children(payload.thread_id)
         if self.context.sandboxes is not None:
-            await self.context.sandboxes.close(payload.agent_id, payload.thread_id, forget=True)
+            # Only the thread's own sandbox: one it names belongs to whoever opened it.
+            thread = await self.context.stores.threads.get_or_create(
+                payload.agent_id, payload.thread_id
+            )
+            if thread.sandbox_id is None:
+                await self.context.sandboxes.close(payload.thread_id)

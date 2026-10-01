@@ -48,18 +48,7 @@ class InMemoryThreadStore:
         return replace(self._threads[(agent_id, thread_id)])
 
     async def update(self, thread: AgentThread) -> None:
-        key = (thread.agent_id, thread.id)
-        current = self._threads.get(key)
-        sandbox_id = current.sandbox_id if current is not None else None
-        self._threads[key] = replace(thread, sandbox_id=sandbox_id)
-
-    async def claim_sandbox(
-        self, agent_id: str, thread_id: str, *, expected: str | None, sandbox_id: str | None
-    ) -> str | None:
-        thread = self._threads[(agent_id, thread_id)]
-        if thread.sandbox_id == expected:
-            thread.sandbox_id = sandbox_id
-        return thread.sandbox_id
+        self._threads[(thread.agent_id, thread.id)] = replace(thread)
 
     async def list_children(self, thread_id: str) -> list[AgentThread]:
         return [

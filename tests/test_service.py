@@ -121,7 +121,7 @@ async def sandbox(tmp_path: Path) -> AsyncIterator[LocalSandbox]:
         env={"PYTHONPATH": TESTS, "SERVICE_KEY": "k"},
         scrub_env=("SERVICE_KEY",),
     )
-    opened = await provider.open(spec, agent_id="a", thread_id="t")
+    opened = await provider.open(spec, sandbox_id="t")
     assert isinstance(opened, LocalSandbox)
     yield opened
     await opened.close()
@@ -260,7 +260,7 @@ async def test_a_connection_lost_after_the_request_is_sent_is_an_error_not_a_ret
 async def test_close_stops_the_host_gracefully(tmp_path: Path) -> None:
     provider = LocalSandboxProvider(tmp_path)
     opened = await provider.open(
-        SandboxSpec(services=SERVICES, env={"PYTHONPATH": TESTS}), agent_id="a", thread_id="t"
+        SandboxSpec(services=SERVICES, env={"PYTHONPATH": TESTS}), sandbox_id="t"
     )
     assert isinstance(opened, LocalSandbox)
     endpoint = await opened.endpoint()
@@ -398,7 +398,7 @@ async def test_script_env_scrubs_what_the_host_keeps(sandbox: LocalSandbox) -> N
 async def test_attach_reuses_the_running_host_and_close_stops_it(tmp_path: Path) -> None:
     provider = LocalSandboxProvider(tmp_path)
     spec = SandboxSpec(services=SERVICES, env={"PYTHONPATH": TESTS})
-    opened = await provider.open(spec, agent_id="a", thread_id="t")
+    opened = await provider.open(spec, sandbox_id="t")
     try:
         attached = await provider.attach(spec, opened.id)
         endpoint = await opened.endpoint()

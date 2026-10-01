@@ -217,6 +217,9 @@ class ThreadInput:
     # Last and defaulted likewise: a history recorded before it existed decodes
     # to the defaults, which are the timeouts it ran with.
     activity_timeouts: ActivityTimeouts = field(default_factory=ActivityTimeouts)
+    #: The id of a sandbox a product opened that this thread works in (recorded on the
+    #: thread as ``AgentThread.sandbox_id``); ``None`` gives it a sandbox of its own.
+    sandbox_id: str | None = None
 
 
 # === Activity I/O ===
@@ -229,6 +232,7 @@ class StartRunInput:
     run_id: str
     max_turns: int | None
     parent_thread_id: str | None = None
+    sandbox_id: str | None = None
 
 
 @dataclass(frozen=True)

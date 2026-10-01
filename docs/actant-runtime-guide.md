@@ -22,7 +22,7 @@ runtime = AgentRuntime(
     stores=stores,
     resolve_agent=resolve_agent,
     sandboxes=SandboxRegistry(
-        {"local": LocalSandboxProvider(Path("/srv/agent-workspaces"))}, stores.threads
+        {"local": LocalSandboxProvider(Path("/srv/agent-workspaces"))}, stores.sandboxes
     ),
     artifact_sink=sink,
 )

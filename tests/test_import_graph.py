@@ -31,6 +31,18 @@ def test_services_do_not_depend_on_the_llm_or_runtime() -> None:
         assert not [i for i in imports if i.startswith(banned)], name
 
 
+def test_the_sandbox_layer_imports_nothing_from_the_runtime() -> None:
+    """``actant.sandbox`` is a layer the agent runtime depends on, never the reverse: keys
+    are plain strings and records go through its own store, so a thread or run never
+    reaches it. Every import counts, a function's own included."""
+    package = Path(__file__).parents[1] / "actant"
+    allowed = ("actant.sandbox", "actant.heartbeat")
+    for path in [*(package / "sandbox").rglob("*.py"), package / "heartbeat.py"]:
+        imports = _absolute_imports(ast.parse(path.read_text(), filename=str(path)))
+        reached = [i for i in imports if i.split(".")[0] == "actant" and not i.startswith(allowed)]
+        assert reached == [], f"{path.relative_to(package)} imports {reached}"
+
+
 def _module_name(path: Path, package_parent: Path) -> str:
     module = ".".join(path.relative_to(package_parent).with_suffix("").parts)
     return module.removesuffix(".__init__")

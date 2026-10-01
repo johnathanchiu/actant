@@ -15,6 +15,25 @@ affect users.
   `actant_sandboxes`, revision `5b0e2f7c9a41`). `RuntimeStores` gains `sandboxes`; a
   custom `RuntimeStores` must provide it. A recorded spec keeps every field but `image`,
   `env` included: put secrets in `secrets` or the provider's configuration.
+- Breaking: a sandbox is owned by an opaque `sandbox_id` its owner picks, not by an agent
+  thread. `SandboxRegistry(providers, stores.sandboxes)` takes the sandbox store (not
+  `stores.threads`), and `open(sandbox_id, spec)` (the owner's, idempotent),
+  `attach(sandbox_id)` (anyone else's: reopens a reclaimed sandbox from its recorded spec,
+  `KeyError` for an id nobody opened) and `close(sandbox_id)` (the owner's: forgets it and
+  stops the sandbox wherever it was opened) replace `for_thread` and
+  `close(agent_id, thread_id, forget=, spec=)`. The backend's own id is `provider_id`:
+  `SandboxProvider.open(spec, *, sandbox_id)` and `attach(spec, provider_id)`.
+- `actant.sandbox` is a standalone layer: the agent runtime depends on it, never the
+  reverse. It imports nothing from actant's runtime, threads, runs or models (a test
+  enforces it); ids are plain strings and records go through `SandboxStore`.
+- A thread names the sandbox it works in instead of owning one: `ThreadInput.sandbox_id`
+  (and `AgentRuntime.send_message(sandbox_id=)`) is recorded as `AgentThread.sandbox_id`;
+  its tools attach to that sandbox and its cancellation never closes it. A thread that
+  names none opens its own under its thread id and closes it when cancelled, as before.
+  Breaking: `AgentThread.sandbox_id` now holds that id, not a backend's;
+  `ThreadStore.claim_sandbox` is removed. Revision `8c1d4e2b7f30` clears the old backend
+  ids: a thread whose sandbox was open across the upgrade opens a new one over the same
+  files.
 
 ## 0.31.0
 

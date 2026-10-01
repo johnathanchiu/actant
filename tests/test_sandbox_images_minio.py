@@ -65,7 +65,7 @@ async def _open(tmp_path: Path, images: ImageBucket) -> AsyncIterator[LocalSandb
         services={"counter": "service_fixtures:Counter"},
         env={"PYTHONPATH": TESTS},
     )
-    sandbox = await provider.open(spec, agent_id="a", thread_id="t1")
+    sandbox = await provider.open(spec, sandbox_id="t1")
     assert isinstance(sandbox, LocalSandbox)
     try:
         yield sandbox
