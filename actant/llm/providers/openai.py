@@ -259,9 +259,9 @@ class OpenAIProvider:
     ) -> Message:
         # One budget includes every retry, backoff, and rate-limiter wait.
         # An outer activity deadline must not silently multiply by attempts.
-        async with asyncio.timeout(self.turn_s):
+        async with asyncio.timeout(self.turn_s) as budget:
             return await self._complete(
-                system, messages, tools, listener, allowed_tools, max_output_tokens
+                system, messages, tools, listener, allowed_tools, max_output_tokens, budget
             )
 
     async def _complete(
@@ -272,6 +272,7 @@ class OpenAIProvider:
         listener: "StreamListener | None",
         allowed_tools: tuple[str, ...],
         max_output_tokens: int | None = None,
+        budget: asyncio.Timeout | None = None,
     ) -> Message:
         params = self._request_params(system, messages, tools)
         if max_output_tokens is not None:
@@ -300,9 +301,13 @@ class OpenAIProvider:
                 retry_after = (
                     _parse_retry_after(error) if isinstance(error, openai.RateLimitError) else None
                 )
-                await asyncio.sleep(
-                    max(0, retry_after or 0) + random.uniform(0, min(30, 2**attempt))
-                )
+                wait = max(0, retry_after or 0) + random.uniform(0, min(30, 2**attempt))
+                ends = budget.when() if budget is not None else None
+                if ends is not None and asyncio.get_running_loop().time() + wait >= ends:
+                    # The budget would run out during the wait: the caller gets this
+                    # failure, not a TimeoutError that hides it.
+                    raise
+                await asyncio.sleep(wait)
         raise AssertionError("unreachable")
 
     async def _reserved_attempt(
