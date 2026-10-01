@@ -438,6 +438,11 @@ the provider's prompt cache keeps matching. It reports explicit missing-object e
 `MissingAsset`. Permission and transport failures propagate. Applications own per-user access
 checks and retention; Actant does not infer object lifetime from URL expiry.
 
+For a provider that cannot fetch URLs (Azure OpenAI times out on presigned URLs), wrap the
+resolver in `actant.assets.InlineImages` (`actant[images]`): each picture is read from its URL
+and sent inline, fitted to `image_side` and `image_bytes`, and kept in a byte-bounded LRU
+(`cache_bytes`) so a thread's history is not re-read every turn. OpenAI direct keeps the URLs.
+
 See [migration guide](migration-core.md) for wiring and legacy-image behavior.
 
 `SandboxSpec.seed` (a bucket key prefix ending in `/`) starts a new thread from a
