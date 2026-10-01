@@ -4,6 +4,15 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A `CompactionConfig.summarizer` the worker never registered fails the thread once, before
+  a run opens (`ApplicationError` of type `UNREGISTERED_SUMMARIZER`, non-retryable), instead
+  of failing every run that compacts and leaving a caller to start the next into the same
+  failure.
+- A blocking compaction whose summary call fails backs off and tries again within the same
+  run (3 attempts) rather than failing the run at once.
+
 ## 0.33.2
 
 - `CompactionConfig(prompt=...)`: an app's own summary instruction in place of actant's

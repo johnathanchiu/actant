@@ -73,6 +73,12 @@ from actant.runtime.temporal.types import (
 _ADMIT_TIMEOUT = timedelta(minutes=10)
 _FINALIZE_TIMEOUT = timedelta(seconds=60)
 _PROJECTION_TIMEOUT = timedelta(seconds=30)
+#: A blocking compaction whose summary call failed tries again, backing off, within the
+#: same run: a run that fails at once only has its caller start the next into the same
+#: failure. A refusal that would end the same way again is non-retryable and fails at once.
+_COMPACT_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=2), backoff_coefficient=2.0, maximum_attempts=3
+)
 
 
 @workflow.defn
@@ -196,6 +202,7 @@ class AgentThreadWorkflow:
                 max_turns=payload.max_turns_per_run,
                 parent_thread_id=payload.parent_thread_id,
                 sandbox_id=payload.sandbox_id,
+                summarizer=(payload.context_compaction or CompactionConfig()).summarizer,
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )
@@ -299,7 +306,7 @@ class AgentThreadWorkflow:
                         start_to_close_timeout=timedelta(
                             seconds=payload.activity_timeouts.compact_s
                         ),
-                        retry_policy=RetryPolicy(maximum_attempts=1),
+                        retry_policy=_COMPACT_RETRY,
                     )
                     # The same turn, from the fresh context; it may not compact
                     # again. Its new messages were not stored, so they land after

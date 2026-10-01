@@ -35,6 +35,11 @@ class ActivityTimeouts:
             raise ValueError("activity timeouts must be positive")
 
 
+#: The ``ApplicationError`` type a thread fails with when ``CompactionConfig.summarizer``
+#: names a client its worker never registered.
+UNREGISTERED_SUMMARIZER = "UnregisteredSummarizer"
+
+
 @dataclass(frozen=True)
 class CompactionConfig:
     """When to compact the model's context, and what survives it verbatim.
@@ -275,6 +280,9 @@ class StartRunInput:
     max_turns: int | None
     parent_thread_id: str | None = None
     sandbox_id: str | None = None
+    #: ``CompactionConfig.summarizer``, checked before the run opens: a name the worker
+    #: never registered fails the thread once, rather than every run that compacts.
+    summarizer: str | None = None
 
 
 @dataclass(frozen=True)

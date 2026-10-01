@@ -48,6 +48,7 @@ from actant.runtime.temporal.types import (
     StoreSummaryInput,
     ToolCallSpec,
     TurnResult,
+    UNREGISTERED_SUMMARIZER,
 )
 from actant.runtime.types.context import TurnContext
 from actant.runtime.types.threads import RunStatus, ThreadStatus
@@ -105,6 +106,15 @@ class RunActivities:
         store has the real count, and this activity already runs once before
         every run, so reading it here costs nothing extra.
         """
+        if payload.summarizer is not None and payload.summarizer not in self.context.summarizers:
+            # Configuration, not a run that failed: no run opens, and the workflow fails.
+            raise ApplicationError(
+                f"no summarizer named {payload.summarizer!r} is registered: "
+                "CompactionConfig.summarizer names a client the worker registers "
+                "(AgentRuntime(summarizers=...))",
+                type=UNREGISTERED_SUMMARIZER,
+                non_retryable=True,
+            )
         resolution_error = None
         try:
             agent = await self.context.agent(payload.agent_id, payload.thread_id)
@@ -339,8 +349,8 @@ class RunActivities:
 
         The summary call carries at most what the last request carried, so it is
         under the image limit, and its output is capped to the window's margin. If
-        it is rejected anyway the activity fails, non-retryable, and the thread
-        keeps its full context.
+        the call fails the activity fails, retryable, and the thread keeps its full
+        context.
         """
         summary = await self._summarize(payload)
         outcome = await self._store_summary(
@@ -459,7 +469,9 @@ class RunActivities:
         llm = self.context.summarizers.get(config.summarizer)
         if llm is None:
             raise ApplicationError(
-                f"no summarizer named {config.summarizer!r} is registered", non_retryable=True
+                f"no summarizer named {config.summarizer!r} is registered",
+                type=UNREGISTERED_SUMMARIZER,
+                non_retryable=True,
             )
         window = _client_limit(llm, "context_window_tokens")
         max_images = _client_limit(llm, "max_images_per_request")
@@ -502,8 +514,9 @@ class RunActivities:
                 agent.persona, request, [], None, max_output_tokens=max_output
             )
         except Exception as exc:
-            # Never fall back to dropping context: the run fails and says why.
-            raise ApplicationError(f"the summary call failed: {exc}", non_retryable=True) from exc
+            # Never fall back to dropping context. Retryable: the workflow backs off and
+            # tries again within the run; when every attempt fails, the run fails and says why.
+            raise ApplicationError(f"the summary call failed: {exc}") from exc
         logger.info(
             "actant.compaction.summary agent=%s model=%s seconds=%.1f input=%s output=%s",
             agent.id,

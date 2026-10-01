@@ -87,6 +87,7 @@ class LocalThreadRuntime:
                 max_turns=payload.max_turns_per_run,
                 parent_thread_id=payload.parent_thread_id,
                 sandbox_id=payload.sandbox_id,
+                summarizer=(payload.context_compaction or CompactionConfig()).summarizer,
             )
         )
         if started.error is not None:  # an invalid definition: a terminal run, not a loop
