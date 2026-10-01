@@ -12,6 +12,9 @@ affect users.
   failure.
 - A blocking compaction whose summary call fails backs off and tries again within the same
   run (3 attempts) rather than failing the run at once.
+- A `disk_sync` push never follows a symbolic link (`s5cmd sync --no-follow-symlinks`): a
+  link inside the pushed folder to a read-only restore entry, an excluded folder or a mount
+  no longer uploads its target again under the link's path.
 
 ## 0.33.2
 
