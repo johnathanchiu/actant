@@ -387,7 +387,7 @@ def test_gemini_replays_tool_call_thought_signature() -> None:
     provider = GeminiProvider(
         model_id="gemini-example",
         api_key="test",
-        check_thinking_support=False,
+        thinking=False,
     )
     message = Message(
         role="assistant",
@@ -408,9 +408,7 @@ def test_gemini_replays_tool_call_thought_signature() -> None:
 
 
 def test_gemini_sends_url_image_sources_as_file_data() -> None:
-    provider = GeminiProvider(
-        model_id="gemini-example", api_key="test", check_thinking_support=False
-    )
+    provider = GeminiProvider(model_id="gemini-example", api_key="test", thinking=False)
     url = "https://b.example/k/a.jpg?X-Amz-Signature=s"
     [part] = provider.content_blocks_to_parts([UrlImageBlock(url=url, media_type="image/jpeg")])
     assert part.file_data is not None
@@ -577,3 +575,12 @@ def test_an_azure_deployment_is_declared_not_guessed_from_the_client() -> None:
         api_version="2025-04-01-preview",
     )
     assert OpenAIProvider("gpt-x", client=sdk).max_images_per_request == 50
+
+
+def test_gemini_never_calls_the_api_to_build_and_sends_thinking_unless_told_not_to() -> None:
+    provider = GeminiProvider(model_id="gemini-example", api_key="test")
+    config = provider._thinking_config()
+    assert config is not None and config.thinking_budget == 8192
+    assert (
+        GeminiProvider("gemini-example", api_key="test", thinking=False)._thinking_config() is None
+    )

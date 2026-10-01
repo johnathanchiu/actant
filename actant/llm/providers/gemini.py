@@ -91,7 +91,11 @@ ToolSchema = dict[str, object]
 
 
 class GeminiProvider:
-    """LLMClient implementation for Gemini generate_content."""
+    """LLMClient implementation for Gemini generate_content.
+
+    ``thinking`` says whether the model takes a thinking config (Gemini 2.5 and later
+    do); False sends none, for a model without thinking.
+    """
 
     supports_allowed_tools = False
 
@@ -102,21 +106,12 @@ class GeminiProvider:
         api_key: str | None = None,
         thinking_level: str = "med",
         client: genai.Client | None = None,
-        check_thinking_support: bool = True,
+        thinking: bool = True,
     ) -> None:
         self.model_id = model_id.removeprefix("gemini/")
         self.thinking_level = thinking_level
         self.client = client or genai.Client(api_key=env_api_key("GEMINI_API_KEY", api_key))
-        self._supports_thinking = (
-            self._check_thinking_support() if check_thinking_support else False
-        )
-
-    def _check_thinking_support(self) -> bool:
-        try:
-            model_info = self.client.models.get(model=self.model_id)
-        except Exception:
-            return False
-        return bool(getattr(model_info, "thinking", False))
+        self.thinking = thinking
 
     @staticmethod
     def convert_arguments(args: str | ToolSchema | list[object] | None) -> ToolSchema:
@@ -239,7 +234,7 @@ class GeminiProvider:
         return types.Content(role=role, parts=parts)
 
     def _thinking_config(self) -> types.ThinkingConfig | None:
-        if not self._supports_thinking:
+        if not self.thinking:
             return None
         budget = THINKING_BUDGETS.get(self.thinking_level, 0)
         return types.ThinkingConfig(

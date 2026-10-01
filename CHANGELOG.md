@@ -4,6 +4,12 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Breaking: `GeminiProvider(check_thinking_support=...)` is replaced by `thinking: bool = True`.
+  The provider no longer calls the API while it is built (a blocking call that turned any
+  error into "no thinking"); pass `thinking=False` for a model without thinking.
+
 ## 0.30.0
 
 - `SandboxSpec.region` places a Modal sandbox (`"us"`, `"us-east"`, or several);
