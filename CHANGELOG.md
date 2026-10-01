@@ -4,6 +4,12 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `SandboxRunner(client=...)` takes a shared `httpx.AsyncClient`. Runners made per call
+  (one per stage or tool call) reuse its open connections to the sandbox host instead of
+  a new TLS handshake each; the runner leaves a client it was given open.
+
 ## 0.31.0
 
 - `AgentRuntime.cancel_thread` records the cancel in the stores before it returns: open
