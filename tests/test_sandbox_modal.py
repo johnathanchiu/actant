@@ -160,6 +160,21 @@ async def test_mount_without_service_has_no_entrypoint(
     assert (await sandbox.sync()).returncode == 0 and fake.execs == []
 
 
+async def test_sandboxes_run_in_the_providers_region_when_it_names_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeModal()
+    _use(monkeypatch, fake)
+    await ModalSandboxProvider(app_name="app", bucket="b").open(
+        SandboxSpec(backend="modal"), agent_id="a", thread_id="t1"
+    )
+    assert "region" not in fake.created[1]  # unnamed: anywhere, as Modal chooses
+    await ModalSandboxProvider(app_name="app", bucket="b", region="us-east").open(
+        SandboxSpec(backend="modal"), agent_id="a", thread_id="t2"
+    )
+    assert fake.created[1]["region"] == "us-east"
+
+
 async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_token(
     monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
 ) -> None:

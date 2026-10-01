@@ -190,6 +190,10 @@ class ModalSandboxProvider:
     #: ``modal.Secret.from_dict`` so a test needs no persisted Modal secret.
     #: ``AWS_REGION`` defaults to ``us-east-1``. Takes precedence over ``secret_name``.
     bucket_env: Mapping[str, str] | None = None
+    #: Where Modal runs the sandboxes (``"us-east"``, ``"us-west-2"``; Modal's region names),
+    #: or None for anywhere. Every tool call is a round trip from the worker to its sandbox,
+    #: so a worker names its own region: unpinned, a call from us-east took ~0.3 s more.
+    region: str | None = None
     client: Any = None
     # ponytail: handles of closed sandboxes stay until their id is attached again
     _live: dict[str, tuple[Any, ModalSandbox]] = field(
@@ -264,6 +268,7 @@ class ModalSandboxProvider:
             volumes=volumes,
             workdir=root,
             readiness_probe=probe,
+            **({"region": self.region} if self.region else {}),
             client=self.client,
         )
         if probe is not None:
