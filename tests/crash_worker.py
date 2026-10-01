@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 import os
 from pathlib import Path
 import sys
@@ -56,10 +55,6 @@ async def main(address: str, queue: str, schema: str, effects: str) -> None:
     activities = TemporalRuntimeActivities(
         ActivityContext(stores=stores, resolve_agent=static_agents({"a": agent}))
     )
-    # Only shorten failure detection. Execute the production workflow/activity bodies
-    # and retry policy. Unsandboxed runner preserves these process-local test constants.
-    workflow_module._TOOL_HEARTBEAT_TIMEOUT = timedelta(seconds=3)
-    workflow_module._TOOL_TIMEOUT = timedelta(seconds=10)
     try:
         async with Worker(
             await Client.connect(address),

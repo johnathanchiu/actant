@@ -21,6 +21,7 @@ from actant.runtime.temporal.types import (
     ExecuteOutcome,
     ExecuteStatus,
     ResolveToolInput,
+    TOOL_HEARTBEAT_EVERY_S,
 )
 from actant.runtime.types.context import TurnContext
 from actant.tools.admission import (
@@ -34,7 +35,7 @@ from actant.tools.admission import (
 from actant.tools.base import CallContext, MetadataKey, Tool, ToolInvocation, ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
-HEARTBEAT_SECONDS = 30.0
+HEARTBEAT_SECONDS = TOOL_HEARTBEAT_EVERY_S
 
 
 class ToolActivities:
