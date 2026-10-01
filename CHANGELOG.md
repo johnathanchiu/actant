@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `actant.assets.InlineImages` wraps a URL resolver for a provider that cannot fetch URLs
+  (Azure OpenAI): each picture is read from its URL and sent inline, fitted to `image_side`
+  and `image_bytes` (`fit_image`, deterministic so the prompt cache keeps matching), and
+  kept in a byte-bounded LRU (`cache_bytes`, 256 MiB) so a thread's next turn does not read
+  and re-encode its history's pictures again. Needs the new `actant[images]` extra (Pillow).
+
 ## 0.28.0
 
 - A turn's `turn_s` now ends a stream whose events never pause. On Python 3.11 the
