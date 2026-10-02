@@ -18,7 +18,7 @@ from actant.blocks import AssetBlock, Base64Source, Block, InlineImageBlock, Tex
 from actant.core import JSONObject
 import actant.sandbox.host as host
 from actant.sandbox.protocol import AssetSource, CallResponse, Image
-from actant.sandbox.service import LocalRunner, Runner
+from actant.sandbox.service import LocalRunner, Runner, service_call_id
 from actant.tools.base import BaseToolInvocation, CallContext, MetadataKey, ToolResult, ToolSchema
 
 
@@ -67,9 +67,13 @@ class ServiceInvocation(BaseToolInvocation[dict[str, object], ToolResult]):
         return f"Running {self._tool.name}"
 
     async def execute(self) -> ToolResult:
-        response = await self._tool.runner.call(
-            self._tool.name, self.params, key=self._ctx.thread_id, sandbox=self._ctx.sandbox
-        )
+        token = service_call_id.set(f"{self._ctx.thread_id}:{self._ctx.tool_call_id}")
+        try:
+            response = await self._tool.runner.call(
+                self._tool.name, self.params, key=self._ctx.thread_id, sandbox=self._ctx.sandbox
+            )
+        finally:
+            service_call_id.reset(token)
         return to_tool_result(response)
 
 

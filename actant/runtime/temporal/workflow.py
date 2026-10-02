@@ -34,8 +34,11 @@ activity, worker thread, or polling loop remains active while a human decides.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from collections.abc import Sequence
 from dataclasses import replace
+from datetime import timedelta
+from typing import TypeVar
+
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import (
@@ -44,7 +47,8 @@ from temporalio.exceptions import (
     ChildWorkflowError,
     WorkflowAlreadyStartedError,
 )
-from temporalio.workflow import ParentClosePolicy
+from temporalio.workflow import ActivityCancellationType, ParentClosePolicy
+
 
 with workflow.unsafe.imports_passed_through():
     from actant.runtime.temporal.activities import (
@@ -97,6 +101,32 @@ _LOST_TURN_RETRY = RetryPolicy(maximum_attempts=3)
 _COMPACT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=2), backoff_coefficient=2.0, maximum_attempts=3
 )
+
+
+def _service_drain_failed(error: BaseException) -> bool:
+    cause: BaseException | None = error
+    while cause is not None:
+        if isinstance(cause, ApplicationError) and cause.type == "ServiceDrainError":
+            return True
+        cause = cause.__cause__
+    return False
+
+
+_DrainResult = TypeVar("_DrainResult")
+
+
+async def _drain_cancelled(handles: Sequence[asyncio.Future[_DrainResult]]) -> None:
+    for handle in handles:
+        handle.cancel()
+    drained = asyncio.gather(*handles, return_exceptions=True)
+    while not drained.done():
+        try:
+            await asyncio.shield(drained)
+        except asyncio.CancelledError:
+            continue
+    for result in drained.result():
+        if isinstance(result, BaseException) and _service_drain_failed(result):
+            raise result
 
 
 @workflow.defn
@@ -388,6 +418,8 @@ class AgentThreadWorkflow:
             try:
                 should_stop = await self._run_tool_group(payload, turn)
             except ActivityError as error:
+                if workflow.patched("service-drain-failure-v1") and _service_drain_failed(error):
+                    raise
                 self._stop_reason = str(error.__cause__ or error)
                 return RunOutcome.FAILED
             if self._cancelled:
@@ -415,6 +447,12 @@ class AgentThreadWorkflow:
         """
         run_id = turn.tool_calls[0].run_id
         group_id = turn.tool_calls[0].group_id
+        # Histories recorded before this marker retain their original cancellation
+        # commands; new runs wait for tool cleanup before closing their thread.
+        drain_cancelled_tools = workflow.patched("tool-cancellation-drain-v1")
+        drain_service_failures = drain_cancelled_tools and workflow.patched(
+            "service-drain-failure-v1"
+        )
 
         # 1. Classify all tools in parallel.
         admit_handles = [
@@ -428,17 +466,28 @@ class AgentThreadWorkflow:
                 ),
                 start_to_close_timeout=_ADMIT_TIMEOUT,
                 retry_policy=RetryPolicy(maximum_attempts=1),
+                cancellation_type=(
+                    ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
+                    if drain_service_failures
+                    else ActivityCancellationType.TRY_CANCEL
+                ),
             )
             for spec in turn.tool_calls
         ]
         admits: dict[str, AdmitOutcome] = {}
         admission_error: ActivityError | None = None
-        for fut in workflow.as_completed(admit_handles):
-            try:
-                outcome = await fut
-                admits[outcome.tool_call_id] = outcome
-            except ActivityError as error:
-                admission_error = error
+        try:
+            for fut in workflow.as_completed(admit_handles):
+                try:
+                    outcome = await fut
+                    admits[outcome.tool_call_id] = outcome
+                except ActivityError as error:
+                    if admission_error is None or _service_drain_failed(error):
+                        admission_error = error
+        except asyncio.CancelledError:
+            if drain_service_failures:
+                await _drain_cancelled(admit_handles)
+            raise
         if admission_error is not None:
             raise admission_error
 
@@ -466,6 +515,11 @@ class AgentThreadWorkflow:
                             seconds=payload.activity_timeouts.tool_heartbeat_s
                         ),
                         retry_policy=_LOST_TOOL_RETRY,
+                        cancellation_type=(
+                            ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
+                            if drain_cancelled_tools
+                            else ActivityCancellationType.TRY_CANCEL
+                        ),
                     )
                 )
             elif decision == AdmitDecision.AWAIT_HUMAN.value:
@@ -485,14 +539,25 @@ class AgentThreadWorkflow:
         #    workflow only for activity completions, signals, timers, or cancel.
         terminal_tool = False
         execution_error: ActivityError | None = None
-        for fut in workflow.as_completed(exec_handles):
-            try:
-                outcome = await fut  # result already persisted by activity body
-                terminal_tool = terminal_tool or outcome.terminal
-            except ActivityError as error:
-                # Drain siblings before finalization; do not race late tool writes.
-                # Reached only once its retries are spent.
-                execution_error = error
+        try:
+            for fut in workflow.as_completed(exec_handles):
+                try:
+                    outcome = await fut  # result already persisted by activity body
+                    terminal_tool = terminal_tool or outcome.terminal
+                except ActivityError as error:
+                    # Drain siblings before finalization; do not race late tool writes.
+                    # Reached only once its retries are spent.
+                    if execution_error is None or _service_drain_failed(error):
+                        execution_error = error
+        except asyncio.CancelledError:
+            if drain_cancelled_tools:
+                if drain_service_failures:
+                    await _drain_cancelled(exec_handles)
+                else:
+                    for handle in exec_handles:
+                        handle.cancel()
+                    await asyncio.shield(asyncio.gather(*exec_handles, return_exceptions=True))
+            raise
         if execution_error is not None:
             raise execution_error
 
@@ -545,6 +610,11 @@ class AgentThreadWorkflow:
             ),
             start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.tool_s),
             retry_policy=RetryPolicy(maximum_attempts=1),
+            cancellation_type=(
+                ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
+                if workflow.patched("tool-cancellation-drain-v1")
+                else ActivityCancellationType.TRY_CANCEL
+            ),
         )
         self._resolving_tool_ids.discard(tool_call_id)
         self._resolved_tool_ids.add(tool_call_id)

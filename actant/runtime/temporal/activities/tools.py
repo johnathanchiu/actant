@@ -7,6 +7,7 @@ import mimetypes
 from typing import Any, cast
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from actant.agents import AgentDefinition
 from actant.heartbeat import heartbeating
@@ -23,6 +24,7 @@ from actant.runtime.temporal.types import (
     ResolveToolInput,
 )
 from actant.runtime.types.context import TurnContext
+from actant.sandbox.service import ServiceDrainError
 from actant.tools.admission import (
     ToolCallView,
     ToolCanExecute,
@@ -33,6 +35,7 @@ from actant.tools.admission import (
 )
 from actant.tools.base import CallContext, MetadataKey, Tool, ToolInvocation, ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
+from actant.tools.service import ServiceTool
 
 #: The result of a call whose worker was lost while it ran, when its tool is not
 #: ``retry_safe``: the model decides what to do, knowing the effect is uncertain.
@@ -53,6 +56,8 @@ class ToolActivities:
         """Classify one tool as allowed, blocked, or waiting."""
         try:
             return await self._admit_tool(payload)
+        except ServiceDrainError as exc:
+            raise ApplicationError(str(exc), type="ServiceDrainError", non_retryable=True) from exc
         except Exception as exc:  # noqa: BLE001 -- activity boundary
             return await self._admit_failed(payload.tool_call_id, f"admission_error: {exc}")
 
@@ -77,6 +82,8 @@ class ToolActivities:
             invocation = await tool.build(
                 record.args, await self._call_context(agent, tool, record)
             )
+        except ServiceDrainError:
+            raise
         except Exception as exc:  # noqa: BLE001
             return await self._deny(record, events, f"Tool build error: {exc}")
 
@@ -155,6 +162,8 @@ class ToolActivities:
         """Execute and persist one previously admitted tool call."""
         try:
             return await self._execute_tool(payload)
+        except ServiceDrainError as exc:
+            raise ApplicationError(str(exc), type="ServiceDrainError", non_retryable=True) from exc
         except Exception as exc:  # noqa: BLE001 -- activity boundary
             return await self._execute_failed(payload.tool_call_id, f"execute_error: {exc}")
 
@@ -174,6 +183,11 @@ class ToolActivities:
             # An earlier attempt was lost with its worker before it stored a result.
             # Run it again only when the tool says that is safe; otherwise close it
             # so the run goes on and the model sees what happened.
+            if isinstance(tool, ServiceTool):
+                raise ServiceDrainError(
+                    "worker running the service call was lost; remote effects have not "
+                    "been confirmed drained, so this workspace cannot be reused"
+                )
             if not getattr(tool, "retry_safe", False):
                 return await self._execute_failed(record.id, TOOL_INTERRUPTED)
         # A tool that runs code can take minutes, and opening its sandbox can
@@ -185,9 +199,13 @@ class ToolActivities:
                 try:
                     ctx = await self._call_context(agent, tool, record)
                     invocation = await tool.build(record.args, ctx)
+                except ServiceDrainError:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     return await self._execute_failed(record.id, f"Tool build error: {exc}")
                 result = await invocation.execute()
+            except ServiceDrainError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 result = ToolResult.fail(f"Tool execution error: {exc}")
             else:
@@ -340,6 +358,8 @@ class ToolActivities:
                     ctx = await self._call_context(agent, tool, record)
                     return await cast(Any, resolve)(record, resolution, ctx=ctx)
                 return await resolve(record, resolution)
+        except ServiceDrainError as error:
+            raise ApplicationError(str(error), type="ServiceDrainError", non_retryable=True) from error
         except Exception as error:
             return ToolResult.fail(f"on_resolve failed: {error}")
         output: dict[str, object] = {
