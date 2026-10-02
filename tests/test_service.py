@@ -48,7 +48,9 @@ SERVICES = {"counter": "service_fixtures:Counter", "stages": "service_fixtures:S
 
 
 def _ctx(sandbox: LocalSandbox | None = None, thread: str = "t") -> CallContext:
-    return CallContext("a", thread, "r", "tc", "turn", sandbox=sandbox)
+    from uuid import uuid4
+
+    return CallContext("a", thread, "r", uuid4().hex, "turn", sandbox=sandbox)
 
 
 class Base:

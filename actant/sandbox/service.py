@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from contextvars import ContextVar
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Protocol
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -41,12 +43,21 @@ if TYPE_CHECKING:
 import actant.sandbox.host as host
 from actant.heartbeat import heartbeating
 from actant.sandbox.base import Endpoint, Sandbox
-from actant.sandbox.protocol import CallRequest, CallResponse, Route
+from actant.sandbox.protocol import CallRequest, CallResponse, CancelRequest, Route
 
 DEFAULT_CALL_TIMEOUT_S = 600.0
 #: Concurrent connections one runner holds to service hosts. A call past the cap waits
 #: for a free connection inside its own deadline.
 MAX_HOST_CONNECTIONS = 64
+service_call_id: ContextVar[str | None] = ContextVar("service_call_id", default=None)
+
+
+class ServiceDrainError(Exception):
+    """Remote effects may still be running; callers must not reuse their workspace."""
+
+
+class _ServiceResponseError(Exception):
+    """A proxy or malformed response does not establish remote completion."""
 
 
 class Runner(Protocol):
@@ -82,7 +93,19 @@ class LocalRunner:
         sandbox: Sandbox | None = None,
     ) -> CallResponse:
         del key, sandbox
-        return await host.call_method(self.instance, method, args)
+        task = asyncio.create_task(host.call_method(self.instance, method, args))
+        cancelled = False
+        while True:
+            try:
+                response = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        return response
 
 
 class RemoteRunner:
@@ -215,7 +238,12 @@ def _body(
     service: str, key: str, init: Mapping[str, object], method: str, args: Mapping[str, object]
 ) -> bytes:
     request = CallRequest(
-        service=service, key=key, init=dict(init), method=method, args=dict(args)
+        service=service,
+        key=key,
+        init=dict(init),
+        method=method,
+        args=dict(args),
+        call_id=service_call_id.get() or uuid4().hex,
     )
     return request.model_dump_json().encode()
 
@@ -235,22 +263,87 @@ async def _post(
 
     if client is None:
         async with httpx.AsyncClient(trust_env=False) as owned:
-            return await _send(endpoint, body, timeout, owned)
+            return await _post(endpoint, body, timeout, owned)
+    request = asyncio.create_task(_request(endpoint, body, timeout, client))
     try:
-        async with asyncio.timeout(timeout):
-            response = await client.post(
-                endpoint.url.rstrip("/") + Route.CALL,
-                content=body,
-                headers={"Content-Type": "application/json", **endpoint.headers},
-                timeout=timeout,
-            )
-        status, data = response.status_code, response.content
-    except (OSError, httpx.HTTPError) as error:
+        return await asyncio.shield(request)
+    except (
+        asyncio.CancelledError,
+        TimeoutError,
+        OSError,
+        httpx.HTTPError,
+        _ServiceResponseError,
+    ) as error:
+        # The original request owns a connection. Drain through a separate pool,
+        # including when the transport failed after admitting the remote call.
+        drain = asyncio.create_task(_drain(endpoint, body, timeout))
+        try:
+            while not drain.done():
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError:
+                    continue
+            drain.result()
+        finally:
+            request.cancel()
+            while not request.done():
+                try:
+                    await asyncio.shield(request)
+                except asyncio.CancelledError:
+                    continue
+                except (TimeoutError, OSError, httpx.HTTPError, _ServiceResponseError):
+                    break
+            # Retrieve any transport exception without replacing the drain result.
+            if not request.cancelled():
+                request.exception()
+        if isinstance(error, asyncio.CancelledError):
+            raise
         return None, CallResponse(
-            error=f"service host call to {endpoint.url} failed and may have run: {error}"
+            error=f"service host call to {endpoint.url} failed and may have run; effects drained: {error}"
         )
+
+
+async def _drain(endpoint: Endpoint, body: bytes, timeout: float) -> None:
+    import httpx
+
+    call_id = CallRequest.model_validate_json(body).call_id
+    if call_id is None:
+        raise ServiceDrainError("Cannot drain a service call without an identity")
+    try:
+        async with httpx.AsyncClient(trust_env=False) as client:
+            async with asyncio.timeout(timeout):
+                response = await client.post(
+                    endpoint.url.rstrip("/") + Route.CANCEL,
+                    content=CancelRequest(call_id=call_id).model_dump_json().encode(),
+                    headers={"Content-Type": "application/json", **endpoint.headers},
+                    timeout=timeout,
+                )
+            result = CallResponse.model_validate_json(response.content)
+            if response.status_code != HTTPStatus.OK or result.error or result.text != "drained":
+                raise ServiceDrainError(
+                    f"Service host did not acknowledge drain: HTTP {response.status_code}"
+                )
+    except (TimeoutError, OSError, httpx.HTTPError, ValidationError) as error:
+        raise ServiceDrainError(
+            f"Service host drain unresolved at {endpoint.url}: {error}"
+        ) from error
+
+
+async def _request(
+    endpoint: Endpoint, body: bytes, timeout: float, client: httpx.AsyncClient
+) -> tuple[int | None, CallResponse]:
+    async with asyncio.timeout(timeout):
+        response = await client.post(
+            endpoint.url.rstrip("/") + Route.CALL,
+            content=body,
+            headers={"Content-Type": "application/json", **endpoint.headers},
+            timeout=timeout,
+        )
+    status, data = response.status_code, response.content
+    if status >= 500:
+        raise _ServiceResponseError(f"service host returned HTTP {status}")
     try:
         return status, CallResponse.model_validate_json(data)
     except ValidationError:
         tail = data[-1000:].decode(errors="replace")
-        return status, CallResponse(error=f"service host returned HTTP {status}: {tail}")
+        raise _ServiceResponseError(f"service host returned HTTP {status}: {tail}") from None

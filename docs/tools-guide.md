@@ -339,6 +339,25 @@ async with SandboxRunner("pipeline") as runner:
     result = await runner.call("stage", {}, key=thread_id, sandbox=sandbox)
 ```
 
+Service calls carry an invocation ID. Service tools derive it from the thread and
+tool-call IDs; direct runner calls generate a fresh ID. Within one host process,
+repeating the same ID and request returns the original invocation's result;
+reusing that ID for different inputs is rejected.
+
+Cancellation waits for the method and its awaited cleanup to finish before
+returning. Synchronous methods also drain their worker thread. Remote clients use
+a separate connection to acknowledge draining after cancellation or an ambiguous
+transport failure. If draining cannot be confirmed, `ServiceDrainError` propagates
+as a nonretryable infrastructure failure, not an ordinary failed tool. A service
+activity lost with its worker also fails closed rather than permitting continued
+execution against uncertain effects.
+
+These guarantees require an endpoint bound to the same host process during the
+call and drain. They do not fence another host behind a load balancer, a replaced
+host, or detached tasks/subprocesses that outlive the method. Service methods must
+await their side effects before returning. Legacy hosts without the drain route
+fail closed when cancellation or transport uncertainty requires acknowledgement.
+
 `RemoteRunner` and `SandboxRunner` reuse asynchronous HTTP connection pools;
 use an async context manager, or call `await runner.close()` when their owning
 worker or stage ends. HTTP calls have a total deadline, not only a socket-idle

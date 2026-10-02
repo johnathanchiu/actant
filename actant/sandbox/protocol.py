@@ -17,6 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
 class Route(StrEnum):
     #: ``POST`` a :class:`CallRequest`; the reply is a :class:`CallResponse`.
     CALL = "/v1/call"
+    #: Fence one invocation and wait until its service effects have drained.
+    CANCEL = "/v1/cancel"
     #: Close every instance, push storage once more, answer, and exit.
     SHUTDOWN = "/v1/shutdown"
 
@@ -38,6 +40,12 @@ class CallRequest(_Message):
     method: str
     init: dict[str, Any] = Field(default_factory=dict)
     args: dict[str, Any] = Field(default_factory=dict)
+    #: Optional invocation identity; old clients omit it and retain ordinary call behavior.
+    call_id: str = ""
+
+
+class CancelRequest(_Message):
+    call_id: str = Field(min_length=1)
 
 
 class ImageSourceKind(StrEnum):

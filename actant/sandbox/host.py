@@ -20,6 +20,7 @@ its own code makes (setup, stages, checks) on another, without filtering.
 Protocol (JSON bodies, typed in :mod:`actant.sandbox.protocol`)::
 
     POST /v1/call CallRequest -> CallResponse
+    POST /v1/cancel CancelRequest -> wait for invocation effects to drain
     POST /v1/shutdown         -> close instances, push, exit
 
 Connections are kept alive (HTTP/1.1); :func:`post` is the pooled client.
@@ -80,6 +81,7 @@ from actant.sandbox.base import Endpoint, ImageBucket, SandboxSpec
 from actant.sandbox.protocol import (
     CallRequest,
     CallResponse,
+    CancelRequest,
     Header,
     HostConfig,
     Image,
@@ -456,6 +458,11 @@ class Host:
         self.uploader = ImageUploader(images) if images else None
         # Futures, not instances: two parallel first calls share one ``open``.
         self.instances: dict[tuple[str, str], asyncio.Future[object]] = {}
+        self.calls: dict[
+            str, tuple[CallRequest, asyncio.Task[tuple[HTTPStatus, CallResponse]]]
+        ] = {}
+        self._active_calls: set[asyncio.Task[tuple[HTTPStatus, CallResponse]]] = set()
+        self._cancelled_calls: set[str] = set()
         self._push_due = asyncio.Event()
         self._push_lock = asyncio.Lock()
         self._pending = False
@@ -474,7 +481,7 @@ class Host:
             opening = open_instance(self.services[service], init)
             future = self.instances[slot] = asyncio.ensure_future(opening)
         try:
-            return await future
+            return await asyncio.shield(future)
         except BaseException:
             # A failed ``open``: the next call retries it, unless a retry already replaced
             # this one. A cancelled waiter leaves an ``open`` still running in place.
@@ -483,6 +490,58 @@ class Host:
             raise
 
     async def call(self, request: CallRequest) -> tuple[HTTPStatus, CallResponse]:
+        """Own invocation work independently of the connection awaiting its response."""
+        if self._shutdown is not None:
+            return HTTPStatus.SERVICE_UNAVAILABLE, CallResponse(error="service host is stopping")
+        if request.call_id in self._cancelled_calls:
+            return HTTPStatus.CONFLICT, CallResponse(error="service invocation was cancelled")
+        existing = self.calls.get(request.call_id) if request.call_id else None
+        if existing is not None:
+            prior, task = existing
+            if prior != request:
+                return HTTPStatus.CONFLICT, CallResponse(
+                    error="call_id reused for a different request"
+                )
+        else:
+            task = asyncio.create_task(self._call(request))
+            self._active_calls.add(task)
+            task.add_done_callback(self._active_calls.discard)
+            if request.call_id:
+                self.calls[request.call_id] = (request, task)
+        return await self._drain_call(task)
+
+    @staticmethod
+    async def _drain_call(
+        task: asyncio.Task[tuple[HTTPStatus, CallResponse]],
+    ) -> tuple[HTTPStatus, CallResponse]:
+        """Repeated waiter cancellation cannot interrupt invocation work or its drain."""
+        cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def cancel(self, request: CancelRequest) -> tuple[HTTPStatus, CallResponse]:
+        """Fence admission, then drain started work without cancelling descendant writes.
+
+        This acknowledgement covers this host process only. Endpoints must remain bound
+        to that process while a call drains; an unknown ID after host replacement cannot
+        certify that another process stopped writing.
+        """
+        self._cancelled_calls.add(request.call_id)
+        existing = self.calls.get(request.call_id)
+        if existing is not None:
+            await self._drain_call(existing[1])
+        return HTTPStatus.OK, CallResponse(text="drained")
+
+    async def _call(self, request: CallRequest) -> tuple[HTTPStatus, CallResponse]:
         if request.service not in self.services:
             return HTTPStatus.NOT_FOUND, CallResponse(
                 error=f"unknown service {request.service!r}; served: {sorted(self.services)}"
@@ -570,7 +629,13 @@ class Host:
             return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, CallResponse(error="body too large")
         return None
 
-    async def route(self, body: bytes) -> tuple[HTTPStatus, CallResponse]:
+    async def route(self, body: bytes, path: str = Route.CALL) -> tuple[HTTPStatus, CallResponse]:
+        if path == Route.CANCEL:
+            try:
+                cancellation = CancelRequest.model_validate_json(body)
+            except ValidationError as error:
+                return HTTPStatus.BAD_REQUEST, CallResponse(error=f"bad cancel request: {error}")
+            return await self.cancel(cancellation)
         try:
             request = CallRequest.model_validate_json(body)
         except ValidationError as error:
@@ -628,9 +693,9 @@ class Host:
         except (ValueError, asyncio.IncompleteReadError) as error:
             return HTTPStatus.BAD_REQUEST, CallResponse(error=f"malformed request: {error}"), True
         if path == Route.SHUTDOWN:
-            await self.shutdown()
+            await asyncio.shield(self.shutdown())
             return HTTPStatus.OK, CallResponse(text="stopped"), True
-        return *(await self.route(body)), close
+        return *(await self.route(body, path)), close
 
     async def close_instances(self) -> None:
         for future in self.instances.values():
@@ -649,6 +714,11 @@ class Host:
         return self._shutdown
 
     async def _close_and_push(self) -> None:
+        if self._active_calls:
+            await asyncio.gather(
+                *(self._drain_call(task) for task in tuple(self._active_calls)),
+                return_exceptions=True,
+            )
         await self.close_instances()
         await self.push_now()
 
@@ -686,7 +756,7 @@ async def serve(host: Host, bind: str, port: int) -> None:
         await host.stop.wait()
     finally:
         server.close()
-        await host.shutdown()
+        await asyncio.shield(host.shutdown())
         if pusher is not None:
             pusher.cancel()
         for writer in list(host.writers):
