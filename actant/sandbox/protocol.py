@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
 class Route(StrEnum):
     #: ``POST`` a :class:`CallRequest`; the reply is a :class:`CallResponse`.
     CALL = "/v1/call"
+    #: ``POST`` a :class:`CancelRequest`: the caller gave up on that call; stop it.
+    CANCEL = "/v1/cancel"
     #: Close every instance, push storage once more, answer, and exit.
     SHUTDOWN = "/v1/shutdown"
 
@@ -44,6 +46,10 @@ class CallRequest(_Message):
     #: another; a different request under a known id is refused (409). A caller that may
     #: send a call again (a retried tool call) gives it a stable id; the default is fresh.
     call_id: str = Field(default_factory=lambda: uuid.uuid4().hex, min_length=1)
+
+
+class CancelRequest(_Message):
+    call_id: str = Field(min_length=1)
 
 
 class ImageSourceKind(StrEnum):

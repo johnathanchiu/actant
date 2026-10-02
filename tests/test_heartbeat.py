@@ -11,7 +11,7 @@ import actant.heartbeat
 import actant.sandbox.service as service
 from actant.heartbeat import heartbeating
 from actant.sandbox.base import Endpoint
-from actant.sandbox.protocol import CallResponse
+from actant.sandbox.protocol import CallRequest, CallResponse
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +38,7 @@ async def test_a_service_call_beats_the_activity_it_runs_in(
     endpoint = Endpoint(url="http://host.test")
 
     async def call() -> tuple[int | None, CallResponse]:
-        return await service._send(endpoint, b"{}", 1.0)
+        return await service._send(endpoint, CallRequest(service="s", key="k", method="m"), 1.0)
 
     status, response = await env.run(call)
     assert status == 200 and response.text == "done"

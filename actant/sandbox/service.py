@@ -29,6 +29,7 @@ runner directly; :func:`actant.tools.tools` exposes a service to a model through
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Mapping
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Protocol
@@ -41,12 +42,14 @@ if TYPE_CHECKING:
 import actant.sandbox.host as host
 from actant.heartbeat import heartbeating
 from actant.sandbox.base import Endpoint, Sandbox
-from actant.sandbox.protocol import CallRequest, CallResponse, Route
+from actant.sandbox.protocol import CallRequest, CallResponse, CancelRequest, Route
 
 DEFAULT_CALL_TIMEOUT_S = 600.0
 #: Concurrent connections one runner holds to service hosts. A call past the cap waits
 #: for a free connection inside its own deadline.
 MAX_HOST_CONNECTIONS = 64
+#: How long a caller that gave up on a call waits for the host to take its cancel.
+CANCEL_SEND_S = 5.0
 
 
 class Runner(Protocol):
@@ -134,8 +137,8 @@ class RemoteRunner:
         call_id: str | None = None,
     ) -> CallResponse:
         del key, sandbox
-        body = _body(self.service, self.key, self.init, method, args, call_id)
-        return (await _send(self.endpoint, body, self.timeout, self._client))[1]
+        request = _call(self.service, self.key, self.init, method, args, call_id)
+        return (await _send(self.endpoint, request, self.timeout, self._client))[1]
 
 
 class SandboxRunner:
@@ -193,12 +196,12 @@ class SandboxRunner:
             return CallResponse(error="this sandbox serves no services (SandboxSpec.services)")
         if key is None:
             return CallResponse(error="SandboxRunner.call needs a key")
-        body = _body(self.service, key, self.init, method, args, call_id)
-        status, response = await _send(endpoint, body, self.timeout, self._client)
+        request = _call(self.service, key, self.init, method, args, call_id)
+        status, response = await _send(endpoint, request, self.timeout, self._client)
         if status == HTTPStatus.UNAUTHORIZED:  # rejected before running: safe to retry
             endpoint = await sandbox.endpoint(refresh=True)
             assert endpoint is not None
-            _, response = await _send(endpoint, body, self.timeout, self._client)
+            _, response = await _send(endpoint, request, self.timeout, self._client)
         return response
 
 
@@ -214,52 +217,62 @@ async def call_host(
     call_id: str | None = None,
 ) -> CallResponse:
     """``POST /v1/call`` to a service host. Transport failures become error responses."""
-    body = _body(service, key, init or {}, method, args, call_id)
-    return (await _send(endpoint, body, timeout))[1]
+    request = _call(service, key, init or {}, method, args, call_id)
+    return (await _send(endpoint, request, timeout))[1]
 
 
-def _body(
+def _call(
     service: str,
     key: str,
     init: Mapping[str, object],
     method: str,
     args: Mapping[str, object],
     call_id: str | None,
-) -> bytes:
+) -> CallRequest:
     request = CallRequest(
         service=service, key=key, init=dict(init), method=method, args=dict(args)
     )
-    if call_id is not None:
-        request = request.model_copy(update={"call_id": call_id})
-    return request.model_dump_json().encode()
+    return request if call_id is None else request.model_copy(update={"call_id": call_id})
 
 
 async def _send(
-    endpoint: Endpoint, body: bytes, timeout: float, client: httpx.AsyncClient | None = None
+    endpoint: Endpoint,
+    request: CallRequest,
+    timeout: float,
+    client: httpx.AsyncClient | None = None,
 ) -> tuple[int | None, CallResponse]:
     """One call to a service host; a long one beats the caller's activity while it runs."""
     async with heartbeating():
-        return await _post(endpoint, body, timeout, client)
+        return await _post(endpoint, request, timeout, client)
 
 
 async def _post(
-    endpoint: Endpoint, body: bytes, timeout: float, client: httpx.AsyncClient | None = None
+    endpoint: Endpoint,
+    request: CallRequest,
+    timeout: float,
+    client: httpx.AsyncClient | None = None,
 ) -> tuple[int | None, CallResponse]:
+    """The call's reply. A caller that gives up on the call (it is cancelled, times out, or
+    loses the connection) tells the host to stop it first."""
     import httpx
 
     if client is None:
         async with httpx.AsyncClient(trust_env=False) as owned:
-            return await _send(endpoint, body, timeout, owned)
+            return await _post(endpoint, request, timeout, owned)
     try:
         async with asyncio.timeout(timeout):
             response = await client.post(
                 endpoint.url.rstrip("/") + Route.CALL,
-                content=body,
+                content=request.model_dump_json().encode(),
                 headers={"Content-Type": "application/json", **endpoint.headers},
                 timeout=timeout,
             )
         status, data = response.status_code, response.content
+    except asyncio.CancelledError:
+        await _abandon(endpoint, request.call_id, client)
+        raise
     except (OSError, httpx.HTTPError) as error:
+        await _abandon(endpoint, request.call_id, client)
         return None, CallResponse(
             error=f"service host call to {endpoint.url} failed and may have run: {error}"
         )
@@ -268,3 +281,20 @@ async def _post(
     except ValidationError:
         tail = data[-1000:].decode(errors="replace")
         return status, CallResponse(error=f"service host returned HTTP {status}: {tail}")
+
+
+async def _abandon(endpoint: Endpoint, call_id: str, client: httpx.AsyncClient) -> None:
+    """Tell the host to stop ``call_id``, waiting at most ``CANCEL_SEND_S``. Never raises:
+    a host that cannot be reached has nothing to answer."""
+
+    async def send() -> None:
+        with contextlib.suppress(Exception):
+            await client.post(
+                endpoint.url.rstrip("/") + Route.CANCEL,
+                content=CancelRequest(call_id=call_id).model_dump_json().encode(),
+                headers={"Content-Type": "application/json", **endpoint.headers},
+                timeout=CANCEL_SEND_S,
+            )
+
+    # Shielded: a caller cancelled again stops waiting, and the cancel is still sent.
+    await asyncio.shield(asyncio.ensure_future(send()))

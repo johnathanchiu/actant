@@ -13,6 +13,13 @@ affect users.
   gets the one result. Finished, undelivered results are kept 10 minutes, at most 128.
   `Runner.call` takes `call_id=` (a custom runner adds the parameter).
 
+- A caller that gives up on a service call (cancelled, timed out, or its connection
+  failed) sends `POST /v1/cancel` for its call id, waiting at most 5 s. The host cancels
+  the call's task: an `async def` method sees `CancelledError` and its cleanup runs (a
+  subprocess it waits on is killed there); a plain `def` in a thread finishes on its own.
+  The host answers after at most 2 s. A call lost with its worker sends no cancel and is
+  reattached by its retry.
+
 ## 0.33.6
 
 - With `CompactionConfig.summary_tokens`, the summary is asked for about half the cap in
