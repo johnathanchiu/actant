@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A service method can end the agent's run: return an object with `.text`, `.images` and a
+  true `.terminal`, and its tool result is terminal (`MetadataKey.TERMINAL`), so the run
+  completes after that tool group with no further model turn. A task agent whose last
+  action is a tool call (a write that also reports) no longer spends a text-only turn to
+  stop. `CallResponse.terminal` carries it; an error response is never terminal.
+
 ## 0.33.8
 
 - A service host keeps a finished call's result for 10 minutes (at most 1,024 calls, the
