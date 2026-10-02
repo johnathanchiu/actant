@@ -37,7 +37,7 @@ from actant.runtime.temporal.types import (
     ThreadInput,
     ThreadStateView,
 )
-from actant.runtime.temporal.workflow import AgentThreadWorkflow
+from actant.runtime.temporal.workflow import WORKFLOWS, AgentThreadWorkflow
 from actant.runtime.thread import ThreadHandle
 from actant.runtime.types.threads import ThreadStatus
 from actant.tools.calls import ToolCallStatus
@@ -113,7 +113,7 @@ class AgentRuntime:
             self._worker = temporalio.worker.Worker(
                 self.client,
                 task_queue=self.config.task_queue,
-                workflows=[AgentThreadWorkflow],
+                workflows=WORKFLOWS,
                 workflow_runner=WORKFLOW_RUNNER,
                 activities=activities.all,
                 max_concurrent_activities=self.config.max_concurrent_activities,

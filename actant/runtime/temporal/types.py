@@ -61,8 +61,9 @@ class CompactionConfig:
     passes that fraction of the window (or of the image limit), a summary of
     everything before the open turn starts beside the turns, which keep
     running on the full context. It is swapped in at the next turn boundary
-    after it is ready, with every message stored since kept after it. A turn
-    waits on a summary only when it would cross ``threshold`` itself::
+    after it is ready, with every message stored since kept after it. It is
+    written in a workflow of its own, so a run that ends never waits on it. A
+    turn waits on a summary only when it would cross ``threshold`` itself::
 
         CompactionConfig(threshold=0.9, background=0.5, keep=["tool:checklist"])
 
@@ -161,6 +162,7 @@ class ActivityName(StrEnum):
     ADMIT_TOOL = "admit_tool"
     EXECUTE_TOOL = "execute_tool"
     RESOLVE_TOOL = "resolve_tool"
+    SUMMARY_READY = "summary_ready"
     FINALIZE_TOOL_GROUP = "finalize_tool_group"
     FINALIZE_RUN = "finalize_run"
     APPLY_THREAD_CANCELLATION = "apply_thread_cancellation"
@@ -374,6 +376,15 @@ class ContextSummary:
     through: str
     base: str | None
     trigger: CompactionTrigger
+
+
+@dataclass(frozen=True)
+class SummaryJob:
+    """A background summary's own workflow (``ContextSummaryWorkflow``): what to
+    summarize, and how long the summary call may take."""
+
+    compact: CompactContextInput
+    compact_s: float
 
 
 @dataclass(frozen=True)
