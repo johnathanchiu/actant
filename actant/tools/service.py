@@ -67,19 +67,29 @@ class ServiceInvocation(BaseToolInvocation[dict[str, object], ToolResult]):
         return f"Running {self._tool.name}"
 
     async def execute(self) -> ToolResult:
+        ctx = self._ctx
         response = await self._tool.runner.call(
-            self._tool.name, self.params, key=self._ctx.thread_id, sandbox=self._ctx.sandbox
+            self._tool.name,
+            self.params,
+            key=ctx.thread_id,
+            sandbox=ctx.sandbox,
+            call_id=f"{ctx.thread_id}:{ctx.tool_call_id}",
         )
         return to_tool_result(response)
 
 
 class ServiceTool:
-    """One service method as an actant :class:`~actant.tools.base.Tool`."""
+    """One service method as an actant :class:`~actant.tools.base.Tool`.
+
+    A call's id is its thread and tool call, so a call whose worker was lost is sent again
+    under the same id and a host waits for the run it has instead of starting another:
+    ``retry_safe`` for every runner but :class:`LocalRunner`, which died with the worker."""
 
     def __init__(self, cls: type, method: str, runner: Runner) -> None:
         self.name = method
         self.runner = runner
         self.needs_sandbox = runner.needs_sandbox
+        self.retry_safe = not isinstance(runner, LocalRunner)
         self._model = host.parameters_model(cls, method)
         description = inspect.getdoc(getattr(cls, method)) or f"Run {method}."
         self._schema: ToolSchema = {

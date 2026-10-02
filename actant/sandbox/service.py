@@ -51,7 +51,9 @@ MAX_HOST_CONNECTIONS = 64
 
 class Runner(Protocol):
     """Runs one service method. ``needs_sandbox`` says :meth:`call` needs ``sandbox``;
-    ``key`` names the host-side instance where the runner does not fix one."""
+    ``key`` names the host-side instance where the runner does not fix one. ``call_id``
+    (``CallRequest.call_id``) is stable across sends of the same call, so a host runs it
+    once; ``None`` is a fresh id."""
 
     needs_sandbox: bool
 
@@ -62,6 +64,7 @@ class Runner(Protocol):
         *,
         key: str | None = None,
         sandbox: Sandbox | None = None,
+        call_id: str | None = None,
     ) -> CallResponse: ...
 
 
@@ -80,8 +83,9 @@ class LocalRunner:
         *,
         key: str | None = None,
         sandbox: Sandbox | None = None,
+        call_id: str | None = None,
     ) -> CallResponse:
-        del key, sandbox
+        del key, sandbox, call_id
         return await host.call_method(self.instance, method, args)
 
 
@@ -127,9 +131,10 @@ class RemoteRunner:
         *,
         key: str | None = None,
         sandbox: Sandbox | None = None,
+        call_id: str | None = None,
     ) -> CallResponse:
         del key, sandbox
-        body = _body(self.service, self.key, self.init, method, args)
+        body = _body(self.service, self.key, self.init, method, args, call_id)
         return (await _send(self.endpoint, body, self.timeout, self._client))[1]
 
 
@@ -181,13 +186,14 @@ class SandboxRunner:
         *,
         key: str | None = None,
         sandbox: Sandbox | None = None,
+        call_id: str | None = None,
     ) -> CallResponse:
         endpoint = await sandbox.endpoint() if sandbox is not None else None
         if sandbox is None or endpoint is None:
             return CallResponse(error="this sandbox serves no services (SandboxSpec.services)")
         if key is None:
             return CallResponse(error="SandboxRunner.call needs a key")
-        body = _body(self.service, key, self.init, method, args)
+        body = _body(self.service, key, self.init, method, args, call_id)
         status, response = await _send(endpoint, body, self.timeout, self._client)
         if status == HTTPStatus.UNAUTHORIZED:  # rejected before running: safe to retry
             endpoint = await sandbox.endpoint(refresh=True)
@@ -205,18 +211,26 @@ async def call_host(
     key: str,
     init: Mapping[str, object] | None = None,
     timeout: float = DEFAULT_CALL_TIMEOUT_S,
+    call_id: str | None = None,
 ) -> CallResponse:
     """``POST /v1/call`` to a service host. Transport failures become error responses."""
-    body = _body(service, key, init or {}, method, args)
+    body = _body(service, key, init or {}, method, args, call_id)
     return (await _send(endpoint, body, timeout))[1]
 
 
 def _body(
-    service: str, key: str, init: Mapping[str, object], method: str, args: Mapping[str, object]
+    service: str,
+    key: str,
+    init: Mapping[str, object],
+    method: str,
+    args: Mapping[str, object],
+    call_id: str | None,
 ) -> bytes:
     request = CallRequest(
         service=service, key=key, init=dict(init), method=method, args=dict(args)
     )
+    if call_id is not None:
+        request = request.model_copy(update={"call_id": call_id})
     return request.model_dump_json().encode()
 
 

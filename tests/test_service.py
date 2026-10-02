@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import AsyncIterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -48,7 +49,7 @@ SERVICES = {"counter": "service_fixtures:Counter", "stages": "service_fixtures:S
 
 
 def _ctx(sandbox: LocalSandbox | None = None, thread: str = "t") -> CallContext:
-    return CallContext("a", thread, "r", "tc", "turn", sandbox=sandbox)
+    return CallContext("a", thread, "r", uuid.uuid4().hex, "turn", sandbox=sandbox)
 
 
 class Base:

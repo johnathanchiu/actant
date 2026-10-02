@@ -123,7 +123,7 @@ async def test_host_tool_result_uses_durable_reference_and_reports_upload_failur
         storage_key=source.storage_key, mime="image/png"
     )
     s3.fail = True
-    _, fallback = await uploading.call(request)
+    _, fallback = await uploading.call(request.model_copy(update={"call_id": "again"}))
     assert isinstance(fallback.images[0].source, InlineSource)
     assert "upload failed" in str(to_tool_result(fallback).metadata[MetadataKey.STORAGE])
     _, plain = await uploading.call(
@@ -208,8 +208,8 @@ async def test_uploads_share_one_client_on_their_own_threads(s3: FakeS3) -> None
     uploading = host.Host({"counter": Counter}, images=CONFIG)
     assert uploading.uploader is not None and uploading.uploader.client is s3
     request = CallRequest(service="counter", key="k", method="picture", args={"size": 4})
-    for _ in range(3):
-        await uploading.call(request)
+    for index in range(3):
+        await uploading.call(request.model_copy(update={"call_id": str(index)}))
     assert len(s3.threads) == 3 and all(name.startswith("actant-upload") for name in s3.threads)
 
 

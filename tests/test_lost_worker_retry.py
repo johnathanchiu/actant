@@ -29,7 +29,9 @@ from actant.runtime.events.streaming import StreamListener
 from actant.runtime.temporal.types import ExecuteInput, ExecuteOutcome, RunTurnInput, TurnResult
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.types.threads import RunStatus
-from actant.tools import ToolRegistry
+from actant.sandbox import Endpoint, RemoteRunner, host
+from actant.sandbox.protocol import CallRequest, Route
+from actant.tools import ToolRegistry, tools
 from actant.tools.calls import ToolCallStatus
 from runtime_fixtures import static_agents
 
@@ -98,6 +100,79 @@ async def test_a_tool_call_lost_with_its_worker_is_closed_or_rerun_and_the_run_g
         assert record.status is ToolCallStatus.FAILED
         assert effects == ["placed"]
         assert TOOL_INTERRUPTED in str(messages[2].content)
+
+
+class _Place:
+    effects: list[str] = []
+    gate = asyncio.Event()
+
+    async def place(self) -> str:
+        """Place the thing."""
+        _Place.effects.append("placed")
+        await _Place.gate.wait()
+        return "placed"
+
+
+class _Serving(host.Host):
+    async def call(self, request: CallRequest) -> Any:
+        if request.call_id in self.calls:
+            _Place.gate.set()  # the lost call, sent again, finishes only once it attached
+        return await super().call(request)
+
+
+async def test_a_service_call_lost_with_its_worker_attaches_to_its_run_and_the_run_goes_on() -> (
+    None
+):
+    _Place.effects, _Place.gate = [], asyncio.Event()
+    serving = _Serving({"s": _Place})
+    server = await asyncio.start_server(serving.connection, "127.0.0.1", 0)
+    endpoint = Endpoint(f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}")
+    runner = RemoteRunner(endpoint, "s", "k")
+    fake = FakeLLM(
+        [
+            FakeResponse(
+                tool_calls=[
+                    ToolCall(id="call", function=ToolCallFunction(name="place", arguments="{}"))
+                ]
+            ),
+            FakeResponse(text="done"),
+        ]
+    )
+    registry = ToolRegistry(tools(_Place, runner))
+    agent = AgentDefinition(id="a", name="a", persona="", llm=fake, tools=registry)
+    stores = InMemoryRuntimeStores()
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({"a": agent}))
+    )
+
+    @activity.defn(name="execute_tool")
+    async def execute_tool(payload: ExecuteInput) -> ExecuteOutcome:
+        if activity.info().attempt == 1:
+            # The call reaches the host, then its worker dies without a heartbeat.
+            call_id = f"{payload.thread_id}:{payload.tool_call_id}"
+            request = CallRequest(service="s", key="k", method="place", call_id=call_id)
+            body = request.model_dump_json().encode()
+            asyncio.get_running_loop().run_in_executor(
+                None, host.post, endpoint, Route.CALL, body, 30.0
+            )
+            await asyncio.Future()
+        return await activities.tools.execute_tool(payload)
+
+    try:
+        await _run(agent, stores, activities, [execute_tool])
+    finally:
+        await runner.close()
+        server.close()
+        for writer in list(serving.writers):
+            writer.close()
+
+    [run] = await stores.runs.list_for_thread("a", "t")
+    assert run.status is RunStatus.IDLE
+    assert (await stores.tool_calls.get("call")).status is ToolCallStatus.COMPLETED
+    assert _Place.effects == ["placed"]  # run once, its result delivered to the retry
+    messages = await stores.messages.list_for_thread("a", "t")
+    assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
+    assert "placed" in str(messages[2].content)
 
 
 class _DiesOnFirstCall(FakeLLM):

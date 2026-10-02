@@ -31,7 +31,10 @@ Services do not share instances: two classes that work on the same state build i
 from the same ``init`` (the sandbox's files, or an object their ``open`` looks up).
 Arguments are validated against the method's signature before the call, so a
 parameter annotated with a pydantic model or a ``Literal`` receives that type.
-Calls run concurrently. When ``ACTANT_HOST_TOKEN`` is set at launch, every call
+Calls run concurrently, each once per ``CallRequest.call_id``: a request under an id the
+host is running, or has finished without delivering the result, waits for that run (a
+caller whose worker was lost sends its call again and gets the one result); a different
+request under a known id is refused with 409. When ``ACTANT_HOST_TOKEN`` is set at launch, every call
 needs ``Authorization: Bearer <token>`` (checked before the body is read); the
 variable is removed from the process environment once read.
 
@@ -67,6 +70,7 @@ import threading
 import time
 import traceback
 from collections.abc import Mapping
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPSConnection
 from pathlib import Path
@@ -104,6 +108,10 @@ MAX_IDLE_PER_HOST = 32
 #: The instance lifecycle; never callable.
 LIFECYCLE = frozenset({"open", "close"})
 MAX_BODY = 256 * 1024 * 1024
+#: A finished call whose result was not delivered (its caller went away) is kept this long
+#: for the caller to send it again, and at most this many such calls, oldest dropped first.
+UNDELIVERED_TTL_S = 600.0
+MAX_UNDELIVERED = 128
 #: Images a host uploads at once for one response.
 UPLOAD_CONCURRENCY = 8
 _IMAGE_MAGIC = {
@@ -436,6 +444,19 @@ def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[in
         return reply.status, data
 
 
+@dataclass
+class _Call:
+    """One call id's run: the request that started it, and its task."""
+
+    request: CallRequest
+    task: asyncio.Task[CallResponse]
+    #: ``time.monotonic()`` when the task finished.
+    finished: float | None = None
+
+    def finish(self, _: object) -> None:
+        self.finished = time.monotonic()
+
+
 class Host:
     def __init__(
         self,
@@ -466,6 +487,8 @@ class Host:
         self._shutdown: asyncio.Future[None] | None = None
         self.stop = asyncio.Event()
         self.writers: set[asyncio.StreamWriter] = set()
+        #: Running calls and finished ones whose result is not yet delivered, by call id.
+        self.calls: dict[str, _Call] = {}
 
     async def instance(self, service: str, key: str, init: Mapping[str, object]) -> object:
         slot = (service, key)
@@ -491,6 +514,40 @@ class Host:
             return HTTPStatus.NOT_FOUND, CallResponse(
                 error=f"unknown service method {request.method!r}"
             )
+        entry = self.calls.get(request.call_id)
+        if entry is None:
+            self._forget_undelivered()
+            entry = _Call(request, asyncio.create_task(self._run(request)))
+            entry.task.add_done_callback(entry.finish)
+            self.calls[request.call_id] = entry
+        elif entry.request != request:
+            return HTTPStatus.CONFLICT, CallResponse(
+                error=f"call id {request.call_id!r} already names a different call"
+            )
+        # Shielded: a caller that goes away leaves the call running for a retry to attach.
+        return HTTPStatus.OK, await asyncio.shield(entry.task)
+
+    def delivered(self, call_id: str) -> None:
+        """The result of ``call_id`` reached its caller: forget the call."""
+        entry = self.calls.get(call_id)
+        if entry is not None and entry.task.done():
+            del self.calls[call_id]
+
+    def _forget_undelivered(self) -> None:
+        """Drop finished calls past ``UNDELIVERED_TTL_S``, then the oldest past
+        ``MAX_UNDELIVERED``."""
+        finished = sorted(
+            (entry.finished, call_id)
+            for call_id, entry in self.calls.items()
+            if entry.finished is not None
+        )
+        expired = time.monotonic() - UNDELIVERED_TTL_S
+        excess = len(finished) - MAX_UNDELIVERED
+        for index, (at, call_id) in enumerate(finished):
+            if at < expired or index < excess:
+                del self.calls[call_id]
+
+    async def _run(self, request: CallRequest) -> CallResponse:
         token = _CALL_SERVICE.set(request.service)
         try:
             instance = await self.instance(request.service, request.key, request.init)
@@ -508,7 +565,7 @@ class Host:
         if self.push or self.images:
             status = self.storage_status(image_error=image_error)
             payload = payload.model_copy(update={"storage": status})
-        return HTTPStatus.OK, payload
+        return payload
 
     def storage_status(self, *, image_error: str | None = None) -> StorageStatus:
         """The push status added to call responses, with this response's image error."""
@@ -570,12 +627,14 @@ class Host:
             return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, CallResponse(error="body too large")
         return None
 
-    async def route(self, body: bytes) -> tuple[HTTPStatus, CallResponse]:
+    async def route(self, body: bytes) -> tuple[HTTPStatus, CallResponse, str | None]:
+        """The call's status and payload, and its id when the payload is its result."""
         try:
             request = CallRequest.model_validate_json(body)
         except ValidationError as error:
-            return HTTPStatus.BAD_REQUEST, CallResponse(error=f"bad call request: {error}")
-        return await self.call(request)
+            return HTTPStatus.BAD_REQUEST, CallResponse(error=f"bad call request: {error}"), None
+        status, payload = await self.call(request)
+        return status, payload, request.call_id if status is HTTPStatus.OK else None
 
     async def connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """HTTP/1.1 with keep-alive: requests on one connection are answered in turn."""
@@ -596,8 +655,10 @@ class Host:
                         writer, HTTPStatus.BAD_REQUEST, CallResponse(error="head too large")
                     )
                     return
-                status, payload, close = await self.handle(head, reader)
+                status, payload, close, call_id = await self.handle(head, reader)
                 await respond(writer, status, payload, close=close)
+                if call_id is not None:
+                    self.delivered(call_id)
                 if self._shutdown is not None and self._shutdown.done() and close:
                     self.stop.set()  # after the reply, so the caller sees shutdown finish
         except ConnectionError:
@@ -608,8 +669,9 @@ class Host:
 
     async def handle(
         self, head: bytes, reader: asyncio.StreamReader
-    ) -> tuple[HTTPStatus, CallResponse, bool]:
-        """One request: its status, payload, and whether the connection must close."""
+    ) -> tuple[HTTPStatus, CallResponse, bool, str | None]:
+        """One request: its status, payload, whether the connection must close, and the
+        call id whose result the payload is."""
         try:
             lines = head.decode("latin-1").split("\r\n")
             verb, target, version = lines[0].split(" ", 2)
@@ -623,14 +685,16 @@ class Host:
             path = target.split("?")[0]
             refused = self.reject(verb, path, headers)
             if refused is not None:
-                return *refused, True  # the body is unread: the connection is spent
+                return *refused, True, None  # the body is unread: the connection is spent
             body = await reader.readexactly(int(headers.get(Header.CONTENT_LENGTH.lower()) or 0))
         except (ValueError, asyncio.IncompleteReadError) as error:
-            return HTTPStatus.BAD_REQUEST, CallResponse(error=f"malformed request: {error}"), True
+            bad = CallResponse(error=f"malformed request: {error}")
+            return HTTPStatus.BAD_REQUEST, bad, True, None
         if path == Route.SHUTDOWN:
             await self.shutdown()
-            return HTTPStatus.OK, CallResponse(text="stopped"), True
-        return *(await self.route(body)), close
+            return HTTPStatus.OK, CallResponse(text="stopped"), True, None
+        status, payload, call_id = await self.route(body)
+        return status, payload, close, call_id
 
     async def close_instances(self) -> None:
         for future in self.instances.values():
