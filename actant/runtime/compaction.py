@@ -10,6 +10,10 @@ model then sees:
 
 The kept messages are the latest one of each tag in ``CompactionConfig.keep``, and the
 turn that was still open (an assistant tool call and its results), carried whole.
+
+With ``CompactionConfig(image_limit="drop_oldest")`` the image cap never summarizes:
+each request past it is sent with its oldest images as text labels instead
+(:func:`drop_oldest_images`), and only the context window triggers a summary.
 """
 
 from __future__ import annotations
@@ -257,6 +261,38 @@ def compaction_request(
     return [*labelled, Message(role="user", content=text)]
 
 
+def drop_oldest_images(messages: Sequence[Message], limit: int) -> list[Message]:
+    """The request with its oldest images replaced by a text label, once it carries more
+    than ``limit``; text is never touched. Images go in chunks of half the limit, so the
+    count kept falls to about half and the dropped set (and the cached prefix with it)
+    changes only when another chunk is needed, not every turn. The latest images go last.
+    """
+    chunk = max(1, limit // 2)
+    drop = max(0, math.ceil((count_images(messages) - limit) / chunk) * chunk)
+    if drop == 0:
+        return list(messages)
+    dropped: list[Message] = []
+    for message in messages:
+        if drop and isinstance(message.content, list) and any(map(_is_image, message.content)):
+            blocks: list[PromptBlock] = []
+            for block in message.content:
+                if drop and _is_image(block):
+                    drop -= 1
+                    blocks.append(TextBlock(text=_dropped_label(block)))
+                else:
+                    blocks.append(block)
+            message = replace(message, content=blocks)
+        dropped.append(message)
+    return dropped
+
+
+def _dropped_label(block: PromptBlock) -> str:
+    if not isinstance(block, AssetBlock):
+        return "[image dropped from view]"
+    key = image_id(block)
+    return f'[image id={key}] dropped from view; recall_image("{key}") shows it again'
+
+
 def _is_image(block: PromptBlock) -> bool:
     return isinstance(block, InlineImageBlock | UrlImageBlock) or (
         isinstance(block, AssetBlock) and block.mime.startswith("image/")
@@ -276,6 +312,7 @@ __all__ = [
     "compaction_request",
     "count_images",
     "crossed_limits",
+    "drop_oldest_images",
     "estimate_tokens",
     "image_id",
     "kept_ids",

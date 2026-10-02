@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 
 # === Configuration ===
@@ -93,6 +93,15 @@ class CompactionConfig:
 
         CompactionConfig(images=False)
 
+    ``image_limit="drop_oldest"`` stops the image limit from triggering a summary:
+    a request past it is sent with its oldest images replaced by their
+    ``[image id=...]`` label (``recall_image`` shows one again), in chunks of
+    half the limit so the cached prefix stays stable. Only the context window
+    then summarizes, and no text is lost. ``"summarize"`` (the default)
+    summarizes at either limit::
+
+        CompactionConfig(image_limit="drop_oldest")
+
     The limits are the model client's: its ``context_window_tokens`` and
     ``max_images_per_request`` (``OpenAIProvider`` takes both); a limit the
     client does not declare is not checked. Unrelated to
@@ -106,6 +115,7 @@ class CompactionConfig:
     summary_tokens: int | None = None
     prompt: str | None = None
     images: bool = True
+    image_limit: Literal["summarize", "drop_oldest"] = "summarize"
 
     def __post_init__(self) -> None:
         if self.background is not None and not 0 < self.background < self.threshold:

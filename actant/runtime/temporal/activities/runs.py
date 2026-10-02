@@ -26,6 +26,7 @@ from actant.runtime.compaction import (
     compaction_request,
     count_images,
     crossed_limits,
+    drop_oldest_images,
     kept_ids,
     measure_request,
     pending_start,
@@ -260,12 +261,20 @@ class RunActivities:
             view = model_view.messages + (inbound if measuring else [])
         phases.end("history")
         messages = await self._prepare(
-            view, payload.agent_id, payload.thread_id, payload.run_id, payload.turn_id
+            view,
+            payload.agent_id,
+            payload.thread_id,
+            payload.run_id,
+            payload.turn_id,
+            max_images=_dropping(agent, compaction),
         )
         phases.end("assets")
         ahead: CompactionTrigger | None = None
         if compaction is not None and model_view is not None and measuring:
-            trigger = _compaction_trigger(agent, compaction.threshold, model_view, view, messages)
+            dropping = compaction.image_limit == "drop_oldest"
+            trigger = _compaction_trigger(
+                agent, compaction.threshold, model_view, view, messages, dropping=dropping
+            )
             if trigger is not None:
                 # Nothing is sent or stored: the workflow compacts, then runs this
                 # turn again with the same new messages.
@@ -276,7 +285,13 @@ class RunActivities:
                 )
             if compaction.background is not None:
                 ahead = _compaction_trigger(
-                    agent, compaction.background, model_view, view, messages, ahead=True
+                    agent,
+                    compaction.background,
+                    model_view,
+                    view,
+                    messages,
+                    ahead=True,
+                    dropping=dropping,
                 )
             await self._append_inbound(payload, inbound, events)
             phases.end("inbound")
@@ -509,6 +524,7 @@ class RunActivities:
             payload.thread_id,
             payload.run_id,
             payload.turn_id,
+            max_images=_dropping(agent, config),
         )
         measure = measure_request(agent.persona, request, usage_from=view.usage_from)
         llm = self._summarizer(agent, config, measure.tokens, count_images(request))
@@ -545,6 +561,7 @@ class RunActivities:
                 payload.thread_id,
                 payload.run_id,
                 payload.turn_id,
+                max_images=_dropping(agent, config),
             )
             summary = await self._summary_call(agent, agent.llm, request, measure.tokens, None)
         if not summary:
@@ -703,10 +720,15 @@ class RunActivities:
         thread_id: str,
         run_id: str,
         turn_id: str,
+        *,
+        max_images: int | None = None,
     ) -> list[Message]:
-        """The app's preprocessor, then assets resolved for one model call."""
+        """The app's preprocessor, the oldest images past ``max_images`` dropped from
+        view, then assets resolved for one model call."""
         if self.context.message_preprocessor is not None:
             messages = await self.context.message_preprocessor(messages)
+        if max_images is not None:
+            messages = drop_oldest_images(messages, max_images)
         return await prepare_messages(
             messages,
             self.context.assets,
@@ -805,6 +827,14 @@ def _limits(agent: AgentDefinition) -> tuple[int | None, int | None]:
     )
 
 
+def _dropping(agent: AgentDefinition, config: CompactionConfig | None) -> int | None:
+    """The image limit a request is held under by dropping its oldest images, when the
+    setting says so and the model declares one."""
+    if config is None or config.image_limit != "drop_oldest":
+        return None
+    return _provider_limit(agent, "max_images_per_request")
+
+
 def _compaction_trigger(
     agent: AgentDefinition,
     fraction: float,
@@ -813,12 +843,15 @@ def _compaction_trigger(
     prepared: list[Message],
     *,
     ahead: bool = False,
+    dropping: bool = False,
 ) -> CompactionTrigger | None:
     """Whether the request about to be sent crosses a limit, and what to carry if so.
 
     ``ahead`` measures against ``fraction`` of the image limit too, for a background
     summary, and names its boundary (``through``)."""
     window, max_images = _limits(agent)
+    if dropping:
+        max_images = None  # held under by dropping the oldest, never summarized for
     if window is None and max_images is None:
         return None
     measure = measure_request(agent.persona, request, usage_from=model_view.usage_from)
