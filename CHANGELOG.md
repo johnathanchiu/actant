@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.4
 
 - `actant.sandbox.host.current_service()`: the service the running host call serves, inherited by the tasks and threads it starts, so a service's shared resources (a pool, a gate) can order waiting work by caller.
 
