@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.6
 
 - With `CompactionConfig.summary_tokens`, the summary is asked for about half the cap in
   words, not three quarters. On a recorded planner context the 3/4 target wrote up to
