@@ -103,6 +103,9 @@ class CallResponse(_Message):
     text: str = ""
     images: list[Image] = Field(default_factory=list)
     error: str | None = None
+    #: The method's result ends the agent's run, as a terminal tool result does
+    #: (``MetadataKey.TERMINAL``). Never set on an error.
+    terminal: bool = False
     #: Only from a host that pushes storage or uploads images; absent on the wire otherwise.
     storage: StorageStatus | None = None
 

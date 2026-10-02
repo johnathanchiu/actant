@@ -17,8 +17,8 @@ awaits. Arguments are validated against the method's signature without ``self``
 (:func:`actant.sandbox.host.parameters_model`), so methods receive the annotated types.
 
 A method returns ``str``, an object with ``.text`` and ``.images`` (file paths or
-bytes), or any JSON-encodable value; every runner encodes it as the same
-:class:`~actant.sandbox.protocol.CallResponse`.
+bytes; a true ``.terminal`` also ends the agent's run), or any JSON-encodable value;
+every runner encodes it as the same :class:`~actant.sandbox.protocol.CallResponse`.
 
 A :class:`Runner` says where the methods run: :class:`LocalRunner` in-process,
 :class:`RemoteRunner` against a host endpoint, or :class:`SandboxRunner` against a

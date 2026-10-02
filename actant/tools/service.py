@@ -33,11 +33,14 @@ def image_block(image: Image) -> AssetBlock | InlineImageBlock:
 def to_tool_result(response: CallResponse) -> ToolResult:
     """A host response as a :class:`ToolResult`.
 
-    A host that pushes storage reports a :class:`~actant.sandbox.protocol.StorageStatus`;
+    A response the method marked ``terminal`` is a terminal result: the run ends after
+    this tool group, with no further model turn. A host that pushes storage reports a :class:`~actant.sandbox.protocol.StorageStatus`;
     its JSON lands on ``metadata[MetadataKey.STORAGE]`` so a product can warn when
     pushes fail, without the call itself failing.
     """
     result = _result(response)
+    if response.terminal and response.error is None:
+        result.metadata[MetadataKey.TERMINAL] = True
     if response.storage is not None:
         result.metadata[MetadataKey.STORAGE] = response.storage.model_dump(mode="json")
     return result

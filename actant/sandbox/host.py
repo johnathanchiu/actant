@@ -213,8 +213,9 @@ def encode_output(output: object) -> CallResponse:
     ``str`` is the text. An object with ``.text`` and ``.images`` carries images as
     file paths or bytes; a path must name an image file (by extension) and bytes
     must be one (by magic number), because a path can be model-steered and
-    anything else would leave the sandbox or be rejected by the LLM. Other values
-    are JSON-encoded.
+    anything else would leave the sandbox or be rejected by the LLM. Such an object
+    with a true ``.terminal`` ends the agent's run (``CallResponse.terminal``). Other
+    values are JSON-encoded.
     """
     if isinstance(output, str):
         return CallResponse(text=output)
@@ -237,7 +238,8 @@ def encode_output(output: object) -> CallResponse:
                 data = Path(name).read_bytes()
             source = InlineSource(data_b64=base64.b64encode(data).decode())
             images.append(Image(name=name, media_type=media_type, source=source))
-        return CallResponse(text=text, images=images)
+        terminal = bool(getattr(output, "terminal", False))
+        return CallResponse(text=text, images=images, terminal=terminal)
     try:
         return CallResponse(text=json.dumps(output, default=str))
     except (TypeError, ValueError):
