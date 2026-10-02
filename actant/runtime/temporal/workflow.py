@@ -19,8 +19,10 @@ The workflow is a thin orchestrator. It:
 5. With ``context_compaction``, compacts the model's context when a turn
    reports that its request would cross a limit, then runs that turn again.
    With ``CompactionConfig.background``, a turn past that lower mark starts a
-   summary beside the turns (``summarize_context``); it is stored at the next
-   turn boundary after it is ready, or once the thread goes idle.
+   summary in a workflow of its own (``ContextSummaryWorkflow``), which outlives
+   the run: it is stored at the next turn boundary after it is ready, by the
+   summary's workflow when the thread has closed meanwhile. A run that ends never
+   waits on one.
    This is unrelated to rotating Temporal's event history
    (``history_size_threshold``), which never changes what the model sees.
 
@@ -36,7 +38,13 @@ from datetime import timedelta
 from dataclasses import replace
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError
+from temporalio.exceptions import (
+    ActivityError,
+    ApplicationError,
+    ChildWorkflowError,
+    WorkflowAlreadyStartedError,
+)
+from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
     from actant.runtime.temporal.activities import (
@@ -52,6 +60,7 @@ from actant.runtime.temporal.types import (
     ApplyThreadCancellationInput,
     CompactContextInput,
     CompactionConfig,
+    CompactionTrigger,
     ContextSummary,
     DeferredToolResolution,
     ExecuteInput,
@@ -64,6 +73,7 @@ from actant.runtime.temporal.types import (
     RunTurnInput,
     StartRunInput,
     StoreSummaryInput,
+    SummaryJob,
     ThreadInput,
     ThreadOutcome,
     ThreadStateView,
@@ -116,10 +126,13 @@ class AgentThreadWorkflow:
         self._agent_id: str = ""
         self._thread_id: str = ""
         self._stop_reason: str | None = None
-        # A background summary in flight (``CompactionConfig.background``), and
-        # the run that started it.
-        self._summarizing: workflow.ActivityHandle[ContextSummary] | None = None
-        self._summary_run_id = ""
+        # A background summary (``CompactionConfig.background``): the workflow this
+        # execution started for it, and a summary sent to it that is not stored yet.
+        self._summary_job: (
+            workflow.ChildWorkflowHandle[ContextSummaryWorkflow, ContextSummary] | None
+        ) = None
+        self._summary_ready: ContextSummary | None = None
+        self._last_run_id = ""
 
     # === Signals ===
 
@@ -138,6 +151,12 @@ class AgentThreadWorkflow:
         if tool_call_id in self._resolving_tool_ids or tool_call_id in self._resolved_tool_ids:
             return
         self._tool_resolutions.setdefault(tool_call_id, resolution)
+
+    @workflow.signal
+    def summary_ready(self, summary: ContextSummary) -> None:
+        """A background summary is written (``ContextSummaryWorkflow``)."""
+        self._summary_ready = summary
+        self._summary_job = None
 
     # === Queries ===
 
@@ -169,8 +188,8 @@ class AgentThreadWorkflow:
                 if self._cancelled:
                     break
                 await self._run_next_agent_run(payload)
-                if not self._inbox and self._summarizing is not None:
-                    await self._store_summary_when_idle(payload)
+                if not self._inbox and self._summary_ready is not None:
+                    await self._store_ready_summary(payload)
                 if not self._inbox:
                     # Nothing left to do, so stop rather than sit open. The
                     # conversation is not over: history lives in the stores,
@@ -195,7 +214,7 @@ class AgentThreadWorkflow:
     async def _run_next_agent_run(self, payload: ThreadInput) -> None:
         """Open, execute, and finalize one agent run for the queued inbox."""
         run_id = workflow.uuid4().hex
-        self._current_run_id = run_id
+        self._current_run_id = self._last_run_id = run_id
         new_messages = self._drain_inbox()
 
         # Seeded from the store, not carried: a thread ends when it is done
@@ -267,7 +286,7 @@ class AgentThreadWorkflow:
                 new_messages=new_messages,
                 text_only_turns=text_only_turns,
                 context_compaction=payload.context_compaction,
-                summary=await self._ready_summary(),
+                summary=self._ready_summary(),
             )
             try:
                 turn = await workflow.execute_activity_method(
@@ -279,7 +298,9 @@ class AgentThreadWorkflow:
                     ),
                     retry_policy=_LOST_TURN_RETRY,
                 )
-                if turn.compaction is not None and self._summarizing is not None:
+                if turn.compaction is not None and (
+                    self._summary_job is not None or self._summary_ready is not None
+                ):
                     # Past the hard limit with a summary already being written:
                     # wait for it rather than start another, store it, and
                     # measure the same turn again.
@@ -349,23 +370,9 @@ class AgentThreadWorkflow:
             new_messages = []
             self._turn_count_total += 1
             turns_remaining -= 1
-            if turn.summarize is not None and self._summarizing is None:
+            if turn.summarize is not None:
                 # Only a thread with ``CompactionConfig.background`` reports this.
-                self._summarizing = workflow.start_activity_method(
-                    RunActivities.summarize_context,
-                    CompactContextInput(
-                        agent_id=payload.agent_id,
-                        thread_id=payload.thread_id,
-                        run_id=run_id,
-                        turn_id=turn_id,
-                        turn_index=turn_index,
-                        trigger=turn.summarize,
-                        config=payload.context_compaction or CompactionConfig(),
-                    ),
-                    start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.compact_s),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
-                )
-                self._summary_run_id = run_id
+                await self._start_summary(payload, run_id, turn_id, turn_index, turn.summarize)
 
             if not turn.tool_calls:
                 if turn.reminded:
@@ -570,59 +577,68 @@ class AgentThreadWorkflow:
             )
         )
 
-    async def _ready_summary(self) -> ContextSummary | None:
+    async def _start_summary(
+        self,
+        payload: ThreadInput,
+        run_id: str,
+        turn_id: str,
+        turn_index: int,
+        trigger: CompactionTrigger,
+    ) -> None:
+        """Start the background summary's workflow, unless one is in flight or ready. One
+        an earlier execution of this thread started is found by its id."""
+        if self._summary_job is not None or self._summary_ready is not None:
+            return
+        job = SummaryJob(
+            CompactContextInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                turn_index=turn_index,
+                trigger=trigger,
+                config=payload.context_compaction or CompactionConfig(),
+            ),
+            compact_s=payload.activity_timeouts.compact_s,
+        )
+        try:
+            self._summary_job = await workflow.start_child_workflow(
+                ContextSummaryWorkflow.run,
+                job,
+                id=f"{workflow.info().workflow_id}-summary",
+                parent_close_policy=ParentClosePolicy.ABANDON,
+            )
+        except WorkflowAlreadyStartedError:
+            pass  # an earlier execution's, still being written: it lands on its own
+
+    async def _store_ready_summary(self, payload: ThreadInput) -> None:
+        """Store a summary that arrived after this execution's last turn."""
+        summary, self._summary_ready = self._summary_ready, None
+        assert summary is not None
+        config = payload.context_compaction or CompactionConfig()
+        await _store(
+            StoreSummaryInput(self._agent_id, self._thread_id, self._last_run_id, summary, config)
+        )
+
+    def _ready_summary(self) -> ContextSummary | None:
         """The background summary, when it is ready; never waits for one."""
-        if self._summarizing is None or not self._summarizing.done():
-            return None
-        return await self._take_summary()
+        ready, self._summary_ready = self._summary_ready, None
+        return ready
 
     async def _take_summary(self) -> ContextSummary | None:
         """Wait for the background summary. A failed one changed nothing: the
         hard limit still compacts when it is reached."""
-        handle = self._summarizing
-        self._summarizing = None
-        if handle is None:
-            return None
-        try:
-            return await handle
-        except ActivityError as error:
-            cause = error.__cause__ or error
-            workflow.logger.warning(
-                "actant.compaction.background_failed thread=%s error=%s: %s",
-                self._thread_id,
-                type(cause).__name__,
-                cause,
-            )
-            return None
-
-    async def _store_summary_when_idle(self, payload: ThreadInput) -> None:
-        """The inbox is empty and a summary is still being written: store it before
-        the thread closes, unless a message (which runs first) or a cancel comes."""
-        handle = self._summarizing
-        assert handle is not None
-        await workflow.wait_condition(
-            lambda: bool(self._inbox) or self._cancelled or handle.done()
-        )
-        if self._inbox or self._cancelled:
-            return
-        summary = await self._take_summary()
-        if summary is None:
-            return
-        try:
-            await workflow.execute_activity_method(
-                RunActivities.store_summary,
-                StoreSummaryInput(
-                    agent_id=payload.agent_id,
-                    thread_id=payload.thread_id,
-                    run_id=self._summary_run_id,
-                    summary=summary,
-                    config=payload.context_compaction or CompactionConfig(),
-                ),
-                start_to_close_timeout=_PROJECTION_TIMEOUT,
-                retry_policy=RetryPolicy(maximum_attempts=1),
-            )
-        except ActivityError as error:
-            workflow.logger.warning("storing a summary failed: %s", error.__cause__ or error)
+        job, self._summary_job = self._summary_job, None
+        if self._summary_ready is None and job is not None:
+            try:
+                self._summary_ready = await job
+            except ChildWorkflowError as error:
+                workflow.logger.warning(
+                    "actant.compaction.background_failed thread=%s error=%s",
+                    self._thread_id,
+                    error.__cause__ or error,
+                )
+        return self._ready_summary()
 
     def _rotate_history_if_needed(self, payload: ThreadInput) -> None:
         """Rotate Temporal's event history between agent runs, preserving thread state.
@@ -632,8 +648,8 @@ class AgentThreadWorkflow:
         """
         if workflow.info().get_current_history_length() <= _history_rotation_threshold(payload):
             return
-        if self._summarizing is not None:
-            return  # soft: rotate after the summary in flight is stored
+        if self._summary_ready is not None:
+            return  # soft: rotate after the summary sent to this execution is stored
         workflow.continue_as_new(
             ThreadInput(
                 agent_id=payload.agent_id,
@@ -659,6 +675,45 @@ def _history_rotation_threshold(payload: ThreadInput) -> int:
     return max(1, payload.history_size_threshold)
 
 
+@workflow.defn
+class ContextSummaryWorkflow:
+    """A background summary (``CompactionConfig.background``), written beside a thread's
+    turns and outliving its run, so no run ends waiting on one. Sent to the thread to
+    store at its next turn boundary; stored here when the thread has closed meanwhile,
+    since no turn is open then. One stale by then (compacted since) is dropped."""
+
+    @workflow.run
+    async def run(self, job: SummaryJob) -> ContextSummary:
+        summary = await workflow.execute_activity_method(
+            RunActivities.summarize_context,
+            job.compact,
+            start_to_close_timeout=timedelta(seconds=job.compact_s),
+            retry_policy=RetryPolicy(maximum_attempts=1),
+        )
+        parent = workflow.info().parent
+        assert parent is not None
+        try:
+            # by id, not run: a later execution of the thread takes it as well
+            thread = workflow.get_external_workflow_handle(parent.workflow_id)
+            await thread.signal(AgentThreadWorkflow.summary_ready, summary)
+        except ApplicationError:  # the thread has closed
+            c = job.compact
+            await _store(StoreSummaryInput(c.agent_id, c.thread_id, c.run_id, summary, c.config))
+        return summary
+
+
+async def _store(store: StoreSummaryInput) -> None:
+    try:
+        await workflow.execute_activity_method(
+            RunActivities.store_summary,
+            store,
+            start_to_close_timeout=_PROJECTION_TIMEOUT,
+            retry_policy=RetryPolicy(maximum_attempts=1),
+        )
+    except ActivityError as error:
+        workflow.logger.warning("storing a summary failed: %s", error.__cause__ or error)
+
+
 # Convenience name so callers don't have to know the class location for
 # Worker registration.
-WORKFLOWS: list[type] = [AgentThreadWorkflow]
+WORKFLOWS: list[type] = [AgentThreadWorkflow, ContextSummaryWorkflow]

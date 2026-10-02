@@ -48,7 +48,7 @@ from actant.runtime.temporal.types import (
     UNREGISTERED_SUMMARIZER,
 )
 from actant.runtime.types.threads import RunStatus
-from actant.runtime.temporal.workflow import AgentThreadWorkflow
+from actant.runtime.temporal.workflow import AgentThreadWorkflow, ContextSummaryWorkflow
 from actant.tools import RecallImageTool, ToolRegistry, tool
 from actant.tools.base import CallContext
 from runtime_fixtures import static_agents
@@ -596,8 +596,24 @@ async def test_a_summary_still_being_written_is_stored_once_the_run_ends() -> No
     assert index == 4 and block.kept == [m.id for m in stored[1:4]]
 
 
-async def test_the_workflow_writes_a_summary_ahead_stores_it_idle_and_replays() -> None:
-    llm = _AheadLLM([_call("a", input_tokens=6_000), _says("done", input_tokens=6_100)])
+async def _summary_rows(stores: InMemoryRuntimeStores) -> list[str]:
+    """The thread's message kinds once its summary is stored (or after 5 s)."""
+    kinds: list[str] = []
+    for _ in range(100):
+        kinds = [m.kind for m in await stores.messages.list_for_thread(_AGENT, _THREAD)]
+        if "compaction" in kinds:
+            break
+        await asyncio.sleep(0.05)
+    return kinds
+
+
+async def test_a_run_never_waits_on_a_summary_and_the_summary_lands_on_its_own() -> None:
+    # One turn per run, its caller waiting for the thread to close before the next:
+    # the summary started ahead outlives the run, which closes at once.
+    llm = _AheadLLM(
+        [_call("a", input_tokens=6_000), _call("b", input_tokens=6_100), _says("done")],
+        summary_s=2.0,
+    )
     agent = AgentDefinition(
         id=_AGENT, name="Compacting", persona=_PERSONA, llm=llm, tools=ToolRegistry([note])
     )
@@ -606,12 +622,65 @@ async def test_the_workflow_writes_a_summary_ahead_stores_it_idle_and_replays() 
         ActivityContext(stores=stores, resolve_agent=static_agents({_AGENT: agent}))
     )
     task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
+    workflows = [AgentThreadWorkflow, ContextSummaryWorkflow]
+    histories = []
     async with await WorkflowEnvironment.start_local() as env:
         async with Worker(
-            env.client,
-            task_queue=task_queue,
-            workflows=[AgentThreadWorkflow],
-            activities=activities.all,
+            env.client, task_queue=task_queue, workflows=workflows, activities=activities.all
+        ):
+            config = TemporalRuntimeConfig(
+                task_queue=task_queue, context_compaction=_AHEAD, max_turns_per_run=1
+            )
+            runtime = AgentRuntime(client=env.client, stores=stores, config=config)
+            for text in ("first", "second"):
+                started = asyncio.get_running_loop().time()
+                workflow_id = await runtime.send_message(_AGENT, _THREAD, text)
+                handle = env.client.get_workflow_handle(workflow_id)
+                await asyncio.wait_for(handle.result(), timeout=20.0)
+                assert asyncio.get_running_loop().time() - started < 1.5
+                histories.append(await handle.fetch_history())
+            # the second run found the first's summary in flight and started none
+            assert len(llm.summaries) == 1
+            kinds = await _summary_rows(stores)
+            summary = env.client.get_workflow_handle(f"{workflow_id}-summary")
+            await asyncio.wait_for(summary.result(), timeout=20.0)
+            histories.append(await summary.fetch_history())
+
+    # the thread had closed: the summary's workflow stored it
+    assert kinds == ["message"] * 6 + ["compaction"]
+    scheduled = [
+        e.activity_task_scheduled_event_attributes.activity_type.name
+        for e in histories[-1].events
+        if e.HasField("activity_task_scheduled_event_attributes")
+    ]
+    assert scheduled == ["summarize_context", "store_summary"]
+    for history in histories:
+        await Replayer(workflows=workflows).replay_workflow(history)
+
+
+async def test_a_summary_ready_mid_run_lands_at_the_next_turn() -> None:
+    llm = _AheadLLM(
+        [
+            _call("a", input_tokens=6_000),  # past 50%: the next turn starts a summary
+            _call("b", input_tokens=6_100),
+            _call("c", input_tokens=6_200),
+            _says("done", input_tokens=500),
+        ]
+    )
+    llm.release.clear()
+    llm.release_at = 3
+    agent = AgentDefinition(
+        id=_AGENT, name="Compacting", persona=_PERSONA, llm=llm, tools=ToolRegistry([note])
+    )
+    stores = InMemoryRuntimeStores()
+    activities = TemporalRuntimeActivities(
+        ActivityContext(stores=stores, resolve_agent=static_agents({_AGENT: agent}))
+    )
+    task_queue = f"test-actant-{uuid.uuid4().hex[:8]}"
+    workflows = [AgentThreadWorkflow, ContextSummaryWorkflow]
+    async with await WorkflowEnvironment.start_local() as env:
+        async with Worker(
+            env.client, task_queue=task_queue, workflows=workflows, activities=activities.all
         ):
             config = TemporalRuntimeConfig(task_queue=task_queue, context_compaction=_AHEAD)
             runtime = AgentRuntime(client=env.client, stores=stores, config=config)
@@ -620,10 +689,14 @@ async def test_the_workflow_writes_a_summary_ahead_stores_it_idle_and_replays() 
             await asyncio.wait_for(handle.result(), timeout=20.0)
             history = await handle.fetch_history()
 
-    assert len(llm.summaries) == 1 and len(llm.turns) == 2
+    [request] = llm.summaries
+    assert _texts(request) == ["first", COMPACTION_PROMPT]
     stored = await stores.messages.list_for_thread(_AGENT, _THREAD)
-    assert [m.kind for m in stored] == ["message"] * 4 + ["compaction"]
-    await Replayer(workflows=[AgentThreadWorkflow]).replay_workflow(history)
+    [index] = [i for i, m in enumerate(stored) if m.kind == "compaction"]
+    # sent to the thread, which stored it at a boundary: the last turn saw it
+    assert index < len(stored) - 1
+    assert llm.turns[-1][0] == summary_message("SUMMARY")
+    await Replayer(workflows=workflows).replay_workflow(history)
 
 
 async def test_a_failed_background_summary_is_logged_and_changes_nothing(

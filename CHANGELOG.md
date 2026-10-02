@@ -4,6 +4,17 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A background summary (`CompactionConfig.background`) runs in a workflow of its own,
+  `ContextSummaryWorkflow`, and no longer holds a thread open: a run that ends with an
+  empty inbox closes at once. Before, its thread waited for the summary before closing,
+  so a caller driving one run at a time waited the whole summary call (about 60 s on a
+  large context) after the turn that started it. The summary is sent to the thread and
+  stored at its next turn boundary, or stored by its own workflow when the thread has
+  closed. A worker registering workflows itself adds `ContextSummaryWorkflow` (in
+  `actant.runtime.temporal.workflow.WORKFLOWS`); `AgentRuntime.run_worker` does.
+
 ## 0.33.4
 
 - `actant.sandbox.host.current_service()`: the service the running host call serves, inherited by the tasks and threads it starts, so a service's shared resources (a pool, a gate) can order waiting work by caller.
