@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.5
 
 - A background summary (`CompactionConfig.background`) runs in a workflow of its own,
   `ContextSummaryWorkflow`, and no longer holds a thread open: a run that ends with an
