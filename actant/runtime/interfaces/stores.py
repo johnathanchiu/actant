@@ -70,7 +70,11 @@ class MessageStore(Protocol):
         content: str | list[Block],
         *,
         tag: str | None = None,
-    ) -> MessageRecord: ...
+        turn_id: str | None = None,
+    ) -> MessageRecord:
+        """``turn_id``: the turn this message was stored by (its inbound messages, a
+        reminder), so a turn attempted again finds what it already stored."""
+        ...
 
     async def append_compaction(
         self, agent_id: str, thread_id: str, block: CompactionBlock
@@ -112,6 +116,11 @@ class MessageStore(Protocol):
 
     async def list_for_thread(self, agent_id: str, thread_id: str) -> list[Message]:
         """The full transcript, compaction rows included: for viewing and replay."""
+        ...
+
+    async def list_for_turn(self, agent_id: str, thread_id: str, turn_id: str) -> list[Message]:
+        """The messages stored with ``turn_id``, in transcript order: what a turn
+        attempted again after its worker was lost already stored."""
         ...
 
     async def list_for_model(self, agent_id: str, thread_id: str) -> list[Message]:

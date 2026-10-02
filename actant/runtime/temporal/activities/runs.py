@@ -15,6 +15,7 @@ from actant.agents import AgentDefinition
 from actant.blocks import BLOCKS, Block, CompactionBlock
 from actant.assets import AssetContext, prepare_messages
 from actant.core import JSONObject, new_id
+from actant.heartbeat import heartbeating
 from actant.llm.base import LLMClient
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall as LLMToolCall
@@ -149,7 +150,37 @@ class RunActivities:
 
     @activity.defn(name=ActivityName.RUN_TURN)
     async def run_turn(self, payload: RunTurnInput) -> TurnResult:
-        """Invoke the LLM once and atomically persist its assistant turn."""
+        """Invoke the LLM once and atomically persist its assistant turn.
+
+        Attempted again only when its worker was lost (the workflow's
+        ``_LOST_TURN_RETRY``): every failure in here is final, so a model error is
+        never retried by Temporal. A later attempt picks up from what an earlier one
+        stored: an answer already stored is not asked for again, and no inbound
+        message is stored twice.
+        """
+        async with heartbeating():
+            try:
+                stored = (
+                    await self.context.stores.messages.list_for_turn(
+                        payload.agent_id, payload.thread_id, payload.turn_id
+                    )
+                    if activity.in_activity() and activity.info().attempt > 1
+                    else []
+                )
+                if any(m.role == "assistant" for m in stored):
+                    return await self._stored_turn(payload, stored)
+                return await self._run_turn(payload, stored)
+            except ApplicationError as error:
+                if error.non_retryable:
+                    raise
+                raise ApplicationError(str(error), type=error.type, non_retryable=True) from error
+            except Exception as error:  # noqa: BLE001 -- the activity boundary
+                raise ApplicationError(
+                    str(error), type=type(error).__name__, non_retryable=True
+                ) from error
+
+    async def _run_turn(self, payload: RunTurnInput, stored: list[Message]) -> TurnResult:
+        """The turn, after any inbound messages an earlier attempt ``stored``."""
         phases = _Phases()
         agent = await self.context.agent(payload.agent_id, payload.thread_id)
         phases.end("resolve")
@@ -188,7 +219,7 @@ class RunActivities:
                 tag=msg.tag,
             )
             for msg in payload.new_messages
-        ]
+        ][sum(1 for m in stored if m.role == "user") :]
         if not measuring:
             await self._append_inbound(payload, inbound, events)
             phases.end("inbound")
@@ -302,16 +333,72 @@ class RunActivities:
         run.status = RunStatus.ACTIVE
         await self.context.stores.threads.update(thread)
         await self.context.stores.runs.update(run)
+        return await self._close_turn(payload, agent, records, ahead, events, reminded=False)
 
+    async def _stored_turn(self, payload: RunTurnInput, stored: list[Message]) -> TurnResult:
+        """A turn whose answer an earlier attempt stored before its worker was lost:
+        finish what that attempt did not, without asking the model again."""
+        agent = await self.context.agent(payload.agent_id, payload.thread_id)
+        thread = await self.context.stores.threads.get_or_create(
+            payload.agent_id, payload.thread_id
+        )
+        run = await self.context.stores.runs.get(payload.run_id)
+        events = self.context.events(
+            thread, run_id=payload.run_id, turn_id=payload.turn_id, turn_index=payload.turn_index
+        )
+        # A run's turn ``turn_index`` starts with the thread at ``turn_index - 1`` turns.
+        if thread.turn_count < payload.turn_index:
+            thread.turn_count += 1
+            run.turn_count += 1
+            run.status = RunStatus.ACTIVE
+            await self.context.stores.threads.update(thread)
+            await self.context.stores.runs.update(run)
+        answer = max(i for i, m in enumerate(stored) if m.role == "assistant")
+        # In the order the model asked for them, as the first attempt returned them.
+        order = [call.id for call in stored[answer].tool_calls or []]
+        by_id = {
+            r.id: r
+            for r in await self.context.stores.tool_calls.get_by_run(payload.run_id)
+            if r.turn_id == payload.turn_id
+        }
+        records = [by_id[call_id] for call_id in order if call_id in by_id]
+        reminded = any(
+            m.role == "user" and m.content == FINISH_REMINDER for m in stored[answer + 1 :]
+        )
+        logger.info(
+            "actant.turn.resumed agent=%s thread=%s turn=%s tool_calls=%d",
+            payload.agent_id,
+            payload.thread_id,
+            payload.turn_index,
+            len(records),
+        )
+        return await self._close_turn(payload, agent, records, None, events, reminded=reminded)
+
+    async def _close_turn(
+        self,
+        payload: RunTurnInput,
+        agent: AgentDefinition,
+        records: list[ToolCallRecord],
+        ahead: CompactionTrigger | None,
+        events: RuntimeEvents,
+        *,
+        reminded: bool,
+    ) -> TurnResult:
+        """The turn's result once its answer is stored; ``reminded`` when the finish
+        reminder already is too."""
         if not records and agent.completion == "terminal":
             # A task agent does not end by silence. Once: remind it, persisted
             # so the transcript (and any replay) shows the nudge. Twice: the
             # run ends, and the reason says why.
             if payload.text_only_turns == 0:
-                await self.context.stores.messages.append_user(
-                    payload.agent_id, payload.thread_id, FINISH_REMINDER
-                )
-                await events.on_user_message(FINISH_REMINDER)
+                if not reminded:
+                    await self.context.stores.messages.append_user(
+                        payload.agent_id,
+                        payload.thread_id,
+                        FINISH_REMINDER,
+                        turn_id=payload.turn_id,
+                    )
+                    await events.on_user_message(FINISH_REMINDER)
                 return TurnResult(
                     turn_id=payload.turn_id,
                     turn_index=payload.turn_index,
@@ -593,7 +680,11 @@ class RunActivities:
         for message in inbound:
             content = cast(str | list[Block], message.content)
             await self.context.stores.messages.append_user(
-                payload.agent_id, payload.thread_id, content, tag=message.tag
+                payload.agent_id,
+                payload.thread_id,
+                content,
+                tag=message.tag,
+                turn_id=payload.turn_id,
             )
             await events.on_user_message(content)
 

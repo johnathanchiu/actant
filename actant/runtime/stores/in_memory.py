@@ -175,6 +175,7 @@ class InMemoryMessageStore:
         self._messages: dict[tuple[str, str], list[Message]] = {}
         self._counter = 0
         self._tool_call_store: "InMemoryToolCallStore | None" = None
+        self._turns: dict[str, str] = {}  # message id -> the turn that stored it
 
     async def append_user(
         self,
@@ -183,12 +184,13 @@ class InMemoryMessageStore:
         content: str | list[Block],
         *,
         tag: str | None = None,
+        turn_id: str | None = None,
     ) -> MessageRecord:
         if isinstance(content, list):
             user = Message(role="user", content=list(BLOCKS.validate_python(content)), tag=tag)
         else:
             user = Message(role="user", content=content, tag=tag)
-        return await self._append(agent_id, thread_id, user)
+        return await self._append(agent_id, thread_id, user, turn_id)
 
     async def append_compaction(
         self, agent_id: str, thread_id: str, block: CompactionBlock
@@ -203,8 +205,7 @@ class InMemoryMessageStore:
         turn_id: str,
         message: Message,
     ) -> MessageRecord:
-        del turn_id
-        return await self._append(agent_id, thread_id, message)
+        return await self._append(agent_id, thread_id, message, turn_id)
 
     async def append_assistant_with_tool_calls(
         self,
@@ -256,6 +257,10 @@ class InMemoryMessageStore:
     async def list_for_thread(self, agent_id: str, thread_id: str) -> list[Message]:
         return list(self._messages.get((agent_id, thread_id), []))
 
+    async def list_for_turn(self, agent_id: str, thread_id: str, turn_id: str) -> list[Message]:
+        rows = self._messages.get((agent_id, thread_id), [])
+        return [m for m in rows if m.id is not None and self._turns.get(m.id) == turn_id]
+
     async def list_for_model(self, agent_id: str, thread_id: str) -> list[Message]:
         rows = self._messages.get((agent_id, thread_id), [])
         start = max((i for i, m in enumerate(rows) if m.kind == "compaction"), default=None)
@@ -265,9 +270,13 @@ class InMemoryMessageStore:
         kept = block.kept if block is not None else []
         return [m for i, m in enumerate(rows) if i >= start or m.id in kept]
 
-    async def _append(self, agent_id: str, thread_id: str, message: Message) -> MessageRecord:
+    async def _append(
+        self, agent_id: str, thread_id: str, message: Message, turn_id: str | None = None
+    ) -> MessageRecord:
         self._counter += 1
         message.id = f"msg_{self._counter}"
+        if turn_id is not None:
+            self._turns[message.id] = turn_id
         self._messages.setdefault((agent_id, thread_id), []).append(message)
         return MessageRecord(
             id=message.id,

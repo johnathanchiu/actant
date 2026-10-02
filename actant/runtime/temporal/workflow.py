@@ -81,6 +81,9 @@ _PROJECTION_TIMEOUT = timedelta(seconds=30)
 #: ``retry_safe`` tool again, and closes any other as interrupted. Every failure inside
 #: the activity is already a result, so only a lost attempt reaches this policy.
 _LOST_TOOL_RETRY = RetryPolicy(maximum_attempts=3)
+#: A model turn whose worker was lost is attempted again: ``run_turn`` picks up from what
+#: the lost attempt stored, and fails every other error non-retryably.
+_LOST_TURN_RETRY = RetryPolicy(maximum_attempts=3)
 _COMPACT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=2), backoff_coefficient=2.0, maximum_attempts=3
 )
@@ -271,7 +274,10 @@ class AgentThreadWorkflow:
                     RunActivities.run_turn,
                     turn_input,
                     start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.turn_s),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
+                    heartbeat_timeout=timedelta(
+                        seconds=payload.activity_timeouts.turn_heartbeat_s
+                    ),
+                    retry_policy=_LOST_TURN_RETRY,
                 )
                 if turn.compaction is not None and self._summarizing is not None:
                     # Past the hard limit with a summary already being written:
@@ -290,7 +296,10 @@ class AgentThreadWorkflow:
                             start_to_close_timeout=timedelta(
                                 seconds=payload.activity_timeouts.turn_s
                             ),
-                            retry_policy=RetryPolicy(maximum_attempts=1),
+                            heartbeat_timeout=timedelta(
+                                seconds=payload.activity_timeouts.turn_heartbeat_s
+                            ),
+                            retry_policy=_LOST_TURN_RETRY,
                         )
                 if turn.compaction is not None:
                     # The request would have crossed a context limit and
@@ -324,7 +333,10 @@ class AgentThreadWorkflow:
                             turn_input, new_messages=new_messages, compacted=True, summary=None
                         ),
                         start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.turn_s),
-                        retry_policy=RetryPolicy(maximum_attempts=1),
+                        heartbeat_timeout=timedelta(
+                            seconds=payload.activity_timeouts.turn_heartbeat_s
+                        ),
+                        retry_policy=_LOST_TURN_RETRY,
                     )
             except Exception as error:
                 self._stop_reason = str(error.__cause__ or error)
