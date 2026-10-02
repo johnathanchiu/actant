@@ -29,6 +29,7 @@ from actant.runtime import AgentRuntime
 from actant.runtime.compaction import (
     COMPACTION_PROMPT,
     compaction_of,
+    compaction_request,
     count_images,
     estimate_tokens,
     retained,
@@ -216,6 +217,42 @@ async def test_the_image_limit_triggers_and_the_summary_call_stays_under_it() ->
     assert index == 2 and count_images(stored[3:]) == 1
     _, fresh, _ = s.llm.calls[2]
     assert fresh == [summary_message("SUMMARY"), stored[3]]
+
+
+async def test_a_summary_without_images_is_sent_their_labels_alone() -> None:
+    s = _Setup(
+        [_says("two seen", input_tokens=10), _says("SUMMARY"), _says("three")],
+        context_window_tokens=1_000_000,
+        max_images_per_request=2,
+    )
+    text_only = CompactionConfig(images=False)
+    await s.run([{"type": "text", "text": "look"}, _IMAGE, _IMAGE], text_only)
+    await s.run([{"type": "text", "text": "and this"}, _IMAGE], text_only)
+
+    assert len(await s.compactions()) == 1
+    _, request, _ = s.llm.calls[1]
+    assert count_images(request) == 0
+    content = request[0].content
+    assert isinstance(content, list)
+    assert [b.text for b in content if isinstance(b, TextBlock)] == [
+        "look",
+        "[image]",
+        "[image]",
+    ]
+    # the model's own context keeps its images: only the summary call goes without
+    stored = await s.stored()
+    assert count_images(stored) == 3
+
+
+def test_a_stored_image_without_images_keeps_its_id_label() -> None:
+    asset = AssetBlock(storage_key="s3://bucket/a.png", mime="image/png")
+    [message, _] = compaction_request(
+        [Message(role="user", content=[TextBlock(text="see"), asset])], images=False
+    )
+    assert message.content == [
+        TextBlock(text="see"),
+        TextBlock(text="[image id=s3://bucket/a.png]"),
+    ]
 
 
 async def test_the_provider_declares_the_limits_and_none_is_not_checked() -> None:

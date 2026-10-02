@@ -226,27 +226,41 @@ def crossed_limits(
 
 
 def compaction_request(
-    view: Sequence[Message], instructions: str = "", prompt: str | None = None
+    view: Sequence[Message],
+    instructions: str = "",
+    prompt: str | None = None,
+    *,
+    images: bool = True,
 ) -> list[Message]:
     """The summary call's messages: the context being replaced, each stored image
     labelled with its id for the image index, then the prompt (``prompt``, else
-    ``COMPACTION_PROMPT``) with ``instructions`` after it."""
+    ``COMPACTION_PROMPT``) with ``instructions`` after it. Without ``images`` each
+    image is sent as its label alone (``[image]`` for one with no id)."""
     labelled: list[Message] = []
     for message in view:
         if isinstance(message.content, list) and any(
-            isinstance(b, AssetBlock) for b in message.content
+            isinstance(b, AssetBlock | InlineImageBlock | UrlImageBlock) for b in message.content
         ):
             blocks: list[PromptBlock] = []
             for block in message.content:
                 if isinstance(block, AssetBlock) and block.mime.startswith("image/"):
                     blocks.append(TextBlock(text=f"[image id={image_id(block)}]"))
-                blocks.append(block)
+                elif not images and isinstance(block, InlineImageBlock | UrlImageBlock):
+                    blocks.append(TextBlock(text="[image]"))
+                if images or not _is_image(block):
+                    blocks.append(block)
             message = replace(message, content=blocks)
         labelled.append(message)
     text = COMPACTION_PROMPT if prompt is None else prompt
     if instructions:
         text = f"{text}\n\n{instructions}"
     return [*labelled, Message(role="user", content=text)]
+
+
+def _is_image(block: PromptBlock) -> bool:
+    return isinstance(block, InlineImageBlock | UrlImageBlock) or (
+        isinstance(block, AssetBlock) and block.mime.startswith("image/")
+    )
 
 
 def image_id(block: AssetBlock) -> str:

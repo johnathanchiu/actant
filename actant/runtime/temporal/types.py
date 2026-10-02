@@ -86,6 +86,13 @@ class CompactionConfig:
 
         CompactionConfig(prompt="<compaction_request>...</compaction_request>")
 
+    ``images=False`` sends the summary call no images, each as its
+    ``[image id=...]`` label alone: the summary is text, and on a context
+    heavy with pictures they are much of the call's input and time. The image
+    index is then written from what the conversation said about each one::
+
+        CompactionConfig(images=False)
+
     The limits are the model client's: its ``context_window_tokens`` and
     ``max_images_per_request`` (``OpenAIProvider`` takes both); a limit the
     client does not declare is not checked. Unrelated to
@@ -98,6 +105,7 @@ class CompactionConfig:
     summarizer: str | None = None
     summary_tokens: int | None = None
     prompt: str | None = None
+    images: bool = True
 
     def __post_init__(self) -> None:
         if self.background is not None and not 0 < self.background < self.threshold:
