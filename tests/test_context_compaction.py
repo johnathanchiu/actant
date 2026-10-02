@@ -587,10 +587,14 @@ async def test_the_hard_limit_waits_for_the_summary_in_flight_instead_of_a_secon
     assert llm.turns[2][0] == summary_message("SUMMARY")
 
 
-async def test_a_summary_still_being_written_is_stored_once_the_run_ends() -> None:
-    s = _ahead([_call("a", input_tokens=6_000), _says("done", input_tokens=6_100)])
+async def test_a_run_ends_without_waiting_and_the_summary_stores_itself() -> None:
+    s = _ahead([_call("a", input_tokens=6_000), _says("done", input_tokens=6_100)], summary_s=1.0)
+    started = asyncio.get_running_loop().time()
     assert await s.run("first", _AHEAD) is RunOutcome.COMPLETED
 
+    assert asyncio.get_running_loop().time() - started < 0.5
+    assert await s.compactions() == []
+    await asyncio.sleep(1.2)
     stored = await s.stored()
     [(index, block)] = await s.compactions()
     assert index == 4 and block.kept == [m.id for m in stored[1:4]]
@@ -708,6 +712,7 @@ async def test_a_failed_background_summary_is_logged_and_changes_nothing(
     llm.fail = True
     with caplog.at_level(logging.WARNING):
         assert await s.run("first", _AHEAD) is RunOutcome.COMPLETED
+        await asyncio.sleep(0.1)  # the run did not wait on it
 
     assert await s.compactions() == []
     [record] = [r for r in caplog.records if "background_failed" in r.getMessage()]

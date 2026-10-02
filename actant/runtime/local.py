@@ -68,8 +68,10 @@ class LocalThreadRuntime:
     def __init__(self, context) -> None:
         self._runs = RunActivities(context)
         self._tools = ToolActivities(context)
-        # A background summary in flight per (agent, thread), as the workflow keeps one.
-        self._summarizing: dict[tuple[str, str], asyncio.Task[ContextSummary]] = {}
+        # A background summary in flight per (agent, thread), as the workflow keeps one,
+        # and the threads with a run open (a summary written while none is stores itself).
+        self._summarizing: dict[tuple[str, str], asyncio.Task[ContextSummary | None]] = {}
+        self._running: set[tuple[str, str]] = set()
 
     async def run(
         self,
@@ -78,6 +80,13 @@ class LocalThreadRuntime:
     ) -> LocalRun:
         """Turns until the agent stops, its budget runs out, or a terminal tool ends it."""
 
+        self._running.add(self._key(payload))
+        try:
+            return await self._run(payload, messages)
+        finally:
+            self._running.discard(self._key(payload))
+
+    async def _run(self, payload: ThreadInput, messages: list[InboundMessage] | None) -> LocalRun:
         run_id = uuid.uuid4().hex
         started = await self._runs.start_run(
             StartRunInput(
@@ -154,7 +163,8 @@ class LocalThreadRuntime:
             turns_remaining -= 1
             if turn.summarize is not None and self._key(payload) not in self._summarizing:
                 self._summarizing[self._key(payload)] = asyncio.create_task(
-                    self._runs.summarize_context(
+                    self._summarize(
+                        payload,
                         CompactContextInput(
                             agent_id=payload.agent_id,
                             thread_id=payload.thread_id,
@@ -163,7 +173,7 @@ class LocalThreadRuntime:
                             turn_index=turn_count,
                             trigger=turn.summarize,
                             config=payload.context_compaction or CompactionConfig(),
-                        )
+                        ),
                     )
                 )
 
@@ -197,20 +207,9 @@ class LocalThreadRuntime:
                 stop_reason=stop_reason,
             )
         )
-        # Idle now: a summary still being written is stored, as the workflow does
-        # before its thread closes.
-        if self._key(payload) in self._summarizing:
-            summary = await self._take_summary(payload)
-            if summary is not None:
-                await self._runs.store_summary(
-                    StoreSummaryInput(
-                        agent_id=payload.agent_id,
-                        thread_id=payload.thread_id,
-                        run_id=run_id,
-                        summary=summary,
-                        config=payload.context_compaction or CompactionConfig(),
-                    )
-                )
+        # A summary ready by now is stored; one still being written stores itself.
+        if (summary := await self._ready_summary(payload)) is not None:
+            await self._store(payload, run_id, summary)
         return LocalRun(outcome, turn_count, stop_reason)
 
     @staticmethod
@@ -225,13 +224,16 @@ class LocalThreadRuntime:
 
     async def _take_summary(self, payload: ThreadInput) -> ContextSummary | None:
         task = self._summarizing.pop(self._key(payload), None)
-        if task is None:
-            return None
+        return None if task is None else await task
+
+    async def _summarize(
+        self, payload: ThreadInput, compact: CompactContextInput
+    ) -> ContextSummary | None:
+        """The background summary, beside the turns. Taken at the next turn boundary;
+        stored here when the thread has no run open by then, so no run waits on it."""
         try:
-            return await task
-        except (
-            Exception
-        ) as error:  # a failed summary changed nothing; the hard limit still compacts
+            summary = await self._runs.summarize_context(compact)
+        except Exception as error:  # a failed summary changed nothing; the hard limit compacts
             logger.warning(
                 "actant.compaction.background_failed thread=%s error=%s: %s",
                 payload.thread_id,
@@ -239,6 +241,22 @@ class LocalThreadRuntime:
                 error,
             )
             return None
+        key = self._key(payload)
+        if key not in self._running and self._summarizing.get(key) is asyncio.current_task():
+            del self._summarizing[key]
+            await self._store(payload, compact.run_id, summary)
+        return summary
+
+    async def _store(self, payload: ThreadInput, run_id: str, summary: ContextSummary) -> None:
+        await self._runs.store_summary(
+            StoreSummaryInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                summary=summary,
+                config=payload.context_compaction or CompactionConfig(),
+            )
+        )
 
     async def _run_tool_group(self, payload: ThreadInput, turn: TurnResult) -> bool:
         """Admit every call, run what may run, then finalize the group once.
