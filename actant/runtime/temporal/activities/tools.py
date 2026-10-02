@@ -34,6 +34,13 @@ from actant.tools.admission import (
 from actant.tools.base import CallContext, MetadataKey, Tool, ToolInvocation, ToolResult
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
+#: The result of a call whose worker was lost while it ran, when its tool is not
+#: ``retry_safe``: the model decides what to do, knowing the effect is uncertain.
+TOOL_INTERRUPTED = (
+    "interrupted: the worker running this call stopped before it returned, so it may or "
+    "may not have taken effect. Check for its effect before calling it again."
+)
+
 
 class ToolActivities:
     """Activities for one parallel tool group."""
@@ -163,6 +170,12 @@ class ToolActivities:
         tool = agent.tools.get(record.name)
         if tool is None:
             return await self._execute_failed(record.id, f"Tool {record.name} not found")
+        if activity.in_activity() and activity.info().attempt > 1:
+            # An earlier attempt was lost with its worker before it stored a result.
+            # Run it again only when the tool says that is safe; otherwise close it
+            # so the run goes on and the model sees what happened.
+            if not getattr(tool, "retry_safe", False):
+                return await self._execute_failed(record.id, TOOL_INTERRUPTED)
         # A tool that runs code can take minutes, and opening its sandbox can
         # too (an image builds on first use). Heartbeats keep Temporal from
         # mistaking a long healthy activity for a dead worker, and let a

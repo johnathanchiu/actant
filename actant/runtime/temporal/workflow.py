@@ -76,6 +76,11 @@ _PROJECTION_TIMEOUT = timedelta(seconds=30)
 #: A blocking compaction whose summary call failed tries again, backing off, within the
 #: same run: a run that fails at once only has its caller start the next into the same
 #: failure. A refusal that would end the same way again is non-retryable and fails at once.
+#: A tool call whose worker was lost (it stopped heartbeating, or outlived its timeout)
+#: is attempted again: ``execute_tool`` returns a stored result as is, runs a
+#: ``retry_safe`` tool again, and closes any other as interrupted. Every failure inside
+#: the activity is already a result, so only a lost attempt reaches this policy.
+_LOST_TOOL_RETRY = RetryPolicy(maximum_attempts=3)
 _COMPACT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=2), backoff_coefficient=2.0, maximum_attempts=3
 )
@@ -382,8 +387,9 @@ class AgentThreadWorkflow:
     ) -> bool:
         """Admit, execute or resolve in parallel, then finalize once.
 
-        Tool exceptions become structured results. Temporal-level failures
-        (for example worker loss or timeout) fail the run after siblings drain.
+        Tool exceptions become structured results. A tool call lost with its
+        worker is attempted again (``_LOST_TOOL_RETRY``) and ends as a result too.
+        Other Temporal-level failures fail the run after siblings drain.
         Every tool_call ends with a terminal status and a persisted
         result by the time ``finalize_tool_group`` runs — which appends
         the tool_result messages and closes the transcript invariant.
@@ -440,7 +446,7 @@ class AgentThreadWorkflow:
                         heartbeat_timeout=timedelta(
                             seconds=payload.activity_timeouts.tool_heartbeat_s
                         ),
-                        retry_policy=RetryPolicy(maximum_attempts=1),
+                        retry_policy=_LOST_TOOL_RETRY,
                     )
                 )
             elif decision == AdmitDecision.AWAIT_HUMAN.value:
@@ -466,7 +472,7 @@ class AgentThreadWorkflow:
                 terminal_tool = terminal_tool or outcome.terminal
             except ActivityError as error:
                 # Drain siblings before finalization; do not race late tool writes.
-                # The failed external call may have executed and is never retried.
+                # Reached only once its retries are spent.
                 execution_error = error
         if execution_error is not None:
             raise execution_error
