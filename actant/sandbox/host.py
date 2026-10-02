@@ -20,6 +20,7 @@ its own code makes (setup, stages, checks) on another, without filtering.
 Protocol (JSON bodies, typed in :mod:`actant.sandbox.protocol`)::
 
     POST /v1/call CallRequest -> CallResponse
+    POST /v1/cancel CancelRequest -> stop that call (its method sees CancelledError)
     POST /v1/shutdown         -> close instances, push, exit
 
 Connections are kept alive (HTTP/1.1); :func:`post` is the pooled client.
@@ -83,6 +84,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from actant.sandbox.base import Endpoint, ImageBucket, SandboxSpec
 from actant.sandbox.protocol import (
     CallRequest,
+    CancelRequest,
     CallResponse,
     Header,
     HostConfig,
@@ -112,6 +114,8 @@ MAX_BODY = 256 * 1024 * 1024
 #: for the caller to send it again, and at most this many such calls, oldest dropped first.
 UNDELIVERED_TTL_S = 600.0
 MAX_UNDELIVERED = 128
+#: How long a cancel waits for the cancelled method's cleanup before it answers.
+CANCEL_GRACE_S = 2.0
 #: Images a host uploads at once for one response.
 UPLOAD_CONCURRENCY = 8
 _IMAGE_MAGIC = {
@@ -525,7 +529,22 @@ class Host:
                 error=f"call id {request.call_id!r} already names a different call"
             )
         # Shielded: a caller that goes away leaves the call running for a retry to attach.
-        return HTTPStatus.OK, await asyncio.shield(entry.task)
+        await asyncio.wait([entry.task])  # never cancels it
+        if entry.task.cancelled():
+            return HTTPStatus.OK, CallResponse(error="cancelled: its caller gave up on it")
+        return HTTPStatus.OK, entry.task.result()
+
+    async def cancel(self, call_id: str) -> CallResponse:
+        """Stop ``call_id``: cancel its task, so an ``async def`` method sees
+        ``CancelledError`` at its next await and its cleanup runs (a subprocess it waits on is
+        killed by that cleanup). A plain ``def`` in a thread cannot be interrupted and
+        finishes on its own. Waits at most ``CANCEL_GRACE_S`` for the task to end."""
+        entry = self.calls.pop(call_id, None)
+        if entry is None or entry.task.done():
+            return CallResponse(text="not running")
+        entry.task.cancel()
+        done, _ = await asyncio.wait([entry.task], timeout=CANCEL_GRACE_S)
+        return CallResponse(text="cancelled" if done else "cancelling")
 
     def delivered(self, call_id: str) -> None:
         """The result of ``call_id`` reached its caller: forget the call."""
@@ -690,6 +709,13 @@ class Host:
         except (ValueError, asyncio.IncompleteReadError) as error:
             bad = CallResponse(error=f"malformed request: {error}")
             return HTTPStatus.BAD_REQUEST, bad, True, None
+        if path == Route.CANCEL:
+            try:
+                call_id = CancelRequest.model_validate_json(body).call_id
+            except ValidationError as error:
+                bad = CallResponse(error=f"bad cancel request: {error}")
+                return HTTPStatus.BAD_REQUEST, bad, close, None
+            return HTTPStatus.OK, await self.cancel(call_id), close, None
         if path == Route.SHUTDOWN:
             await self.shutdown()
             return HTTPStatus.OK, CallResponse(text="stopped"), True, None
