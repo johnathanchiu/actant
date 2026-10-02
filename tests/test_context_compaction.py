@@ -803,7 +803,7 @@ async def test_a_named_summarizer_writes_the_summary_capped_and_told_its_length(
     [(system, request, tools)] = fast.calls
     assert (system, tools) == (_PERSONA, [])
     assert fast.max_output_tokens == [2_000]
-    assert "about 1500 words" in str(request[-1].content)
+    assert "about 1000 words" in str(request[-1].content)
 
 
 async def test_a_request_the_summarizer_cannot_take_is_summarized_on_the_agents_model() -> None:
