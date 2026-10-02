@@ -110,6 +110,10 @@ class CallContext:
 
 
 class Tool(Protocol):
+    """A tool. Optional attributes the runtime reads: ``needs_sandbox`` (see
+    :class:`SandboxedTool`) and ``retry_safe``, ``True`` when a call whose worker was
+    lost may simply run again; without it such a call ends as interrupted."""
+
     name: str
 
     @property

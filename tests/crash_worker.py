@@ -21,7 +21,7 @@ from actant.tools import ToolRegistry
 from runtime_fixtures import static_agents
 
 
-async def main(address: str, queue: str, schema: str, effects: str) -> None:
+async def main(address: str, queue: str, schema: str, effects: str, attempt: str) -> None:
     engine = create_async_engine(
         os.environ["ACTANT_TEST_POSTGRES_URL"],
         execution_options={"schema_translate_map": {None: schema}},
@@ -40,6 +40,8 @@ async def main(address: str, queue: str, schema: str, effects: str) -> None:
         name="a",
         persona="",
         tools=ToolRegistry([perform]),
+        # The first process calls the tool and dies in it; the one after answers the
+        # interrupted result.
         llm=FakeLLM(
             [
                 FakeResponse(
@@ -50,6 +52,8 @@ async def main(address: str, queue: str, schema: str, effects: str) -> None:
                     ]
                 )
             ]
+            if attempt == "first"
+            else [FakeResponse(text="recovered")]
         ),
     )
     activities = TemporalRuntimeActivities(

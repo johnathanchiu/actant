@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A tool call whose worker was lost (it stopped heartbeating, or outlived its timeout) no
+  longer fails the run. `execute_tool` is attempted again (3 attempts): a stored result is
+  returned as is, a tool marked `retry_safe` (`@tool(retry_safe=True)`) runs again, and any
+  other call is closed with an `interrupted` result (`TOOL_INTERRUPTED`) that the model
+  sees and can act on.
+
 ## 0.33.3
 
 - A `CompactionConfig.summarizer` the worker never registered fails the thread once, before

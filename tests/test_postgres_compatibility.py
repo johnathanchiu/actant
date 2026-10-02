@@ -183,13 +183,15 @@ async def test_a_sandbox_claim_race_keeps_one_provider_id_and_its_spec(
     assert gone is None
 
 
-async def test_killed_worker_repairs_one_result_without_repeating_side_effect(
+async def test_killed_worker_closes_the_call_as_interrupted_and_the_run_goes_on(
     stores: SQLAlchemyRuntimeStores, postgres_schema: str, tmp_path: Path
 ) -> None:
-    """Kill after the effect but before result persistence; recover on a fresh process."""
+    """Kill after the effect but before result persistence; a fresh process closes the
+    call as interrupted without repeating the effect, and the run continues."""
     from temporalio.testing import WorkflowEnvironment
 
     from actant.runtime import ActivityTimeouts, AgentRuntime, TemporalRuntimeConfig
+    from actant.runtime.temporal.activities.tools import TOOL_INTERRUPTED
 
     effects = tmp_path / "effects.txt"
     log_path = tmp_path / "worker.log"
@@ -205,7 +207,7 @@ async def test_killed_worker_repairs_one_result_without_repeating_side_effect(
         runtime = AgentRuntime(client=env.client, stores=stores, config=config)
         with log_path.open("wb") as log:
 
-            async def launch() -> asyncio.subprocess.Process:
+            async def launch(attempt: str) -> asyncio.subprocess.Process:
                 process = await asyncio.create_subprocess_exec(
                     sys.executable,
                     str(helper),
@@ -213,6 +215,7 @@ async def test_killed_worker_repairs_one_result_without_repeating_side_effect(
                     config.task_queue,
                     postgres_schema,
                     str(effects),
+                    attempt,
                     stdout=log,
                     stderr=log,
                 )
@@ -220,7 +223,7 @@ async def test_killed_worker_repairs_one_result_without_repeating_side_effect(
                 return process
 
             try:
-                first = await launch()
+                first = await launch("first")
                 workflow_id = await runtime.send_message("a", "t", "go")
                 async with asyncio.timeout(40):
                     while not effects.exists() or not effects.read_text():
@@ -228,15 +231,17 @@ async def test_killed_worker_repairs_one_result_without_repeating_side_effect(
                         await asyncio.sleep(0.05)
                 first.kill()  # SIGKILL: no activity exception handler or graceful shutdown.
                 await first.wait()
-                await launch()
+                await launch("second")
                 await asyncio.wait_for(env.client.get_workflow_handle(workflow_id).result(), 40)
                 [run] = await stores.runs.list_for_thread("a", "t")
-                assert run.status is RunStatus.FAILED
+                assert run.status is RunStatus.IDLE
                 assert (await stores.tool_calls.get("effect")).status is ToolCallStatus.FAILED
                 assert not await stores.tool_calls.get_open_for_thread("a", "t")
                 messages = await runtime.thread("a", "t").messages()
                 results = [m for m in messages if m.role == "tool"]
                 assert len(results) == 1 and results[0].tool_call_id == "effect"
+                assert TOOL_INTERRUPTED in str(results[0].content)
+                assert messages[-1].content == "recovered"
                 assert effects.read_text().splitlines() == ["effect"]
             finally:
                 for process in processes:

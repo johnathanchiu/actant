@@ -66,6 +66,7 @@ class FunctionTool:
         approval: ApprovalPrompt | None = None,
         admission: AdmissionCallback | None = None,
         resolve: ResolutionCallback | None = None,
+        retry_safe: bool = False,
     ) -> None:
         if approval is not None and admission is not None:
             raise TypeError("Pass either `approval` or `admission`, not both")
@@ -75,6 +76,9 @@ class FunctionTool:
         self.approval = approval
         self.admission = admission
         self.resolve = resolve
+        #: Safe to run again when its worker was lost mid-call (reads, or writes that
+        #: land the same twice). Otherwise such a call ends as interrupted.
+        self.retry_safe = retry_safe
         self._params_model, self._injected = _parameter_model(function, self.name)
         # A ``Sandbox`` parameter is the declaration: the runtime opens the
         # thread's sandbox before building this tool. ``CallContext`` alone
@@ -193,6 +197,7 @@ def tool(
     approval: ApprovalPrompt | None = None,
     admission: AdmissionCallback | None = None,
     resolve: ResolutionCallback | None = None,
+    retry_safe: bool = False,
 ) -> Callable[[ToolFunction], FunctionTool]: ...
 
 
@@ -205,6 +210,7 @@ def tool(
     approval: ApprovalPrompt | None = None,
     admission: AdmissionCallback | None = None,
     resolve: ResolutionCallback | None = None,
+    retry_safe: bool = False,
 ) -> FunctionTool | Callable[[ToolFunction], FunctionTool]:
     """Create an Actant tool from an annotated sync or async function."""
 
@@ -216,6 +222,7 @@ def tool(
             approval=approval,
             admission=admission,
             resolve=resolve,
+            retry_safe=retry_safe,
         )
 
     return create(function) if function is not None else create
