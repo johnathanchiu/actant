@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `CompactionConfig(images=False)`: the summary call is sent no images, each as its
+  `[image id=...]` label alone (`[image]` without an id). The model's own context keeps
+  its images. On a picture-heavy context this cuts the call's input and time: a recorded
+  planner context of 33 images went from 162k to 106k input tokens, 72 s to 56 s.
+
 ## 0.33.5
 
 - A background summary (`CompactionConfig.background`) runs in a workflow of its own,
