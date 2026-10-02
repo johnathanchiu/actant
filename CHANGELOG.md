@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A service host keeps a finished call's result for 10 minutes (at most 1,024 calls, the
+  oldest dropped first) even after writing it to its caller, so a worker lost before it
+  stored the result sends the call again and gets that result instead of running it twice.
+- A cancelled call id is kept the same way: a request for it, including the original
+  arriving after its cancel, answers cancelled without running.
+
 ## 0.33.7
 
 - A service host runs each call once per `CallRequest.call_id`: the same request sent again

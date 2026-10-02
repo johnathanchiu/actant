@@ -44,16 +44,12 @@ async def test_a_call_sent_again_while_it_runs_attaches_to_the_run() -> None:
     assert Counter.runs == 1
 
 
-async def test_a_finished_call_is_kept_until_its_result_is_delivered() -> None:
+async def test_a_finished_call_sent_again_gets_its_result_without_running() -> None:
     serving = host.Host({"s": Counter})
     Counter.gate.set()
-    await serving.call(_request())
-    await serving.call(_request())  # undelivered: the retry gets the same result
+    first = await serving.call(_request())
+    assert await serving.call(_request()) == first
     assert Counter.runs == 1
-    serving.delivered("thread:call")
-    assert serving.calls == {}
-    await serving.call(_request())
-    assert Counter.runs == 2
 
 
 async def test_a_different_call_under_a_known_id_is_refused() -> None:
@@ -66,21 +62,21 @@ async def test_a_different_call_under_a_known_id_is_refused() -> None:
     assert Counter.runs == 1
 
 
-async def test_undelivered_results_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(host, "MAX_UNDELIVERED", 2)
+async def test_finished_results_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(host, "MAX_FINISHED", 2)
     serving = host.Host({"s": Counter})
     Counter.gate.set()
     for index in range(5):
         await serving.call(_request(call_id=f"c{index}"))
     assert sorted(serving.calls) == ["c2", "c3", "c4"]  # the oldest dropped first
-    monkeypatch.setattr(host, "UNDELIVERED_TTL_S", 0.0)
+    monkeypatch.setattr(host, "KEEP_FINISHED_S", 0.0)
     await serving.call(_request(call_id="c5"))
     assert sorted(serving.calls) == ["c5"]
 
 
 async def test_a_running_call_is_never_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(host, "MAX_UNDELIVERED", 0)
-    monkeypatch.setattr(host, "UNDELIVERED_TTL_S", 0.0)
+    monkeypatch.setattr(host, "MAX_FINISHED", 0)
+    monkeypatch.setattr(host, "KEEP_FINISHED_S", 0.0)
     serving = host.Host({"s": Counter})
     running = asyncio.create_task(serving.call(_request(call_id="slow")))
     await asyncio.sleep(0)
@@ -91,15 +87,17 @@ async def test_a_running_call_is_never_dropped(monkeypatch: pytest.MonkeyPatch) 
     await asyncio.gather(running, other)
 
 
-async def test_a_result_delivered_over_http_is_forgotten() -> None:
+async def test_a_call_sent_again_after_its_result_was_delivered_does_not_run_again() -> None:
     serving = host.Host({"s": Counter})
     server = await asyncio.start_server(serving.connection, "127.0.0.1", 0)
     endpoint = Endpoint(f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}")
     Counter.gate.set()
     try:
-        reply = await service.call_host(endpoint, "s", "add", {"n": 1}, key="k", call_id="x")
-        assert reply.text == "2"
-        assert serving.calls == {}
+        # The worker dies after the result was written to it, before it stored the result.
+        for _ in range(2):
+            reply = await service.call_host(endpoint, "s", "add", {"n": 1}, key="k", call_id="x")
+            assert reply.text == "2"
+        assert Counter.runs == 1
     finally:
         server.close()
         for writer in list(serving.writers):

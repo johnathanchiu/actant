@@ -51,7 +51,7 @@ async def test_a_cancelled_caller_stops_its_call_on_the_host(
         await caller
     assert time.monotonic() - started < 1.0
     assert Writer.events == ["cleanup"]  # the method's finally ran before the cancel returned
-    assert serving.calls == {}
+    assert serving.calls["c"].task.cancelled()
 
 
 async def test_a_caller_that_times_out_stops_its_call(served: tuple[host.Host, Endpoint]) -> None:
@@ -59,7 +59,6 @@ async def test_a_caller_that_times_out_stops_its_call(served: tuple[host.Host, E
     reply = await service.call_host(endpoint, "w", "write_later", {}, key="k", timeout=0.3)
     assert reply.error is not None and "may have run" in reply.error
     assert Writer.events == ["cleanup"]
-    assert serving.calls == {}
 
 
 async def test_a_call_attached_to_a_cancelled_run_answers_cancelled() -> None:
@@ -93,3 +92,27 @@ async def test_a_cancel_waits_only_a_short_grace(monkeypatch: pytest.MonkeyPatch
     assert (await serving.cancel("c")).text == "cancelling"
     assert time.monotonic() - started < 0.4
     await waiting
+
+
+async def test_a_call_that_arrives_after_its_cancel_does_not_run() -> None:
+    Writer.events, Writer.started = [], asyncio.Event()
+    serving = host.Host({"w": Writer})
+    assert (await serving.cancel("c")).text == "not running"
+    request = CallRequest(service="w", key="k", method="write_later", call_id="c")
+    status, reply = await serving.call(request)  # the original, delayed past its cancel
+    assert reply.error is not None and reply.error.startswith("cancelled")
+    assert not Writer.started.is_set() and Writer.events == []
+
+
+async def test_a_cancelled_call_sent_again_does_not_run_again() -> None:
+    Writer.events, Writer.started = [], asyncio.Event()
+    serving = host.Host({"w": Writer})
+    request = CallRequest(service="w", key="k", method="write_later", call_id="c")
+    waiting = asyncio.create_task(serving.call(request))
+    await asyncio.wait_for(Writer.started.wait(), 2)
+    await serving.cancel("c")
+    await waiting
+    Writer.started.clear()
+    _, reply = await serving.call(request)
+    assert reply.error is not None and reply.error.startswith("cancelled")
+    assert not Writer.started.is_set() and Writer.events == ["cleanup"]
