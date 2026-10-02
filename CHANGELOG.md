@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.8
 
 - A service host keeps a finished call's result for 10 minutes (at most 1,024 calls, the
   oldest dropped first) even after writing it to its caller, so a worker lost before it
