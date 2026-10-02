@@ -8,6 +8,7 @@ message fails validation at the boundary instead of deep inside a handler.
 
 from __future__ import annotations
 
+import uuid
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -38,6 +39,11 @@ class CallRequest(_Message):
     method: str
     init: dict[str, Any] = Field(default_factory=dict)
     args: dict[str, Any] = Field(default_factory=dict)
+    #: Names this call. The host runs a call id once: the same request sent again while it
+    #: runs, or before its result was delivered, waits for that run instead of starting
+    #: another; a different request under a known id is refused (409). A caller that may
+    #: send a call again (a retried tool call) gives it a stable id; the default is fresh.
+    call_id: str = Field(default_factory=lambda: uuid.uuid4().hex, min_length=1)
 
 
 class ImageSourceKind(StrEnum):

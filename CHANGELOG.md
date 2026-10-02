@@ -4,6 +4,15 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A service host runs each call once per `CallRequest.call_id`: the same request sent again
+  while it runs, or before its result was delivered, attaches to that run; a different
+  request under a known id gets 409. A `ServiceTool` call's id is its thread and tool call,
+  so a remote `ServiceTool` is `retry_safe`: a call lost with its worker is sent again and
+  gets the one result. Finished, undelivered results are kept 10 minutes, at most 128.
+  `Runner.call` takes `call_id=` (a custom runner adds the parameter).
+
 ## 0.33.6
 
 - With `CompactionConfig.summary_tokens`, the summary is asked for about half the cap in
