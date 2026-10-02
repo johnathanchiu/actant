@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.7
 
 - A service host runs each call once per `CallRequest.call_id`: the same request sent again
   while it runs, or before its result was delivered, attaches to that run; a different
