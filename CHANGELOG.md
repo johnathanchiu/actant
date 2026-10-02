@@ -6,6 +6,11 @@ affect users.
 
 ## Unreleased
 
+- With `CompactionConfig.summary_tokens`, the summary is asked for about half the cap in
+  words, not three quarters. On a recorded planner context the 3/4 target wrote up to
+  3,910 of a 4,000-token cap; at half (2,000 words) it wrote 2,354-2,640 tokens, in 48 s
+  rather than 56 s.
+
 - `CompactionConfig(images=False)`: the summary call is sent no images, each as its
   `[image id=...]` label alone (`[image]` without an id). The model's own context keeps
   its images. On a picture-heavy context this cuts the call's input and time: a recorded

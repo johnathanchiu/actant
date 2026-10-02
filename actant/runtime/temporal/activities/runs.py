@@ -493,8 +493,11 @@ class RunActivities:
         config = payload.config
         instructions = self.context.compaction_instructions
         if config.summary_tokens is not None:
+            # Half the cap in words: on a context dense with ids and numbers a word is
+            # about a token, and a summary asked for 3/4 of the cap in words reached 98% of
+            # it (3,910 of 4,000), close to being cut short and written again whole.
             length = (
-                f"Fit the summary in about {config.summary_tokens * 3 // 4} words: lists over "
+                f"Fit the summary in about {config.summary_tokens // 2} words: lists over "
                 "prose, every open item and key fact kept, nothing narrated."
             )
             instructions = f"{instructions}\n\n{length}" if instructions else length
