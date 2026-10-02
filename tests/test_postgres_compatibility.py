@@ -338,3 +338,15 @@ async def test_creating_a_run_again_returns_the_first_unchanged(
     await stores.runs.create("a", "t", run_id="r", max_turns=3)
     again = await stores.runs.create("a", "t", run_id="r", max_turns=9)
     assert again.id == "r" and again.max_turns == 3
+
+
+async def test_list_for_turn_returns_only_that_turns_messages_in_order(
+    stores: SQLAlchemyRuntimeStores,
+) -> None:
+    await stores.threads.get_or_create("a", "t")
+    await stores.messages.append_user("a", "t", "earlier")
+    await stores.messages.append_user("a", "t", "go", turn_id="turn")
+    await stores.messages.append_assistant("a", "t", "turn", Message(role="assistant", content="ok"))
+    await stores.messages.append_user("a", "t", "later", turn_id="other")
+    turn = await stores.messages.list_for_turn("a", "t", "turn")
+    assert [(m.role, m.content) for m in turn] == [("user", "go"), ("assistant", "ok")]

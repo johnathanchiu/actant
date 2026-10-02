@@ -11,6 +11,12 @@ affect users.
   returned as is, a tool marked `retry_safe` (`@tool(retry_safe=True)`) runs again, and any
   other call is closed with an `interrupted` result (`TOOL_INTERRUPTED`) that the model
   sees and can act on.
+- A model turn whose worker was lost is attempted again (3 attempts, noticed after
+  `ActivityTimeouts.turn_heartbeat_s`, default 120 s, without a heartbeat) and picks up
+  from what the lost attempt stored. A stored answer is not asked for again, and the turn's
+  inbound messages are not stored twice. Every other `run_turn` failure is non-retryable,
+  as before. `MessageStore` gains `list_for_turn`, and `append_user` takes `turn_id`, which
+  the runtime now sets on a turn's inbound messages and on the finish reminder.
 
 ## 0.33.3
 

@@ -189,11 +189,12 @@ class SQLAlchemyMessageStore:
         content: str | list[Block],
         *,
         tag: str | None = None,
+        turn_id: str | None = None,
     ) -> MessageRecord:
         user = Message(
             role="user", content=list(content) if isinstance(content, list) else content, tag=tag
         )
-        return await self._append(agent_id, thread_id, None, user)
+        return await self._append(agent_id, thread_id, turn_id, user)
 
     async def append_compaction(
         self, agent_id: str, thread_id: str, block: CompactionBlock
@@ -341,6 +342,19 @@ class SQLAlchemyMessageStore:
                         ActantMessageModel.thread_id == thread_id,
                     )
                     .order_by(ActantMessageModel.created_at, ActantMessageModel.message_id)
+                )
+            ).all()
+            return [message_from_header(row) for row in rows]
+
+    async def list_for_turn(self, agent_id: str, thread_id: str, turn_id: str) -> list[Message]:
+        M = ActantMessageModel
+        async with self.session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(M)
+                    .options(selectinload(M.parts))
+                    .where(M.agent_id == agent_id, M.thread_id == thread_id, M.turn_id == turn_id)
+                    .order_by(M.created_at, M.message_id)
                 )
             ).all()
             return [message_from_header(row) for row in rows]
