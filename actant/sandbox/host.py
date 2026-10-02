@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import contextvars
 import functools
 import hmac
 import importlib
@@ -233,6 +234,19 @@ def failure(error: BaseException) -> CallResponse:
     """An exception as a response the model can correct from; the tail keeps it short."""
     tail = "".join(traceback.format_exception(error)[-3:])
     return CallResponse(error=f"{type(error).__name__}: {error}\n{tail}")
+
+
+#: The service the host call running in this context serves (``"tools"``), set around each
+#: call and inherited by what it starts (tasks, ``asyncio.to_thread``): what a service's shared
+#: resources (a pool, a gate) can order their waiting work by. ``None`` outside a host call.
+_CALL_SERVICE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "actant_call_service", default=None
+)
+
+
+def current_service() -> str | None:
+    """The service the host call running here serves, or ``None`` outside one."""
+    return _CALL_SERVICE.get()
 
 
 async def call_method(instance: object, method: str, args: Mapping[str, object]) -> CallResponse:
@@ -477,11 +491,14 @@ class Host:
             return HTTPStatus.NOT_FOUND, CallResponse(
                 error=f"unknown service method {request.method!r}"
             )
+        token = _CALL_SERVICE.set(request.service)
         try:
             instance = await self.instance(request.service, request.key, request.init)
             payload = await call_method(instance, request.method, request.args)
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
             payload = failure(error)
+        finally:
+            _CALL_SERVICE.reset(token)
         image_error = None
         if self.uploader:
             payload, image_error = await upload_images(payload, self.uploader)
