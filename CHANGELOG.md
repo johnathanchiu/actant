@@ -6,6 +6,8 @@ affect users.
 
 ## Unreleased
 
+- `actant.sandbox.host.current_service()`: the service the running host call serves, inherited by the tasks and threads it starts, so a service's shared resources (a pool, a gate) can order waiting work by caller.
+
 - A tool call whose worker was lost (it stopped heartbeating, or outlived its timeout) no
   longer fails the run. `execute_tool` is attempted again (3 attempts): a stored result is
   returned as is, a tool marked `retry_safe` (`@tool(retry_safe=True)`) runs again, and any
