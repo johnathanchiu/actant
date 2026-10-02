@@ -31,6 +31,7 @@ from actant.runtime.compaction import (
     compaction_of,
     compaction_request,
     count_images,
+    drop_oldest_images,
     estimate_tokens,
     retained,
     summary_message,
@@ -282,6 +283,89 @@ async def test_nothing_fires_below_both_limits_or_without_the_setting() -> None:
     await off.run([{"type": "text", "text": "look"}, _IMAGE, _IMAGE], None)
     assert len(off.llm.calls) == 2
     assert await s.compactions() == [] and await off.compactions() == []
+
+
+# === dropping the oldest images instead of summarizing ===
+
+
+def _pictures(n: int) -> list[Message]:
+    return [
+        Message(
+            role="user",
+            content=[
+                TextBlock(text=f"photo {i}"),
+                AssetBlock(storage_key=f"k{i}", mime="image/png"),
+            ],
+        )
+        for i in range(n)
+    ]
+
+
+def test_images_drop_oldest_first_in_chunks_of_half_the_limit() -> None:
+    kept = {}
+    for total in range(1, 13):
+        request = drop_oldest_images(_pictures(total), 4)
+        kept[total] = count_images(request)
+        assert kept[total] <= 4
+        # text is never touched: each message still opens with its own text
+        assert [m.content[0] for m in request if isinstance(m.content, list)] == [
+            TextBlock(text=f"photo {i}") for i in range(total)
+        ]
+        # the newest images are the ones kept
+        assert count_images(request[total - kept[total] :]) == kept[total]
+    assert kept == {1: 1, 2: 2, 3: 3, 4: 4, 5: 3, 6: 4, 7: 3, 8: 4, 9: 3, 10: 4, 11: 3, 12: 4}
+    assert drop_oldest_images(_pictures(5), 4)[0].content == [
+        TextBlock(text="photo 0"),
+        TextBlock(text='[image id=k0] dropped from view; recall_image("k0") shows it again'),
+    ]
+
+
+def test_the_dropped_prefix_holds_until_another_chunk_is_needed() -> None:
+    history = _pictures(7)
+    seven = drop_oldest_images(history, 4)
+    # one more image needs no new chunk: the request before it is unchanged
+    assert drop_oldest_images([*history, *_pictures(1)], 4)[:7] == seven
+    # the next one does, and moves the boundary by a whole chunk
+    assert count_images(drop_oldest_images([*history, *_pictures(2)], 4)) == 3
+    assert drop_oldest_images(history, 4) == seven
+
+
+def test_images_summarize_by_default() -> None:
+    assert CompactionConfig().image_limit == "summarize"
+
+
+async def test_dropping_images_holds_requests_under_the_limit_without_a_summary() -> None:
+    s = _Setup(
+        [_says("one", input_tokens=10), _says("two", input_tokens=10), _says("three")],
+        context_window_tokens=1_000_000,
+        max_images_per_request=2,
+    )
+    dropping = CompactionConfig(image_limit="drop_oldest", background=0.5)
+    await s.run([{"type": "text", "text": "look"}, _IMAGE, _IMAGE], dropping)
+    await s.run([{"type": "text", "text": "and this"}, _IMAGE], dropping)
+    await s.run([{"type": "text", "text": "and these"}, _IMAGE, _IMAGE], dropping)
+
+    assert await s.compactions() == [] and s.events.compacted == []
+    assert len(s.llm.calls) == 3 and all(tools for _, _, tools in s.llm.calls)
+    assert [count_images(request) for _, request, _ in s.llm.calls] == [2, 2, 2]
+    _, last, _ = s.llm.calls[2]
+    texts = [
+        b.text
+        for m in last
+        if isinstance(m.content, list)
+        for b in m.content
+        if isinstance(b, TextBlock)
+    ]
+    assert texts == [
+        "look",
+        "[image dropped from view]",
+        "[image dropped from view]",
+        "and this",
+        "[image dropped from view]",
+        "and these",
+    ]
+    # the store keeps every image
+    assert count_images(await s.stored()) == 5
 
 
 # === what the model sees, and what the store keeps ===
