@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.33.9
 
 - A service method can end the agent's run: return an object with `.text`, `.images` and a
   true `.terminal`, and its tool result is terminal (`MetadataKey.TERMINAL`), so the run
