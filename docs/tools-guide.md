@@ -443,8 +443,11 @@ same resolver. History never stores a URL.
 used to check existence, plus the public endpoint and static `SigningKeys`. It restricts references to its bucket/prefix and signs each URL at the start of a fixed window,
 so every process and restart sends the byte-identical URL for an image within that window and
 the provider's prompt cache keeps matching. It reports explicit missing-object errors as
-`MissingAsset`. Permission and transport failures propagate. Applications own per-user access
-checks and retention; Actant does not infer object lifetime from URL expiry.
+`MissingAsset`. Permission and transport failures propagate. Existence is checked once per key
+per window in each resolver: later turns in the window sign the key with no request, and a
+missing key is checked again each time. Applications own per-user access checks and retention,
+and retention must not delete a referenced object inside a window; Actant does not infer object
+lifetime from URL expiry.
 
 For a provider that cannot fetch URLs (Azure OpenAI times out on presigned URLs), wrap the
 resolver in `actant.assets.InlineImages` (`actant[images]`): each picture is read from its URL
