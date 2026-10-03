@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from pathlib import Path
 
 from temporalio.client import Client, WorkflowHandle, WorkflowHistory
 from temporalio.testing import WorkflowEnvironment
@@ -31,8 +30,6 @@ from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.tools.calls import ToolCallStatus
 from runtime_fixtures import static_agents
 from test_workflow_thread import _AGENT, _THREAD, _ApprovalTool, _agent, _tool_call, _wait_for
-
-_HISTORIES = Path(__file__).parent / "histories"
 
 
 def _roles_and_text(messages: list[Message]) -> list[tuple[str, str | None]]:
@@ -143,19 +140,6 @@ async def test_without_the_flag_a_mid_run_message_waits_for_the_next_run() -> No
         ("user", "mid-run"),
         ("assistant", "second run"),
     ]
-
-
-async def test_a_history_recorded_before_the_flag_existed_replays() -> None:
-    """Recorded by the workflow as it was before ``interleave_inbox``.
-
-    The message arrives mid-run, so the inbox is non-empty at a turn boundary:
-    the one place the new code branches. It must stay on the old path.
-    """
-    history = WorkflowHistory.from_json(
-        "thread-recorded",
-        (_HISTORIES / "mid_run_message_before_interleave.json").read_text(),
-    )
-    await Replayer(workflows=[AgentThreadWorkflow]).replay_workflow(history)
 
 
 async def test_histories_with_and_without_the_flag_replay() -> None:

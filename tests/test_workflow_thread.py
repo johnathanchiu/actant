@@ -275,6 +275,55 @@ async def test_tool_turn_allow_completes_and_continues() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_and_group_bookkeeping_runs_as_local_activities() -> None:
+    """``start_run``, ``finalize_tool_group`` and ``finalize_run`` leave markers, not activity
+    tasks, and the rows they write are the ones the regular activities wrote."""
+    tool_call = _tool_call("echo", '{"x": 1}')
+    agent = _agent(
+        FakeLLM([FakeResponse(tool_calls=[tool_call]), FakeResponse(text="done")]),
+        tools=[_EchoTool()],
+    )
+
+    async def body(s: _RunSetup, client) -> None:  # type: ignore[no-untyped-def]
+        handle = await client.start_workflow(
+            AgentThreadWorkflow.run,
+            ThreadInput(_AGENT, _THREAD, max_turns_per_run=5),
+            id=f"thread-{uuid.uuid4().hex}",
+            task_queue=s.task_queue,
+            start_signal="inbound",
+            start_signal_args=[InboundMessage(content="run echo")],
+        )
+        await asyncio.wait_for(handle.result(), timeout=10.0)
+
+        scheduled, markers = [], []
+        async for event in handle.fetch_history_events():
+            if event.HasField("activity_task_scheduled_event_attributes"):
+                scheduled.append(event.activity_task_scheduled_event_attributes.activity_type.name)
+            if event.HasField("marker_recorded_event_attributes"):
+                markers.append(event.marker_recorded_event_attributes.marker_name)
+        assert scheduled == ["run_turn", "admit_tool", "execute_tool", "run_turn"]
+        assert markers == ["core_local_activity"] * 3
+
+        messages = await s.stores.messages.list_for_thread(_AGENT, _THREAD)
+        assert [(m.role, m.content) for m in messages] == [
+            ("user", "run echo"),
+            ("assistant", None),
+            ("tool", messages[2].content),
+            ("assistant", "done"),
+        ]
+        assert messages[2].tool_call_id == tool_call.id and '"echoed"' in str(messages[2].content)
+        record = await s.stores.tool_calls.get(tool_call.id)
+        assert record.status == ToolCallStatus.COMPLETED
+        assert record.result == {"tool_call_id": tool_call.id, "result": {"echoed": {"x": 1}}}
+        thread = await s.stores.threads.get_or_create(_AGENT, _THREAD)
+        assert thread.active_run_id is None
+        run = await s.stores.runs.get(record.run_id)
+        assert (run.status, run.stop_reason, run.turn_count) == (RunStatus.IDLE, None, 2)
+
+    await _run(body, agent=agent)
+
+
+@pytest.mark.asyncio
 async def test_parallel_tool_calls_execute_concurrently() -> None:
     probe = _ParallelProbe(asyncio.Event(), asyncio.Event(), asyncio.Event())
     first = _tool_call("parallel_a")

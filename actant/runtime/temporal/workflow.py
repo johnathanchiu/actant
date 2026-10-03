@@ -80,6 +80,8 @@ from actant.runtime.temporal.types import (
     TurnResult,
 )
 
+#: Short store writes run as local activities. ``admit_tool`` does not: it runs application
+#: code for up to ``_ADMIT_TIMEOUT``, which would hold the workflow task.
 _ADMIT_TIMEOUT = timedelta(minutes=10)
 _FINALIZE_TIMEOUT = timedelta(seconds=60)
 _PROJECTION_TIMEOUT = timedelta(seconds=30)
@@ -220,7 +222,7 @@ class AgentThreadWorkflow:
         # Seeded from the store, not carried: a thread ends when it is done
         # and restarts on the next message, so a count held only here would
         # reset and turn numbers would repeat within one thread.
-        started = await workflow.execute_activity_method(
+        started = await workflow.execute_local_activity_method(
             RunActivities.start_run,
             StartRunInput(
                 agent_id=payload.agent_id,
@@ -241,7 +243,7 @@ class AgentThreadWorkflow:
             if started.error is not None
             else await self._run_agent(payload, run_id, new_messages)
         )
-        await workflow.execute_activity_method(
+        await workflow.execute_local_activity_method(
             RunActivities.finalize_run,
             FinalizeRunInput(
                 agent_id=payload.agent_id,
@@ -501,7 +503,7 @@ class AgentThreadWorkflow:
 
         # 4. Finalize the group — appends tool_result messages in
         #    sorted-by-id order, closing the transcript invariant.
-        await workflow.execute_activity_method(
+        await workflow.execute_local_activity_method(
             ToolActivities.finalize_tool_group,
             group_id,
             start_to_close_timeout=_FINALIZE_TIMEOUT,
@@ -554,7 +556,7 @@ class AgentThreadWorkflow:
         """Persist cancellation without leaving an open run or tool call."""
         if self._current_run_id is not None:
             await asyncio.shield(
-                workflow.execute_activity_method(
+                workflow.execute_local_activity_method(
                     RunActivities.finalize_run,
                     FinalizeRunInput(
                         agent_id=payload.agent_id,
