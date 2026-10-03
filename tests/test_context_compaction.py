@@ -12,11 +12,10 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Sequence
-from pathlib import Path
 
 import pytest
 from temporalio.client import WorkflowFailureError, WorkflowHistory
-from temporalio.exceptions import ActivityError, ApplicationError
+from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
 
@@ -55,7 +54,6 @@ from actant.tools import RecallImageTool, ToolRegistry, tool
 from actant.tools.base import CallContext
 from runtime_fixtures import static_agents
 
-_HISTORIES = Path(__file__).parent / "histories"
 _AGENT = "compacting"
 _THREAD = "t1"
 _PERSONA = "You are careful."
@@ -587,15 +585,6 @@ async def test_the_workflow_without_compaction_replays() -> None:
     await Replayer(workflows=[AgentThreadWorkflow]).replay_workflow(history)
 
 
-async def test_a_history_recorded_before_compaction_existed_replays() -> None:
-    """Recorded by the workflow on main before compaction: two tool turns, then an answer."""
-    history = WorkflowHistory.from_json(
-        "thread-recorded",
-        (_HISTORIES / "tool_turns_before_compaction.json").read_text(),
-    )
-    await Replayer(workflows=[AgentThreadWorkflow]).replay_workflow(history)
-
-
 # === written ahead, in the background ===
 
 _AHEAD = CompactionConfig(background=0.5)
@@ -965,8 +954,7 @@ async def _in_a_workflow(
 async def test_the_workflow_fails_once_on_an_unregistered_summarizer_and_opens_no_run() -> None:
     llm = FakeLLM([_call("a", input_tokens=9_500)], context_window_tokens=10_000)
     stores, failed = await _in_a_workflow(llm, CompactionConfig(summarizer="nope"))
-    assert isinstance(failed, ActivityError)
-    cause = failed.cause
+    cause = failed  # start_run is a local activity: its failure is the workflow's cause
     assert isinstance(cause, ApplicationError) and cause.type == UNREGISTERED_SUMMARIZER
     assert "no summarizer named 'nope'" in str(cause)
     assert llm.calls == [] and await stores.runs.list_for_thread(_AGENT, _THREAD) == []

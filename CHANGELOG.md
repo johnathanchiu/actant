@@ -11,6 +11,13 @@ affect users.
   found in the current window. A history of 122 images cost a turn about 2.4 s of
   `head_object` calls before every model call. URLs and messages are unchanged; a missing
   key is never remembered. Retention must not delete a referenced object inside a window.
+- `start_run`, `finalize_tool_group` and `finalize_run` run as local activities on the worker
+  running the thread workflow, with the same timeouts and retry policies, so a turn no
+  longer waits on three task-queue round trips and their workflow tasks. Persisted rows are
+  unchanged. `admit_tool` stays a regular activity: it runs application code
+  (`build`, `can_execute`) for up to 10 minutes. **Not replay-compatible:** a thread
+  workflow started on an earlier version fails nondeterministically on this one, so drain
+  or terminate running thread workflows before deploying it.
 
 ## 0.33.9
 
