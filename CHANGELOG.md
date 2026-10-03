@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.34.1
 
 - `S3AssetResolver` checks that an image exists once per key per signing window (6 h by
   default) instead of on every resolve, so a turn sends no request for images it already
