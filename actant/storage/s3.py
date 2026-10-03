@@ -44,11 +44,8 @@ class S3AssetResolver:
     A URL is signed at ``floor(now / window_s) * window_s`` and lives ``window_s + buffer_s``:
     a pure function of the key, the window and the credentials.
 
-    Existence is checked once per key per window: a key found in this process is signed
-    without another request until the window rolls over. A stored object never changes (new
-    bytes get a new key), so the only thing a later check could catch is a deletion; the
-    store's retention must not delete an object that is still referenced within a window.
-    A missing key is never remembered and is checked again on its next resolve.
+    A key found to exist is not checked again within its window, so retention must not
+    delete a referenced object inside a window.
     """
 
     def __init__(
@@ -77,7 +74,7 @@ class S3AssetResolver:
         self.window_s, self.buffer_s = window_s, buffer_s
         self.addressing_style: AddressingStyle = addressing_style
         self.clock = clock
-        #: The keys found to exist in window ``_window``; cleared when the window rolls over.
+        # per-process; a miss re-checks
         self._window = -1
         self._found: set[str] = set()
 
@@ -93,7 +90,7 @@ class S3AssetResolver:
         if key not in self._found:
             if not await self._exists(key):
                 return MissingAsset()
-            if window == self._window:  # not rolled over while the check ran
+            if window == self._window:
                 self._found.add(key)
         signed_at = self._window_start()
         expires_s = self.window_s + self.buffer_s
