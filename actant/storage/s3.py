@@ -39,10 +39,13 @@ class S3Client(Protocol):
 
 
 class S3AssetResolver:
-    """Resolves stable references to presigned URLs; nothing is stored.
+    """Resolves stable references to presigned URLs.
 
     A URL is signed at ``floor(now / window_s) * window_s`` and lives ``window_s + buffer_s``:
     a pure function of the key, the window and the credentials.
+
+    A key found to exist is not checked again within its window, so retention must not
+    delete a referenced object inside a window.
     """
 
     def __init__(
@@ -71,6 +74,9 @@ class S3AssetResolver:
         self.window_s, self.buffer_s = window_s, buffer_s
         self.addressing_style: AddressingStyle = addressing_style
         self.clock = clock
+        # per-process; a miss re-checks
+        self._window = -1
+        self._found: set[str] = set()
 
     async def resolve(
         self, asset: AssetReference, context: AssetContext
@@ -78,10 +84,15 @@ class S3AssetResolver:
         key = self._key(asset.storage_key)
         if self.buffer_s <= context.minimum_validity_s + EXPIRY_MARGIN_S:
             raise ValueError("URL buffer must exceed the model budget plus the expiry margin")
-        if not await self._exists(key):
-            return MissingAsset()
-        now = self.clock() if self.clock is not None else time.time()
-        signed_at = int(now // self.window_s) * self.window_s
+        window = self._window_start()
+        if window != self._window:
+            self._window, self._found = window, set()
+        if key not in self._found:
+            if not await self._exists(key):
+                return MissingAsset()
+            if window == self._window:
+                self._found.add(key)
+        signed_at = self._window_start()
         expires_s = self.window_s + self.buffer_s
         url = presign_get(
             self.endpoint_url,
@@ -94,6 +105,10 @@ class S3AssetResolver:
             addressing_style=self.addressing_style,
         )
         return ResolvedImage(asset.mime, url=url, expires_at=signed_at + expires_s)
+
+    def _window_start(self) -> int:
+        now = self.clock() if self.clock is not None else time.time()
+        return int(now // self.window_s) * self.window_s
 
     def _key(self, storage_key: str) -> str:
         key = storage_key

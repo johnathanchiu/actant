@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `S3AssetResolver` checks that an image exists once per key per signing window (6 h by
+  default) instead of on every resolve, so a turn sends no request for images it already
+  found in the current window. A history of 122 images cost a turn about 2.4 s of
+  `head_object` calls before every model call. URLs and messages are unchanged; a missing
+  key is never remembered. Retention must not delete a referenced object inside a window.
+
 ## 0.33.9
 
 - A service method can end the agent's run: return an object with `.text`, `.images` and a

@@ -126,8 +126,12 @@ class Client:
     calls = 0
     error: Exception | None = None
 
+    def __init__(self) -> None:
+        self.heads: list[str] = []
+
     def head_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]:
         self.calls += 1
+        self.heads.append(Key)
         if self.error:
             raise self.error
         return {}
@@ -294,13 +298,50 @@ async def test_one_url_per_window_never_near_expiry() -> None:
         assert resolved.expires_at - clock[0] >= BUFFER
         # The fresh resolver another process would use signs the same URL.
         assert resolved == await resolver_for(Client(), lambda: clock[0]).resolve(asset, CONTEXT)
-    assert client.calls == 5  # existence is checked on every resolve; nothing is remembered
+    assert client.calls == 2  # existence is checked once in each of the two windows
     with pytest.raises(PermissionError):
         await resolver.resolve(replace(asset, storage_key="s3://other/images/a.png"), CONTEXT)
     with pytest.raises(PermissionError):
         await resolver.resolve(replace(asset, storage_key="private/a.png"), CONTEXT)
     with pytest.raises(ValueError, match="buffer"):
         await resolver.resolve(asset, replace(CONTEXT, minimum_validity_s=1700))
+
+
+async def test_existence_is_checked_once_per_key_per_window() -> None:
+    client = Client()
+    clock = [float(WINDOW_START)]
+    resolver = resolver_for(client, lambda: clock[0])
+    a, b = (AssetReference(f"images/{name}.png", "image/png") for name in "ab")
+
+    first = await resolver.resolve(a, CONTEXT)
+    for offset in (1, 1800, WINDOW - 0.001):  # later turns in the same window
+        clock[0] = WINDOW_START + offset
+        assert await resolver.resolve(a, CONTEXT) == first
+    assert client.heads == ["images/a.png"]
+
+    await resolver.resolve(b, CONTEXT)  # an image new to this window
+    assert client.heads == ["images/a.png", "images/b.png"]
+
+    clock[0] = WINDOW_START + WINDOW  # the next window checks again
+    rolled = await resolver.resolve(a, CONTEXT)
+    await resolver.resolve(a, CONTEXT)
+    assert client.heads == ["images/a.png", "images/b.png", "images/a.png"]
+    assert rolled == await resolver_for(Client(), lambda: clock[0]).resolve(a, CONTEXT)
+
+
+async def test_a_missing_key_is_checked_again() -> None:
+    class SDKError(Exception):
+        response = {"Error": {"Code": "NoSuchKey"}}
+
+    client = Client()
+    client.error = SDKError()
+    resolver = resolver_for(client)
+    asset = AssetReference("images/a.png", "image/png")
+    assert isinstance(await resolver.resolve(asset, CONTEXT), MissingAsset)
+    client.error = None
+    assert isinstance(await resolver.resolve(asset, CONTEXT), ResolvedImage)
+    await resolver.resolve(asset, CONTEXT)
+    assert client.calls == 2
 
 
 @pytest.mark.parametrize(
