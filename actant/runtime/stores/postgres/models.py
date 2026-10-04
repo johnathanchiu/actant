@@ -116,6 +116,9 @@ class ActantMessageModel(ActantRuntimeBase):
     # not as free.
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # The part of input_tokens served from, or written to, the prompt cache.
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer)
     # ``compaction`` rows mark where the model's view starts; see list_for_model.
     kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'message'"))
     tag: Mapped[str | None] = mapped_column(Text)

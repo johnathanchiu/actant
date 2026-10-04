@@ -469,16 +469,18 @@ class OpenAIProvider:
                 cast(JSONObject, usage.model_dump(mode="json")),
                 response.status or "unknown",
             )
-        input_tokens = _usage_int(usage, "input_tokens")
-        output_tokens = _usage_int(usage, "output_tokens")
+        # ``cache_write_tokens`` is Azure's, beside the SDK's ``cached_tokens``.
+        details = getattr(usage, "input_tokens_details", None)
         message = Message(
             role="assistant",
             content=text or None,
             tool_calls=tool_calls or None,
             thought_summary=thought or None,
             reasoning_items=cast(list[object], reasoning_items) or None,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            input_tokens=_usage_int(usage, "input_tokens"),
+            output_tokens=_usage_int(usage, "output_tokens"),
+            cache_read_tokens=_usage_int(details, "cached_tokens"),
+            cache_write_tokens=_usage_int(details, "cache_write_tokens"),
         )
         # The limiter wants the server's own total, which includes
         # reasoning tokens the input/output split may not surface.

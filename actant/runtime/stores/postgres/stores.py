@@ -228,6 +228,8 @@ class SQLAlchemyMessageStore:
                         role=message.role,
                         input_tokens=message.input_tokens,
                         output_tokens=message.output_tokens,
+                        cache_read_tokens=message.cache_read_tokens,
+                        cache_write_tokens=message.cache_write_tokens,
                     )
                 )
                 for index, part in enumerate(parts):
@@ -409,6 +411,8 @@ class SQLAlchemyMessageStore:
                         role=message.role,
                         input_tokens=message.input_tokens,
                         output_tokens=message.output_tokens,
+                        cache_read_tokens=message.cache_read_tokens,
+                        cache_write_tokens=message.cache_write_tokens,
                         kind=message.kind,
                         tag=message.tag,
                     )

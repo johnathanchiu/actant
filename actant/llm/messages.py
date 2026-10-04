@@ -103,6 +103,10 @@ class Message:
     # not come from a provider); 0 is a real, reported zero.
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # The part of ``input_tokens`` read from, or written to, the provider's prompt
+    # cache, which providers price differently from the rest of the input.
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     # Stored, never sent to a provider. ``kind="compaction"`` marks a compaction
     # row, whose content is one ``CompactionBlock``. ``tag`` is ``tool:<name>``
     # on tool results, or what an app set on a message it sent; compaction
@@ -136,6 +140,8 @@ class Message:
                 reasoning_items=deepcopy(value.reasoning_items),
                 input_tokens=value.input_tokens,
                 output_tokens=value.output_tokens,
+                cache_read_tokens=value.cache_read_tokens,
+                cache_write_tokens=value.cache_write_tokens,
                 kind=value.kind,
                 tag=value.tag,
                 id=value.id,
@@ -167,6 +173,8 @@ class Message:
             ),
             input_tokens=_optional_int(value.get("input_tokens")),
             output_tokens=_optional_int(value.get("output_tokens")),
+            cache_read_tokens=_optional_int(value.get("cache_read_tokens")),
+            cache_write_tokens=_optional_int(value.get("cache_write_tokens")),
             kind="compaction" if value.get("kind") == "compaction" else "message",
             tag=cast(str | None, value.get("tag")),
         )
@@ -196,6 +204,10 @@ class Message:
             data["input_tokens"] = self.input_tokens
         if self.output_tokens is not None:
             data["output_tokens"] = self.output_tokens
+        if self.cache_read_tokens is not None:
+            data["cache_read_tokens"] = self.cache_read_tokens
+        if self.cache_write_tokens is not None:
+            data["cache_write_tokens"] = self.cache_write_tokens
         if self.kind != "message":
             data["kind"] = self.kind
         if self.tag is not None:

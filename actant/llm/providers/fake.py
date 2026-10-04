@@ -22,6 +22,8 @@ class FakeResponse:
     #: Usage to report, as a provider would on the assistant message.
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 class FakeLLM:
@@ -81,4 +83,6 @@ class FakeLLM:
             tool_calls=response.tool_calls or None,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
+            cache_read_tokens=response.cache_read_tokens,
+            cache_write_tokens=response.cache_write_tokens,
         )
