@@ -36,7 +36,7 @@ def test_the_sandbox_layer_imports_nothing_from_the_runtime() -> None:
     are plain strings and records go through its own store, so a thread or run never
     reaches it. Every import counts, a function's own included."""
     package = Path(__file__).parents[1] / "actant"
-    allowed = ("actant.sandbox", "actant.heartbeat")
+    allowed = ("actant.sandbox", "actant.heartbeat", "actant.logs")  # stdlib-only leaves
     for path in [*(package / "sandbox").rglob("*.py"), package / "heartbeat.py"]:
         imports = _absolute_imports(ast.parse(path.read_text(), filename=str(path)))
         reached = [i for i in imports if i.split(".")[0] == "actant" and not i.startswith(allowed)]
