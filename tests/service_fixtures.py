@@ -11,7 +11,9 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 
-from actant.sandbox.host import script_env
+from actant.sandbox.host import Host, script_env
+from actant.sandbox.processes import host_function, on_host
+from actant.sandbox.protocol import CallRequest
 
 
 class Box(BaseModel):
@@ -85,6 +87,51 @@ class Counter:
 
     async def env(self, name: str) -> dict[str, str | None]:
         return {"host": os.environ.get(name), "script": script_env().get(name)}
+
+
+#: The host a test serves ``Placed`` from, for :func:`relay`.
+HOST: list[Host] = []
+
+
+@host_function
+def where(tag: str) -> str:
+    if tag == "bad":
+        raise KeyError(tag)
+    return f"{tag} {os.getpid()}"
+
+
+@host_function
+async def relay(to: str) -> str:
+    """Awaits a worker's call from the host, while that worker waits on this."""
+    _, response = await HOST[0].call(CallRequest(service="p", key=to, method="pid"))
+    return response.text
+
+
+class Placed(Counter):
+    """``Counter`` with what a test of worker processes asks of one."""
+
+    async def pid(self) -> int:
+        return os.getpid()
+
+    async def crash(self) -> str:
+        os._exit(3)
+
+    async def hold(self, marker: str) -> str:
+        Path(marker).touch()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            Path(f"{marker}.cancelled").touch()
+        return "never"
+
+    async def where(self, tag: str) -> str:
+        return await on_host(where, tag)
+
+    async def relay(self, to: str) -> str:
+        return await on_host(relay, to)
+
+    async def unregistered(self) -> str:
+        return await on_host(os.getcwd)
 
 
 class Stages:

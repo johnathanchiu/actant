@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from actant.sandbox.protocol import ServiceConfig
+
 
 @dataclass(frozen=True)
 class ExecResult:
@@ -207,8 +209,9 @@ class SandboxSpec:
     storage: Storage = Storage.MOUNT
     #: Name to ``"pkg.mod:Class"``, served by one service host inside the sandbox (see
     #: :mod:`actant.sandbox.service`). Fixed here, at launch; requests name a service
-    #: and a method, never a module.
-    services: Mapping[str, str] = field(default_factory=dict)
+    #: and a method, never a module. A :class:`~actant.sandbox.protocol.ServiceConfig` serves
+    #: one from worker processes beside the host.
+    services: Mapping[str, str | ServiceConfig] = field(default_factory=dict)
     #: The port the host listens on inside a container. ``local`` picks a free one.
     service_port: int = 8080
     #: ``disk_sync``: the service host pushes every this many seconds while calls have

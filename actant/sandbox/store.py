@@ -15,7 +15,10 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from typing import Any, Protocol
 
+from pydantic import BaseModel
+
 from actant.sandbox.base import Location, Mount, Restore, SandboxSpec
+from actant.sandbox.protocol import ServiceConfig
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,10 @@ def spec_from_json(data: Mapping[str, Any]) -> SandboxSpec:
     args["mounts"] = tuple(
         Mount(Location(**m["source"]), m["path"]) for m in args.get("mounts", ())
     )
+    args["services"] = {
+        name: path if isinstance(path, str) else ServiceConfig.model_validate(path)
+        for name, path in args.get("services", {}).items()
+    }
     return SandboxSpec(**args)
 
 
@@ -80,6 +87,8 @@ def _plain(value: object) -> object:
         return dict(value)
     if is_dataclass(value) and not isinstance(value, type):
         return asdict(value)
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
     raise TypeError(f"a sandbox spec holds JSON values, not {type(value).__name__}")
 
 

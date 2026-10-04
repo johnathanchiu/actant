@@ -71,7 +71,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPSConnection
@@ -94,8 +94,10 @@ from actant.sandbox.protocol import (
     InlineSource,
     PushConfig,
     Route,
+    ServiceConfig,
     StorageStatus,
 )
+from actant.sandbox.processes import Workers
 
 if TYPE_CHECKING:
     from actant.sandbox.uploads import ImageUploader
@@ -127,6 +129,12 @@ _IMAGE_MAGIC = {
 }
 
 _scrub: frozenset[str] = frozenset()
+
+
+def scrub(names: Iterable[str]) -> None:
+    """Set the names :func:`script_env` removes, for this process."""
+    global _scrub
+    _scrub = frozenset(names)
 
 
 def script_env() -> dict[str, str]:
@@ -471,12 +479,18 @@ class Host:
         self,
         services: Mapping[str, type],
         *,
+        placed: Mapping[str, ServiceConfig] | None = None,
         token: str | None = None,
         push: PushConfig | None = None,
         images: ImageUploadConfig | None = None,
     ) -> None:
         self.services = dict(services)
         self.methods = {name: frozenset(service_methods(cls)) for name, cls in services.items()}
+        self.workers = {
+            name: Workers(name, config, _scrub)
+            for name, config in (placed or {}).items()
+            if config.processes
+        }
         self.token = token
         self.push = push
         self.images = images
@@ -575,8 +589,11 @@ class Host:
     async def _run(self, request: CallRequest) -> CallResponse:
         token = _CALL_SERVICE.set(request.service)
         try:
-            instance = await self.instance(request.service, request.key, request.init)
-            payload = await call_method(instance, request.method, request.args)
+            workers = self.workers.get(request.service)
+            payload = await workers.call(request) if workers is not None else None
+            if payload is None:
+                instance = await self.instance(request.service, request.key, request.init)
+                payload = await call_method(instance, request.method, request.args)
         except Exception as error:  # noqa: BLE001 -- ``open`` failed; report, keep serving
             payload = failure(error)
         finally:
@@ -723,6 +740,7 @@ class Host:
         return *(await self.route(body)), close
 
     async def close_instances(self) -> None:
+        await asyncio.gather(*(workers.close() for workers in self.workers.values()))
         for future in self.instances.values():
             if future.done() and not future.cancelled() and future.exception() is None:
                 closer = getattr(future.result(), "close", None)
@@ -785,16 +803,19 @@ async def serve(host: Host, bind: str, port: int) -> None:
 
 def load_services(config: HostConfig) -> dict[str, type]:
     """``config``'s service classes, imported."""
-    return {name: load(path) for name, path in config.services.items()}
+    return {
+        name: load(path if isinstance(path, str) else path.path)
+        for name, path in config.services.items()
+    }
 
 
 def main(config: HostConfig, services: Mapping[str, type] | None = None) -> int:
     """Serve ``config`` (its ``services`` when already loaded) until stopped
     (:mod:`actant.sandbox.entry` is the command line)."""
-    global _scrub
-    _scrub = frozenset(config.scrub)
+    scrub(config.scrub)
     services = load_services(config) if services is None else services
     token = os.environ.pop(TOKEN_ENV, None)
-    host = Host(services, token=token, push=config.push, images=config.images)
+    placed = {n: s for n, s in config.services.items() if isinstance(s, ServiceConfig)}
+    host = Host(services, placed=placed, token=token, push=config.push, images=config.images)
     asyncio.run(serve(host, config.bind, config.port))
     return 0

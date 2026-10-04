@@ -6,6 +6,7 @@ import pytest
 
 from actant.sandbox import SandboxSpec, Storage
 from actant.sandbox.base import Location, Mount, Restore
+from actant.sandbox.protocol import ServiceConfig
 from actant.sandbox.store import InMemorySandboxStore, spec_from_json, spec_to_json
 
 
@@ -17,7 +18,10 @@ def test_a_spec_round_trips_through_json_without_its_image() -> None:
         region=("us-east", "us-west"),
         secrets=("bucket",),
         storage=Storage.DISK_SYNC,
-        services={"room": "pkg.mod:Room"},
+        services={
+            "room": "pkg.mod:Room",
+            "author": ServiceConfig(path="pkg.mod:Author", processes=2, env={"N": "4"}),
+        },
         push_exclude=("renders",),
         gpu="L4",
         restore=(
