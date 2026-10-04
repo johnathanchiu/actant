@@ -4,6 +4,22 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.35.0
+
+- A sandbox service can run in worker processes beside the host:
+  `ServiceConfig(path, processes=K, env=...)` in `HostConfig.services` or
+  `SandboxSpec.services`. A plain `"pkg.mod:Class"` string still works, and `processes=0`
+  (the default) serves the service in the host as before. Each key goes to one worker on its
+  first call and stays there. The host still does the checks, call ids, image uploads and
+  pushes. When a worker exits, its calls in flight fail with `WorkerDied` and are not re-sent.
+  Its slot starts one replacement, and if that one exits too, the host serves the slot's keys.
+- `on_host(fn, *args)` lets a worker run a `@host_function` on the host's event loop, for
+  state that only the host may hold or write.
+- `ThreadInput.context` passes JSON from a thread's starter to each tool call, as
+  `CallContext.context`. `actant.tools.current_call()` gives the running call to code that
+  is not handed it, such as a service runner. A tool no longer has to query the workflow
+  that started it, and a busy workflow refuses queries once its query buffer is full.
+
 ## 0.34.1
 
 - `S3AssetResolver` checks that an image exists once per key per signing window (6 h by
