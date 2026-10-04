@@ -82,6 +82,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
+from actant.logs import log_to_stderr
 from actant.sandbox.base import Endpoint, ImageBucket, SandboxSpec
 from actant.sandbox.protocol import (
     CallRequest,
@@ -812,6 +813,7 @@ def load_services(config: HostConfig) -> dict[str, type]:
 def main(config: HostConfig, services: Mapping[str, type] | None = None) -> int:
     """Serve ``config`` (its ``services`` when already loaded) until stopped
     (:mod:`actant.sandbox.entry` is the command line)."""
+    log_to_stderr()
     scrub(config.scrub)
     services = load_services(config) if services is None else services
     token = os.environ.pop(TOKEN_ENV, None)
