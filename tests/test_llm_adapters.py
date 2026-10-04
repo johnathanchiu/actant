@@ -308,6 +308,7 @@ async def test_anthropic_reports_usage_in_the_openai_shape(
     }
     assert received == [("msg_1", "claude-opus-5-5", usage, "end_turn")]
     assert (message.input_tokens, message.output_tokens, total) == (5340, 90, 5430)
+    assert (message.cache_read_tokens, message.cache_write_tokens) == (5000, 300)
     await provider.client.close()
 
 
@@ -446,7 +447,10 @@ async def test_openai_usage_callback_retains_cache_details(
         id="resp-test",
         status="completed",
         output=[],
-        usage=SimpleNamespace(**usage, model_dump=lambda **kw: usage),
+        usage=SimpleNamespace(
+            **{**usage, "input_tokens_details": SimpleNamespace(**usage["input_tokens_details"])},
+            model_dump=lambda **kw: usage,
+        ),
     )
 
     class Stream:
@@ -476,6 +480,7 @@ async def test_openai_usage_callback_retains_cache_details(
     message, total = await provider._stream_attempt({}, Listener())
     assert total == 6130
     assert message.input_tokens == 5040
+    assert (message.cache_read_tokens, message.cache_write_tokens) == (0, 4912)
     assert received == [("resp-test", "gpt-6-astra", usage, "completed")]
     await provider.client.close()
 

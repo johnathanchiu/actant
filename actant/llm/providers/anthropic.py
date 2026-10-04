@@ -331,6 +331,8 @@ class AnthropicProvider:
                 thinking_signature=thinking_signature,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=_usage_int(usage, "cache_read_input_tokens"),
+                cache_write_tokens=_usage_int(usage, "cache_creation_input_tokens"),
             ),
             actual_tokens,
         )

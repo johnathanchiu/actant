@@ -90,6 +90,7 @@ async def test_typed_blocks_usage_and_tool_results_round_trip(
         content="looking",
         input_tokens=13,
         output_tokens=7,
+        cache_read_tokens=5,
         tool_calls=[ToolCall(id="c", function=ToolCallFunction(name="look", arguments="{}"))],
     )
     await stores.messages.append_assistant_with_tool_calls("a", "t", "turn", assistant, [call])
@@ -101,6 +102,7 @@ async def test_typed_blocks_usage_and_tool_results_round_trip(
     assert len(messages) == 3
     assert messages[0].content == [text, inline, asset, pdf]
     assert messages[1].input_tokens == 13 and messages[1].output_tokens == 7
+    assert (messages[1].cache_read_tokens, messages[1].cache_write_tokens) == (5, None)
     assert messages[2].content == [asset]
     assert (await stores.tool_calls.get("c")).turn_id == "turn"
 

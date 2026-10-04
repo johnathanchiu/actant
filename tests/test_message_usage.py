@@ -89,3 +89,27 @@ def test_usage_is_hydrated_from_the_message_header() -> None:
 
     assert (message.input_tokens, message.output_tokens) == (120, 8)
     assert message.total_tokens == 128
+
+
+def test_cache_counts_round_trip_and_hydrate() -> None:
+    original = Message(
+        role="assistant", input_tokens=120, cache_read_tokens=96, cache_write_tokens=8
+    )
+    restored = Message.from_raw(original.to_dict())
+    assert (restored.cache_read_tokens, restored.cache_write_tokens) == (96, 8)
+    assert Message.from_raw(original).cache_read_tokens == 96
+
+    row = ActantMessageModel(
+        message_id="msg_1",
+        agent_id=_AGENT,
+        thread_id=_THREAD,
+        turn_id="turn",
+        role="assistant",
+        input_tokens=120,
+        output_tokens=8,
+        cache_read_tokens=96,
+        cache_write_tokens=8,
+    )
+    row.parts = []
+    message = message_from_header(row)
+    assert (message.cache_read_tokens, message.cache_write_tokens) == (96, 8)
