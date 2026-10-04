@@ -19,7 +19,7 @@ from actant.runtime.local import LocalThreadRuntime
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import RunOutcome, ThreadInput
-from actant.tools import ToolRegistry, tool
+from actant.tools import ToolRegistry, current_call, tool
 
 from tests.runtime_fixtures import static_agents
 
@@ -110,3 +110,31 @@ async def test_the_run_is_finalized_whichever_way_it_ends():
         assert runs, "the run was never persisted"
         # `finish` sets a terminal status; an unfinalized run would still be running
         assert all(r.status.value != "running" for r in runs), [r.status for r in runs]
+
+
+async def test_a_tool_sees_the_context_its_thread_was_started_with():
+    seen: list[object] = []
+
+    @tool
+    async def binding() -> str:
+        """Report the context this call was given."""
+
+        call = current_call()
+        seen.append(call.context if call is not None else None)
+        return "ok"
+
+    stores = InMemoryRuntimeStores()
+    agent = AgentDefinition(
+        id="demo",
+        name="Demo",
+        persona="",
+        llm=FakeLLM([_call("binding"), _says("done")]),
+        tools=ToolRegistry([binding]),
+    )
+    runtime = LocalThreadRuntime(
+        ActivityContext(stores=stores, resolve_agent=static_agents({"demo": agent}))
+    )
+    context = {"binding": {"key": "inst-3", "init": {"job": "j1"}}}
+    await runtime.run(ThreadInput(agent_id="demo", thread_id="t1", context=context))
+    assert seen == [context]
+    assert current_call() is None

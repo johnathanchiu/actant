@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import mimetypes
+from collections.abc import Mapping
 from typing import Any, cast
 
 from temporalio import activity
@@ -31,7 +32,7 @@ from actant.tools.admission import (
     ToolResolution,
     ToolResolve,
 )
-from actant.tools.base import CallContext, MetadataKey, Tool, ToolInvocation, ToolResult
+from actant.tools.base import CallContext, MetadataKey, Tool, ToolInvocation, ToolResult, calling
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 #: The result of a call whose worker was lost while it ran, when its tool is not
@@ -183,11 +184,13 @@ class ToolActivities:
         async with heartbeating():
             try:
                 try:
-                    ctx = await self._call_context(agent, tool, record)
-                    invocation = await tool.build(record.args, ctx)
+                    ctx = await self._call_context(agent, tool, record, payload.context)
+                    with calling(ctx):
+                        invocation = await tool.build(record.args, ctx)
                 except Exception as exc:  # noqa: BLE001
                     return await self._execute_failed(record.id, f"Tool build error: {exc}")
-                result = await invocation.execute()
+                with calling(ctx):
+                    result = await invocation.execute()
             except Exception as exc:  # noqa: BLE001
                 result = ToolResult.fail(f"Tool execution error: {exc}")
             else:
@@ -208,7 +211,11 @@ class ToolActivities:
         return _outcome(record.id, result)
 
     async def _call_context(
-        self, agent: AgentDefinition, tool: object, record: ToolCallRecord
+        self,
+        agent: AgentDefinition,
+        tool: object,
+        record: ToolCallRecord,
+        context: Mapping[str, Any] | None = None,
     ) -> CallContext:
         """What the tool is being built for. The sandbox is opened only for tools
         that declared they need it, so a plain tool never waits on one."""
@@ -224,6 +231,7 @@ class ToolActivities:
             turn_id=record.turn_id,
             sandbox=sandbox,
             parent_thread_id=thread.parent_thread_id,
+            context=context or {},
         )
 
     async def _materialise(

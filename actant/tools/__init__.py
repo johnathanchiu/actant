@@ -16,6 +16,7 @@ from actant.tools.base import (
     ToolInvocation,
     ToolResult,
     ToolSchema,
+    current_call,
     make_tool_schema,
 )
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
@@ -38,6 +39,7 @@ __all__ = [
     "BaseDeclarativeTool",
     "BaseToolInvocation",
     "CallContext",
+    "current_call",
     "FinishTool",
     "FunctionTool",
     "FunctionToolInvocation",
