@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
@@ -107,6 +110,28 @@ class CallContext:
     #: Set when the calling thread is itself a subagent. One level of delegation
     #: only: a tool that spawns threads refuses when this is set.
     parent_thread_id: str | None = None
+    #: The thread's ``ThreadInput.context``, given by whoever started it; empty for
+    #: admission checks.
+    context: Mapping[str, Any] = field(default_factory=dict)
+
+
+_CURRENT: ContextVar[CallContext | None] = ContextVar("actant_current_call", default=None)
+
+
+def current_call() -> CallContext | None:
+    """The call the tool running here was built for, for code a tool calls that is not
+    handed it (a service runner); ``None`` outside a tool's execution."""
+    return _CURRENT.get()
+
+
+@contextmanager
+def calling(ctx: CallContext) -> Iterator[None]:
+    """:func:`current_call` is ``ctx`` inside."""
+    token = _CURRENT.set(ctx)
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
 
 
 class Tool(Protocol):

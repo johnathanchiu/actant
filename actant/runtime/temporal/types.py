@@ -290,6 +290,10 @@ class ThreadInput:
     #: The id of a sandbox a product opened that this thread works in (recorded on the
     #: thread as ``AgentThread.sandbox_id``); ``None`` gives it a sandbox of its own.
     sandbox_id: str | None = None
+    #: JSON its starter gives each of this run's tool calls (``CallContext.context``): what a
+    #: tool would otherwise query its starter's workflow for, which a busy workflow refuses
+    #: once its query buffer is full. Kept across ``continue_as_new``.
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 # === Activity I/O ===
@@ -484,6 +488,8 @@ class ExecuteInput:
     thread_id: str
     run_id: str
     tool_call_id: str
+    #: The thread's ``ThreadInput.context``.
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -291,6 +291,7 @@ class LocalThreadRuntime:
                     thread_id=payload.thread_id,
                     run_id=run_id,
                     tool_call_id=spec.id,
+                    context=payload.context,
                 )
             )
             for spec in turn.tool_calls

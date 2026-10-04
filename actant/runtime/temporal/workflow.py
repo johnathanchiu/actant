@@ -459,6 +459,7 @@ class AgentThreadWorkflow:
                             thread_id=payload.thread_id,
                             run_id=run_id,
                             tool_call_id=spec.id,
+                            context=payload.context,
                         ),
                         start_to_close_timeout=timedelta(seconds=payload.activity_timeouts.tool_s),
                         # The activity heartbeats while a tool runs, so a
@@ -664,6 +665,7 @@ class AgentThreadWorkflow:
                 interleave_inbox=payload.interleave_inbox,
                 context_compaction=payload.context_compaction,
                 activity_timeouts=payload.activity_timeouts,
+                context=payload.context,
             )
         )
 
