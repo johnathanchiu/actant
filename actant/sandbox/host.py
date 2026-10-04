@@ -780,6 +780,20 @@ async def respond(
     await writer.drain()
 
 
+async def settle_tasks() -> None:
+    """Cancel the tasks a service left running and take their outcomes, before ``asyncio.run``
+    would: one that fails as it is cancelled (a client closed under its request) then ends
+    quietly instead of printing a traceback at exit. Bounded by :data:`CANCEL_GRACE_S`."""
+    rest = asyncio.all_tasks() - {asyncio.current_task()}
+    for task in rest:
+        task.cancel()
+    if rest:
+        done, _ = await asyncio.wait(rest, timeout=CANCEL_GRACE_S)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+
+
 async def serve(host: Host, bind: str, port: int) -> None:
     """Serve until SIGTERM, SIGINT, SIGHUP or ``POST /v1/shutdown``; on any exit, close
     the instances and push storage once more. Modal's ``terminate`` and timeouts send
@@ -800,6 +814,7 @@ async def serve(host: Host, bind: str, port: int) -> None:
             pusher.cancel()
         for writer in list(host.writers):
             writer.close()
+        await settle_tasks()
 
 
 def load_services(config: HostConfig) -> dict[str, type]:

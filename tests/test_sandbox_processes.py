@@ -5,13 +5,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
-from actant.sandbox import host
-from actant.sandbox.protocol import CallRequest, CallResponse, ServiceConfig
+from actant.sandbox import Endpoint, call_host, host
+from actant.sandbox.protocol import (
+    CallRequest,
+    CallResponse,
+    EntryConfig,
+    HostConfig,
+    ServiceConfig,
+)
 from actant.sandbox.processes import on_host
 from service_fixtures import HOST, Placed, where
 
@@ -138,3 +146,32 @@ async def test_a_worker_says_when_it_starts_and_how_many_calls_it_served(
         (logging.INFO, f"worker {a} for p gone: served 3 calls"),
         (logging.INFO, f"worker {b} for p gone: served 1 calls"),
     } <= said
+
+
+async def test_a_signal_to_the_sandbox_shuts_host_and_workers_down_without_a_traceback(
+    tmp_path: Path,
+) -> None:
+    config = HostConfig(
+        services={"p": placed(1), "h": "service_fixtures:Placed"}, port=0, bind="127.0.0.1"
+    )
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "actant.sandbox.entry",
+        EntryConfig(host=config).model_dump_json(),
+        cwd=tmp_path,
+        env={"PYTHONPATH": TESTS, "PATH": "/usr/bin:/bin"},
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,  # its own process group, as in a container
+    )
+    assert process.stdout is not None
+    line = (await asyncio.wait_for(process.stdout.readline(), 30)).decode()
+    endpoint = Endpoint(f"http://127.0.0.1:{line.split()[1]}")
+    for service in ("p", "h"):  # each leaves a task that fails as it is cancelled
+        response = await call_host(endpoint, service, "linger", {}, key="k")
+        assert response.text == "lingering", response
+    os.killpg(process.pid, signal.SIGINT)  # the whole group: the host and its worker
+    _, err = await asyncio.wait_for(process.communicate(), 30)
+    assert process.returncode == 0, err.decode()
+    assert "Traceback" not in err.decode(), err.decode()

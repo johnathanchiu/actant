@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import signal
 import socket
 import sys
 from typing import cast
@@ -54,10 +55,14 @@ async def serve(config: WorkerConfig, fd: int) -> None:
         task.add_done_callback(running.discard)
     await serving.close_instances()
     writer.close()
+    await host.settle_tasks()
 
 
 def main(argv: list[str]) -> int:
     log_to_stderr()
+    # the host decides when its workers stop (it closes their sockets): a Ctrl-C or a signal
+    # sent to the sandbox's process group must not end a worker, or its pools, mid-call
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     config = WorkerConfig.model_validate_json(argv[0])
     asyncio.run(serve(config, int(argv[1])))
     return 0
