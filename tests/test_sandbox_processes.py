@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -123,13 +124,17 @@ async def test_a_host_function_may_await_the_worker_that_asked(served: host.Host
 
 
 async def test_a_worker_says_when_it_starts_and_how_many_calls_it_served(
-    served: host.Host, capfd: pytest.CaptureFixture[str]
+    served: host.Host, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO, logger="actant.sandbox.processes")
     pids = {key: (await call(served, key, "pid")).text for key in "abc"}
     await call(served, "a", "bump")
     await served.close_instances()
-    err = capfd.readouterr().err
+    said = {(r.levelno, r.getMessage()) for r in caplog.records}
     a, b = pids["a"], pids["b"]
-    assert f"worker {a} started for p" in err and f"worker {b} started for p" in err
-    assert f"worker {a} for p gone: served 3 calls" in err
-    assert f"worker {b} for p gone: served 1 calls" in err
+    assert {
+        (logging.INFO, f"worker {a} started for p"),
+        (logging.INFO, f"worker {b} started for p"),
+        (logging.INFO, f"worker {a} for p gone: served 3 calls"),
+        (logging.INFO, f"worker {b} for p gone: served 1 calls"),
+    } <= said

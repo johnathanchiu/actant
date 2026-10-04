@@ -56,6 +56,7 @@ async def serve(config: WorkerConfig, fd: int) -> None:
 
 
 def main(argv: list[str]) -> int:
+    processes.log_to_stderr()
     config = WorkerConfig.model_validate_json(argv[0])
     asyncio.run(serve(config, int(argv[1])))
     return 0

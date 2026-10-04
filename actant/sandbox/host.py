@@ -97,7 +97,7 @@ from actant.sandbox.protocol import (
     ServiceConfig,
     StorageStatus,
 )
-from actant.sandbox.processes import Workers
+from actant.sandbox.processes import Workers, log_to_stderr
 
 if TYPE_CHECKING:
     from actant.sandbox.uploads import ImageUploader
@@ -812,6 +812,7 @@ def load_services(config: HostConfig) -> dict[str, type]:
 def main(config: HostConfig, services: Mapping[str, type] | None = None) -> int:
     """Serve ``config`` (its ``services`` when already loaded) until stopped
     (:mod:`actant.sandbox.entry` is the command line)."""
+    log_to_stderr()
     scrub(config.scrub)
     services = load_services(config) if services is None else services
     token = os.environ.pop(TOKEN_ENV, None)

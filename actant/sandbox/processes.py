@@ -26,6 +26,7 @@ import contextlib
 import importlib
 import inspect
 import itertools
+import logging
 import os
 import pickle
 import socket
@@ -36,6 +37,8 @@ from enum import StrEnum
 from typing import ParamSpec, TypeVar, cast, overload
 
 from actant.sandbox.protocol import CallRequest, CallResponse, ServiceConfig, WorkerConfig
+
+logger = logging.getLogger(__name__)
 
 #: A slot's starts: its first worker and one replacement.
 STARTS = 2
@@ -57,6 +60,18 @@ class Kind(StrEnum):
     ASK = "ask"
     #: Its outcome: ``(True, result)`` or ``(False, exception)``.
     ANSWER = "answer"
+
+
+def log_to_stderr() -> None:
+    """Send ``actant.sandbox``'s records, INFO and up, to stderr: a sandbox's host and worker
+    processes configure no logging of their own, and Python drops INFO records by default."""
+    package = logging.getLogger("actant.sandbox")
+    if not package.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        package.addHandler(handler)
+        package.setLevel(logging.INFO)
+        package.propagate = False
 
 
 def frame(kind: str, number: int, payload: object) -> bytes:
@@ -205,7 +220,7 @@ class Worker:
                 env={**os.environ, **env},
             )
         reader, writer = await asyncio.open_connection(sock=ours)
-        print(f"worker {process.pid} started for {config.service}", file=sys.stderr, flush=True)
+        logger.info("worker %d started for %s", process.pid, config.service)
         return cls(process, reader, writer, config.service)
 
     async def call(self, request: CallRequest) -> CallResponse:
@@ -260,17 +275,18 @@ class Worker:
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         except Exception as error:  # noqa: BLE001 -- an unreadable message loses the worker
-            print(f"worker {self.process.pid} dropped: {error!r}", file=sys.stderr, flush=True)
+            logger.warning("worker %d dropped: %r", self.process.pid, error)
         finally:
             self.alive = False
             self.writer.close()
             with contextlib.suppress(ProcessLookupError):
                 self.process.kill()
             await self.process.wait()
-            print(
-                f"worker {self.process.pid} for {self.service} gone: served {self.served} calls",
-                file=sys.stderr,
-                flush=True,
+            logger.info(
+                "worker %d for %s gone: served %d calls",
+                self.process.pid,
+                self.service,
+                self.served,
             )
             for future in self._calls.values():
                 if not future.done():
@@ -316,7 +332,7 @@ class Slot:
         try:
             return await asyncio.shield(self._current)
         except OSError as error:
-            print(f"could not start a worker: {error!r}", file=sys.stderr, flush=True)
+            logger.warning("could not start a worker: %r", error)
             return None
 
     async def close(self) -> None:
