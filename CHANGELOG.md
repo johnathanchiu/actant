@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.36.0
+
+- Assistant messages record the part of `input_tokens` read from the provider's prompt
+  cache (`cache_read_tokens`) and written to it (`cache_write_tokens`), from OpenAI/Azure's
+  `input_tokens_details` and Anthropic's cache usage. Both are nullable columns on
+  `actant_messages` (migration `a4f2c8e61b07`); NULL where the provider did not say.
+
 ## 0.35.1
 
 - A sandbox host logs each worker process it starts and, when the worker is gone, how many
