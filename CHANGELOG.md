@@ -4,6 +4,17 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.35.1
+
+- A sandbox host logs each worker process it starts and, when the worker is gone, how many
+  calls it served (INFO, `actant.sandbox.processes`). `actant.logs.log_to_stderr()` gives
+  actant's loggers one stderr handler, leaving the root logger alone; the sandbox host and
+  its workers call it, since they configure no logging of their own.
+- Sandbox shutdown is quiet: worker processes ignore SIGINT (the host ends them by closing
+  their socket), and the host and each worker cancel and settle the tasks a service left
+  running before `asyncio.run` would, so a request that fails as it is cancelled (Modal's
+  `ClientClosed`) no longer prints a traceback at exit.
+
 ## 0.35.0
 
 - A sandbox service can run in worker processes beside the host:
