@@ -120,3 +120,16 @@ async def test_a_host_function_may_await_the_worker_that_asked(served: host.Host
     worker = (await call(served, "a", "pid")).text
     relayed = await asyncio.wait_for(call(served, "a", "relay", to="a"), 5)
     assert relayed.text == worker
+
+
+async def test_a_worker_says_when_it_starts_and_how_many_calls_it_served(
+    served: host.Host, capfd: pytest.CaptureFixture[str]
+) -> None:
+    pids = {key: (await call(served, key, "pid")).text for key in "abc"}
+    await call(served, "a", "bump")
+    await served.close_instances()
+    err = capfd.readouterr().err
+    a, b = pids["a"], pids["b"]
+    assert f"worker {a} started for p" in err and f"worker {b} started for p" in err
+    assert f"worker {a} for p gone: served 3 calls" in err
+    assert f"worker {b} for p gone: served 1 calls" in err

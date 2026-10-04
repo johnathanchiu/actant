@@ -178,9 +178,13 @@ class Worker:
         process: asyncio.subprocess.Process,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        service: str,
     ) -> None:
         self.process, self.reader, self.writer = process, reader, writer
+        self.service = service
         self.alive = True
+        #: Calls this worker answered, said when it exits.
+        self.served = 0
         self._numbers = itertools.count()
         self._calls: dict[int, asyncio.Future[CallResponse]] = {}
         self._answering: set[asyncio.Task[None]] = set()
@@ -201,7 +205,8 @@ class Worker:
                 env={**os.environ, **env},
             )
         reader, writer = await asyncio.open_connection(sock=ours)
-        return cls(process, reader, writer)
+        print(f"worker {process.pid} started for {config.service}", file=sys.stderr, flush=True)
+        return cls(process, reader, writer, config.service)
 
     async def call(self, request: CallRequest) -> CallResponse:
         if not self.alive:
@@ -250,6 +255,7 @@ class Worker:
                 future = self._calls.get(number)
                 if kind == Kind.DONE and future is not None and not future.done():
                     assert isinstance(payload, CallResponse)
+                    self.served += 1
                     future.set_result(payload)
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
@@ -261,6 +267,11 @@ class Worker:
             with contextlib.suppress(ProcessLookupError):
                 self.process.kill()
             await self.process.wait()
+            print(
+                f"worker {self.process.pid} for {self.service} gone: served {self.served} calls",
+                file=sys.stderr,
+                flush=True,
+            )
             for future in self._calls.values():
                 if not future.done():
                     future.set_result(self._died())
