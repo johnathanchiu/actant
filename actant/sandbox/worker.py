@@ -15,8 +15,10 @@ import asyncio
 import contextlib
 import socket
 import sys
+from typing import cast
 
 from actant.sandbox import host
+from actant.sandbox import processes
 from actant.sandbox.processes import Kind, frame, receive, send
 from actant.sandbox.protocol import CallRequest, WorkerConfig
 
@@ -25,6 +27,7 @@ async def serve(config: WorkerConfig, fd: int) -> None:
     host.scrub(config.scrub)
     serving = host.Host({config.service: host.load(config.path)})
     reader, writer = await asyncio.open_connection(sock=socket.socket(fileno=fd))
+    to_host = processes.link(writer)
     running: set[asyncio.Task[object]] = set()
 
     async def one(number: int, request: CallRequest) -> None:
@@ -37,6 +40,9 @@ async def serve(config: WorkerConfig, fd: int) -> None:
             kind, number, payload = await receive(reader)
         except (asyncio.IncompleteReadError, ConnectionError):
             break
+        if kind == Kind.ANSWER:
+            to_host.answered(number, cast(tuple[bool, object], payload))
+            continue
         if kind == Kind.CALL:
             assert isinstance(payload, CallRequest)
             task = asyncio.create_task(one(number, payload))

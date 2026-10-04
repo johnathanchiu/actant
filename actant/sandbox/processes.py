@@ -10,6 +10,11 @@ Its slot starts one replacement; once that one is gone too, the slot's keys are 
 host. A worker exits, closing its instances, when its socket closes (the host shut down or
 died).
 
+What only the host may hold or write (an index, a file other services write too) a worker's
+code reaches with :func:`on_host`: ``await on_host(fn, *args)`` runs a :func:`host_function`
+on the host's event loop, and runs it right there when called in the host. A host function's
+arguments and result are pickled.
+
 Messages are length-prefixed pickles over a socketpair: both ends are this package, and
 nothing else can reach the socket.
 """
@@ -18,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
+import inspect
 import itertools
 import os
 import pickle
@@ -26,6 +33,7 @@ import struct
 import sys
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from enum import StrEnum
+from typing import ParamSpec, TypeVar, cast, overload
 
 from actant.sandbox.protocol import CallRequest, CallResponse, ServiceConfig, WorkerConfig
 
@@ -36,16 +44,119 @@ CLOSE_GRACE_S = 10.0
 
 _SIZE = struct.Struct("!Q")
 
+P = ParamSpec("P")
+R = TypeVar("R")
+F = TypeVar("F", bound=Callable[..., object])
+
 
 class Kind(StrEnum):
     CALL = "call"
     CANCEL = "cancel"
     DONE = "done"
+    #: A worker runs a host function: ``(name, args, kwargs)``.
+    ASK = "ask"
+    #: Its outcome: ``(True, result)`` or ``(False, exception)``.
+    ANSWER = "answer"
 
 
 def frame(kind: str, number: int, payload: object) -> bytes:
     data = pickle.dumps((kind, number, payload), pickle.HIGHEST_PROTOCOL)
     return _SIZE.pack(len(data)) + data
+
+
+def answer(number: int, ok: bool, value: object) -> bytes:
+    """An outcome's frame; one that does not survive pickling goes as its error's text."""
+    try:
+        data = frame(Kind.ANSWER, number, (ok, value))
+        if not ok:
+            pickle.loads(data[_SIZE.size :])  # an exception whose class cannot be rebuilt
+        return data
+    except Exception as error:  # noqa: BLE001 -- the answer is what could not be sent
+        reason = value if not ok else error
+        return frame(
+            Kind.ANSWER, number, (False, RuntimeError(f"{type(reason).__name__}: {reason}"))
+        )
+
+
+_functions: dict[str, Callable[..., object]] = {}
+
+
+def _name(function: Callable[..., object]) -> str:
+    return f"{function.__module__}:{function.__qualname__}"
+
+
+def host_function(function: F) -> F:
+    """Let workers run ``function`` on the host (:func:`on_host`). A module-level function;
+    plain or ``async``. A plain one runs on the host's event loop, so it must be short."""
+    _functions[_name(function)] = function
+    return function
+
+
+async def _run(
+    function: Callable[..., object], args: tuple[object, ...], kwargs: dict[str, object]
+) -> object:
+    value = function(*args, **kwargs)
+    return await value if inspect.isawaitable(value) else value
+
+
+@overload
+async def on_host(function: Callable[P, Awaitable[R]], *args: P.args, **kwargs: P.kwargs) -> R: ...
+@overload
+async def on_host(function: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+async def on_host(function: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> object:
+    """``function(*args, **kwargs)`` on the host: asked of it from a worker, run here in it."""
+    name = _name(function)
+    if _functions.get(name) is not function:
+        raise TypeError(f"{name} is not a @host_function")
+    if _link is None:
+        return await _run(function, args, kwargs)
+    return await _link.ask(name, args, kwargs)
+
+
+class HostLink:
+    """The host as a worker reaches it: host functions in flight, by number."""
+
+    def __init__(self, writer: asyncio.StreamWriter) -> None:
+        self.writer = writer
+        self._numbers = itertools.count()
+        self._asked: dict[int, asyncio.Future[tuple[bool, object]]] = {}
+
+    async def ask(self, name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        number = next(self._numbers)
+        future = self._asked[number] = asyncio.get_running_loop().create_future()
+        try:
+            await send(self.writer, frame(Kind.ASK, number, (name, args, kwargs)))
+            ok, value = await future
+        finally:
+            self._asked.pop(number, None)
+        if not ok:
+            assert isinstance(value, BaseException)
+            raise value
+        return value
+
+    def answered(self, number: int, outcome: tuple[bool, object]) -> None:
+        future = self._asked.get(number)
+        if future is not None and not future.done():
+            future.set_result(outcome)
+
+
+#: Set in a worker process (:mod:`actant.sandbox.worker`).
+_link: HostLink | None = None
+
+
+def link(writer: asyncio.StreamWriter) -> HostLink:
+    """This worker's way to the host, for :func:`on_host`."""
+    global _link
+    _link = HostLink(writer)
+    return _link
+
+
+async def _resolve(name: str) -> Callable[..., object]:
+    if name not in _functions:  # its module is imported in the worker, maybe not yet here
+        importlib.import_module(name.partition(":")[0])
+    if name not in _functions:
+        raise TypeError(f"{name} is not a @host_function")
+    return _functions[name]
 
 
 async def send(writer: asyncio.StreamWriter, data: bytes) -> None:
@@ -72,6 +183,7 @@ class Worker:
         self.alive = True
         self._numbers = itertools.count()
         self._calls: dict[int, asyncio.Future[CallResponse]] = {}
+        self._answering: set[asyncio.Task[None]] = set()
         self._listening = asyncio.ensure_future(self._listen())
 
     @classmethod
@@ -109,6 +221,15 @@ class Worker:
         finally:
             self._calls.pop(number, None)
 
+    async def _answer(self, number: int, asked: object) -> None:
+        try:
+            name, args, kwargs = cast(tuple[str, tuple[object, ...], dict[str, object]], asked)
+            data = answer(number, True, await _run(await _resolve(name), args, kwargs))
+        except Exception as error:  # noqa: BLE001 -- raised in the worker's caller
+            data = answer(number, False, error)
+        with contextlib.suppress(ConnectionError):
+            await send(self.writer, data)
+
     def _died(self) -> CallResponse:
         code = self.process.returncode
         return CallResponse(
@@ -120,6 +241,12 @@ class Worker:
         try:
             while True:
                 kind, number, payload = await receive(self.reader)
+                if kind == Kind.ASK:
+                    # its own task: a host function may await a call this worker answers
+                    task = asyncio.create_task(self._answer(number, payload))
+                    self._answering.add(task)
+                    task.add_done_callback(self._answering.discard)
+                    continue
                 future = self._calls.get(number)
                 if kind == Kind.DONE and future is not None and not future.done():
                     assert isinstance(payload, CallResponse)

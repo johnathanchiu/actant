@@ -11,7 +11,8 @@ import pytest
 
 from actant.sandbox import host
 from actant.sandbox.protocol import CallRequest, CallResponse, ServiceConfig
-from service_fixtures import Placed
+from actant.sandbox.processes import on_host
+from service_fixtures import HOST, Placed, where
 
 TESTS = str(Path(__file__).parent)
 
@@ -101,3 +102,21 @@ async def test_closing_the_host_closes_the_workers_instances(served: host.Host) 
     await call(served, "b", "bump", by=7)
     await served.close_instances()
     assert sorted(p.name for p in Path().glob("closed-at-*")) == ["closed-at-5", "closed-at-7"]
+
+
+async def test_a_worker_runs_host_functions_on_the_host(served: host.Host) -> None:
+    here = str(os.getpid())
+    assert (await call(served, "a", "where", tag="t")).text == f"t {here}"
+    bad = await call(served, "a", "where", tag="bad")
+    assert bad.error is not None and bad.error.startswith("KeyError: 'bad'")
+    refused = await call(served, "a", "unregistered")
+    assert refused.error is not None and "is not a @host_function" in refused.error
+    # in the host itself the function runs right there
+    assert await on_host(where, "h") == f"h {here}"
+
+
+async def test_a_host_function_may_await_the_worker_that_asked(served: host.Host) -> None:
+    HOST[:] = [served]
+    worker = (await call(served, "a", "pid")).text
+    relayed = await asyncio.wait_for(call(served, "a", "relay", to="a"), 5)
+    assert relayed.text == worker
