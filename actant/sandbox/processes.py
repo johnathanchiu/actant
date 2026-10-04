@@ -62,18 +62,6 @@ class Kind(StrEnum):
     ANSWER = "answer"
 
 
-def log_to_stderr() -> None:
-    """Send ``actant.sandbox``'s records, INFO and up, to stderr: a sandbox's host and worker
-    processes configure no logging of their own, and Python drops INFO records by default."""
-    package = logging.getLogger("actant.sandbox")
-    if not package.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        package.addHandler(handler)
-        package.setLevel(logging.INFO)
-        package.propagate = False
-
-
 def frame(kind: str, number: int, payload: object) -> bytes:
     data = pickle.dumps((kind, number, payload), pickle.HIGHEST_PROTOCOL)
     return _SIZE.pack(len(data)) + data

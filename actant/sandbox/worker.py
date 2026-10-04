@@ -17,6 +17,7 @@ import socket
 import sys
 from typing import cast
 
+from actant.logs import log_to_stderr
 from actant.sandbox import host
 from actant.sandbox import processes
 from actant.sandbox.processes import Kind, frame, receive, send
@@ -56,7 +57,7 @@ async def serve(config: WorkerConfig, fd: int) -> None:
 
 
 def main(argv: list[str]) -> int:
-    processes.log_to_stderr()
+    log_to_stderr()
     config = WorkerConfig.model_validate_json(argv[0])
     asyncio.run(serve(config, int(argv[1])))
     return 0

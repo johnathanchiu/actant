@@ -82,6 +82,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
+from actant.logs import log_to_stderr
 from actant.sandbox.base import Endpoint, ImageBucket, SandboxSpec
 from actant.sandbox.protocol import (
     CallRequest,
@@ -97,7 +98,7 @@ from actant.sandbox.protocol import (
     ServiceConfig,
     StorageStatus,
 )
-from actant.sandbox.processes import Workers, log_to_stderr
+from actant.sandbox.processes import Workers
 
 if TYPE_CHECKING:
     from actant.sandbox.uploads import ImageUploader
