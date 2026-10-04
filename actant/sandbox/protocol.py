@@ -133,9 +133,30 @@ class ImageUploadConfig(_Message):
     timeout_s: PositiveFloat = Field(default=10.0, allow_inf_nan=False)
 
 
+class ServiceConfig(_Message):
+    """A service served from worker processes beside the host (:mod:`actant.sandbox.processes`):
+    its keys' calls leave the host's interpreter, so they never queue for its GIL."""
+
+    #: ``"pkg.mod:Class"``.
+    path: str
+    #: Worker processes; each key is served by one, dealt in turn on its first call.
+    #: ``0`` serves the service in the host.
+    processes: int = Field(default=0, ge=0)
+    #: Each worker's environment over the host's (its share of a pool, say).
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class WorkerConfig(_Message):
+    """``python -m actant.sandbox.worker '<WorkerConfig JSON>' <fd>``: one worker of a service."""
+
+    service: str
+    path: str
+    scrub: list[str] = Field(default_factory=list)
+
+
 class HostConfig(_Message):
-    #: Service name to ``"pkg.mod:Class"``.
-    services: dict[str, str] = Field(min_length=1)
+    #: Service name to ``"pkg.mod:Class"``, or a :class:`ServiceConfig` placing it.
+    services: dict[str, str | ServiceConfig] = Field(min_length=1)
     #: ``0`` picks a free port.
     port: int = Field(default=8080, ge=0, le=65535)
     bind: str = "0.0.0.0"

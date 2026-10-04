@@ -87,6 +87,24 @@ class Counter:
         return {"host": os.environ.get(name), "script": script_env().get(name)}
 
 
+class Placed(Counter):
+    """``Counter`` with what a test of worker processes asks of one."""
+
+    async def pid(self) -> int:
+        return os.getpid()
+
+    async def crash(self) -> str:
+        os._exit(3)
+
+    async def hold(self, marker: str) -> str:
+        Path(marker).touch()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            Path(f"{marker}.cancelled").touch()
+        return "never"
+
+
 class Stages:
     """A second service for the product's own calls, served next to ``Counter``."""
 
