@@ -92,6 +92,16 @@ class Counter:
 #: The host a test serves ``Placed`` from, for :func:`relay`.
 HOST: list[Host] = []
 
+#: ``Placed.linger``'s tasks, held so they are not collected while they wait.
+LINGERING: set[asyncio.Future[None]] = set()
+
+
+async def _linger() -> None:
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        raise RuntimeError("client closed") from None
+
 
 @host_function
 def where(tag: str) -> str:
@@ -123,6 +133,11 @@ class Placed(Counter):
         finally:
             Path(f"{marker}.cancelled").touch()
         return "never"
+
+    async def linger(self) -> str:
+        """Leave a task behind that fails as it is cancelled, as a client closed under it."""
+        LINGERING.add(asyncio.ensure_future(_linger()))
+        return "lingering"
 
     async def where(self, tag: str) -> str:
         return await on_host(where, tag)
