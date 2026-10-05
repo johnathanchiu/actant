@@ -114,21 +114,43 @@ def test_sanitize_tool_messages_assigns_missing_tool_call_id() -> None:
     assert sanitized[1].tool_call_id == sanitized[0].tool_calls[0].id
 
 
-def test_openai_converts_tool_result_with_images_after_function_output() -> None:
-    message = Message(
-        role="tool",
-        tool_call_id="call_1",
-        content=[TextBlock(text="done"), PNG_BLOCK],
-    )
+def test_openai_keeps_tool_result_images_in_block_order_inside_the_output() -> None:
+    blocks = [TextBlock(text="a"), PNG_BLOCK, TextBlock(text="b"), PNG_BLOCK]
+    message = Message(role="tool", tool_call_id="call_1", content=blocks)
 
-    items = OpenAIProvider._convert_tool_message(message)
-
-    assert items[0] == {
+    image = {"type": "input_image", "image_url": "data:image/png;base64,iVBO", "detail": "high"}
+    assert OpenAIProvider._convert_tool_message(message) == {
         "type": "function_call_output",
         "call_id": "call_1",
-        "output": "done",
+        "output": [
+            {"type": "input_text", "text": "a"},
+            image,
+            {"type": "input_text", "text": "b"},
+            image,
+        ],
     }
-    assert items[1]["role"] == "user"
+
+
+def test_openai_sends_a_text_only_tool_result_as_a_string() -> None:
+    message = Message(
+        role="tool", tool_call_id="call_1", content=[TextBlock(text="a"), TextBlock(text="b")]
+    )
+
+    assert OpenAIProvider._convert_tool_message(message)["output"] == "a\nb"
+
+
+def test_openai_sends_one_input_item_per_tool_result() -> None:
+    messages = [
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall(id="call_1", function=ToolCallFunction("look", "{}"))],
+        ),
+        Message(role="tool", tool_call_id="call_1", content=[TextBlock(text="a"), PNG_BLOCK]),
+    ]
+
+    items = OpenAIProvider.convert_messages(messages)
+
+    assert [item["type"] for item in items] == ["function_call", "function_call_output"]
 
 
 def test_anthropic_omits_unsigned_thinking_from_history() -> None:

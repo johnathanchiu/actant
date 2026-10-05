@@ -174,7 +174,7 @@ class OpenAIProvider:
             elif message.role == "assistant":
                 items.extend(cls._convert_assistant_message(message))
             elif message.role == "tool":
-                items.extend(cls._convert_tool_message(message))
+                items.append(cls._convert_tool_message(message))
         return items
 
     @staticmethod
@@ -203,31 +203,14 @@ class OpenAIProvider:
         return items
 
     @staticmethod
-    def _convert_tool_message(message: Message) -> list[ToolSchema]:
-        items: list[ToolSchema] = []
-        text, image_parts = split_tool_content(message.content)
-        items.append(
-            {
-                "type": "function_call_output",
-                "call_id": message.tool_call_id or f"call_{uuid.uuid4().hex}",
-                "output": text,
-            }
-        )
-        if image_parts:
-            items.append(
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        *image_parts,
-                        {
-                            "type": "input_text",
-                            "text": "[Tool result images for the above function call]",
-                        },
-                    ],
-                }
-            )
-        return items
+    def _convert_tool_message(message: Message) -> ToolSchema:
+        # Images go inside the output, in block order, so each stays beside its caption.
+        text, images = split_tool_content(message.content)
+        return {
+            "type": "function_call_output",
+            "call_id": message.tool_call_id or f"call_{uuid.uuid4().hex}",
+            "output": content_to_openai_user_parts(message.content) if images else text,
+        }
 
     def _request_params(
         self, system: str, messages: Sequence[Message], tools: list[dict]
