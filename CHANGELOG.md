@@ -4,6 +4,12 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.36.2
+
+- A service method can return an image as an `(image, caption)` pair (path or bytes, then
+  text). The caption travels on `Image.caption` (optional; absent means `None`) and is the
+  text block directly before its image in the tool result, in place of `Image <name>:`.
+
 ## 0.36.1
 
 - OpenAI/Azure: a tool result's images stay in block order inside
