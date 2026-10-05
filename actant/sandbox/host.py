@@ -220,18 +220,19 @@ def encode_output(output: object) -> CallResponse:
     """A service method's return value as a response.
 
     ``str`` is the text. An object with ``.text`` and ``.images`` carries images as
-    file paths or bytes; a path must name an image file (by extension) and bytes
-    must be one (by magic number), because a path can be model-steered and
-    anything else would leave the sandbox or be rejected by the LLM. Such an object
-    with a true ``.terminal`` ends the agent's run (``CallResponse.terminal``). Other
-    values are JSON-encoded.
+    file paths or bytes, each optionally an ``(image, caption)`` pair; a path must name
+    an image file (by extension) and bytes must be one (by magic number), because a
+    path can be model-steered and anything else would leave the sandbox or be rejected
+    by the LLM. Such an object with a true ``.terminal`` ends the agent's run
+    (``CallResponse.terminal``). Other values are JSON-encoded.
     """
     if isinstance(output, str):
         return CallResponse(text=output)
     if hasattr(output, "text") and hasattr(output, "images"):
         text = str(output.text)  # pyright: ignore[reportAttributeAccessIssue]
         images: list[Image] = []
-        for index, image in enumerate(output.images):  # pyright: ignore[reportAttributeAccessIssue]
+        for index, entry in enumerate(output.images):  # pyright: ignore[reportAttributeAccessIssue]
+            image, caption = entry if isinstance(entry, tuple) else (entry, None)
             if isinstance(image, bytes | bytearray):
                 name, data = f"image-{index}", bytes(image)
                 media_type = image_type(data) or ""
@@ -246,7 +247,7 @@ def encode_output(output: object) -> CallResponse:
                     continue
                 data = Path(name).read_bytes()
             source = InlineSource(data_b64=base64.b64encode(data).decode())
-            images.append(Image(name=name, media_type=media_type, source=source))
+            images.append(Image(name=name, media_type=media_type, source=source, caption=caption))
         terminal = bool(getattr(output, "terminal", False))
         return CallResponse(text=text, images=images, terminal=terminal)
     try:

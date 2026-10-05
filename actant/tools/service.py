@@ -55,7 +55,7 @@ def _result(response: CallResponse) -> ToolResult:
     # LLM APIs reject empty text blocks.
     blocks: list[Block] = [TextBlock(text=text)] if text else []
     for image in response.images:
-        blocks.append(TextBlock(text=f"Image {image.name}:"))
+        blocks.append(TextBlock(text=image.caption or f"Image {image.name}:"))
         blocks.append(image_block(image))
     return ToolResult(output=text, content_blocks=blocks)
 

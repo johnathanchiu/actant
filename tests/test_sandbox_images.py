@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 from botocore.exceptions import ClientError
@@ -23,7 +24,7 @@ from actant.sandbox.protocol import (
     AssetSource,
 )
 from actant.sandbox.uploads import ImageUploader
-from actant.blocks import AssetBlock, Base64Source, InlineImageBlock
+from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock
 from actant.tools import image_block
 from actant.tools.base import MetadataKey
 from actant.tools.service import to_tool_result
@@ -83,6 +84,40 @@ def test_inline_and_asset_sources_round_trip() -> None:
     assert image_block(reference) == AssetBlock(storage_key="s3://b/x.png", mime="image/png")
     response = CallResponse(images=[inline, reference])
     assert CallResponse.model_validate_json(response.to_json()) == response
+
+
+def test_caption_round_trips_and_old_messages_have_none() -> None:
+    captioned = _inline().model_copy(update={"caption": "Kitchen from the door"})
+    response = CallResponse(images=[captioned, _inline("b.png")])
+    assert CallResponse.model_validate_json(response.to_json()) == response
+    old = '{"images": [{"name": "a.png", "media_type": "image/png", "source": {"kind": "inline", "data_b64": ""}}]}'
+    assert CallResponse.model_validate_json(old).images[0].caption is None
+
+
+def test_caption_sits_directly_before_its_image_else_the_name_label() -> None:
+    captioned = _inline("a.png").model_copy(update={"caption": "Kitchen from the door"})
+    result = to_tool_result(CallResponse(text="t", images=[captioned, _inline("b.png")]))
+    assert result.content_blocks == [
+        TextBlock(text="t"),
+        TextBlock(text="Kitchen from the door"),
+        image_block(captioned),
+        TextBlock(text="Image b.png:"),
+        image_block(_inline("b.png")),
+    ]
+
+
+def test_a_method_captions_an_image_with_a_pair(tmp_path: Path) -> None:
+    path = tmp_path / "a.png"
+    path.write_bytes(PNG)
+
+    @dataclass
+    class Shown:
+        text: str
+        images: list[object]
+
+    response = host.encode_output(Shown("t", [(str(path), "Kitchen"), PNG, (PNG, "Close-up")]))
+    assert [image.caption for image in response.images] == ["Kitchen", None, "Close-up"]
+    assert response.images[0].name == str(path)
 
 
 async def test_upload_is_content_addressed_and_never_presigns(s3: FakeS3) -> None:
