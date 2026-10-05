@@ -4,6 +4,12 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- OpenAI/Azure: a request the provider's content filter refuses (`content_policy_violation`,
+  sent by Azure as `response.failed` then an `error` event) raises `ContentBlocked` with the
+  provider's message, not retried, instead of a bare "response ended with status failed".
+
 ## 0.36.2
 
 - A service method can return an image as an `(image, caption)` pair (path or bytes, then
