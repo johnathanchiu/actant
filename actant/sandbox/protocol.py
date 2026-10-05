@@ -77,6 +77,9 @@ class Image(_Message):
     name: str
     media_type: str
     source: Annotated[InlineSource | AssetSource, Field(discriminator="kind")]
+    #: What the image shows; the model reads it right before the image, in place of
+    #: ``Image <name>:``.
+    caption: str | None = None
 
 
 class StorageStatus(_Message):
