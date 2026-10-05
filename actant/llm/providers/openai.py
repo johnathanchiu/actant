@@ -344,6 +344,9 @@ class OpenAIProvider:
             arguments = ""
             open_call: tuple[str | None, str | None] = (None, None)
             emitting = False
+            # Azure fails a filtered request with ``response.failed`` (no error), then an
+            # ``error`` event naming why: the failure is raised at that event or stream end.
+            failed: Response | None = None
             while True:
                 # Idle bounds follow the Responses streaming contract: while a
                 # message or function_call item is open the model is emitting
@@ -357,6 +360,8 @@ class OpenAIProvider:
                         event = await anext(events)
                 except StopAsyncIteration:
                     break
+                if failed is not None and event.type != "error":
+                    continue
                 if listener is not None and listener.cancel_requested():
                     raise StreamCancelled
                 if event.type == "response.output_item.added":
@@ -372,10 +377,14 @@ class OpenAIProvider:
                 elif event.type == "response.output_item.done":
                     emitting = False
                 elif event.type == "error":
+                    if event.code == "content_policy_violation":
+                        raise ContentBlocked(event.message)
                     raise StreamInterrupted(
                         f"stream error {event.code}: {event.message}",
                         retryable=event.code in _TRANSIENT_CODES,
                     )
+                elif event.type == "response.failed" and event.response.error is None:
+                    failed = event.response
                 elif event.type == "response.failed" or event.type == "response.incomplete":
                     raise _unfinished(event.response)
                 elif event.type == "response.function_call_arguments.delta":
@@ -413,6 +422,8 @@ class OpenAIProvider:
                 if listener is None:
                     continue
                 await _forward_stream_event(event, listener, tool_stream_state)
+            if failed is not None:
+                raise _unfinished(failed)
             try:
                 async with asyncio.timeout(self.idle_s):
                     response = await stream.get_final_response()
@@ -494,6 +505,14 @@ class StreamInterrupted(RuntimeError):
         super().__init__(message)
         self.retryable = retryable
         self.tokens = tokens
+
+
+class ContentBlocked(StreamInterrupted):
+    """The provider's content filter refused the request's input (Azure's
+    ``content_policy_violation``); the same input is refused again, so it never retries."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retryable=False)
 
 
 # Response and stream error codes worth another attempt; the rest describe the request.

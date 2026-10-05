@@ -10,7 +10,11 @@ import pytest
 
 from actant.agents import AgentDefinition
 from actant.llm.providers.fake import FakeLLM
-from actant.llm.providers.openai import OpenAIProvider, StreamInterrupted
+from actant.llm.providers.openai import (
+    ContentBlocked,
+    OpenAIProvider,
+    StreamInterrupted,
+)
 from actant.llm.rate_limit import RateLimitConfig, RateLimiter
 from actant.runtime.events.streaming import StreamListener
 from actant.tools import tool
@@ -168,6 +172,39 @@ async def test_permanent_stream_outcomes_are_not_retried(terminal: dict[str, obj
     provider, requests = _provider([_events(terminal=terminal)] * 3, attempts=3)
     with pytest.raises(StreamInterrupted):
         await provider.complete("system", [], [])
+    assert len(requests) == 1
+
+
+_IMAGE_BLOCKED = "Image processing blocked due to content policy violation."
+
+
+async def test_failed_then_content_policy_error_is_content_blocked() -> None:
+    """Azure fails a request whose image its filter refuses with ``response.failed`` (no
+    error) and then an ``error`` event naming why: that is ``ContentBlocked``, not retried."""
+    failed = {
+        "type": "response.failed",
+        "response": _response(
+            "failed", usage={"input_tokens": 900, "output_tokens": 0, "total_tokens": 900}
+        ),
+    }
+    blocked: Event = {
+        "type": "error",
+        "code": "content_policy_violation",
+        "message": _IMAGE_BLOCKED,
+    }
+    provider, requests = _provider([[*_events(terminal=failed), blocked]] * 3, attempts=3)
+    with pytest.raises(ContentBlocked) as raised:
+        await provider.complete("system", [], [])
+    assert str(raised.value) == _IMAGE_BLOCKED
+    assert len(requests) == 1
+
+
+async def test_failed_without_error_event_still_fails() -> None:
+    failed = {"type": "response.failed", "response": _response("failed")}
+    provider, requests = _provider([_events(terminal=failed)] * 3, attempts=3)
+    with pytest.raises(StreamInterrupted, match="status failed") as raised:
+        await provider.complete("system", [], [])
+    assert not isinstance(raised.value, ContentBlocked)
     assert len(requests) == 1
 
 
