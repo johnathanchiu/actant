@@ -1,5 +1,6 @@
 """S3 asset resolution: existence checks through an injected boto3-compatible client, and
-presigned GET URLs that every process computes identically.
+presigned GET URLs that every process computes identically; or an asset's bytes in one GET,
+for a caller that sends them inline (:class:`~actant.assets.InlineImages`).
 
 Configure the SDK client with bounded SDK timeouts/retries; the signing endpoint must be the
 one the model provider can reach. Credentials and client lifecycle remain caller-owned. The
@@ -34,8 +35,16 @@ EXPIRY_MARGIN_S = 120
 MISSING_CODES = frozenset({"NoSuchKey", "NotFound", "404"})
 
 
+class S3Body(Protocol):
+    def read(self, amt: int | None = ..., /) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
 class S3Client(Protocol):
     def head_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]: ...
+
+    def get_object(self, *, Bucket: str, Key: str) -> Mapping[str, S3Body]: ...
 
 
 class S3AssetResolver:
@@ -106,6 +115,26 @@ class S3AssetResolver:
         )
         return ResolvedImage(asset.mime, url=url, expires_at=signed_at + expires_s)
 
+    async def read(self, asset: AssetReference, limit: int) -> bytes | MissingAsset | None:
+        """The asset's bytes, read in one GET on the client's pooled connections, or None
+        when they are more than `limit` (only `limit + 1` are read): no existence check and
+        no URL, for a caller that sends the bytes themselves."""
+        key = self._key(asset.storage_key)
+        try:
+            return await asyncio.to_thread(self._get, key, limit)
+        except Exception as error:
+            if _missing(error):
+                return MissingAsset()
+            raise
+
+    def _get(self, key: str, limit: int) -> bytes | None:
+        body = self.client.get_object(Bucket=self.bucket, Key=key)["Body"]
+        try:
+            data = body.read(limit + 1)
+        finally:
+            body.close()
+        return data if len(data) <= limit else None
+
     def _window_start(self) -> int:
         now = self.clock() if self.clock is not None else time.time()
         return int(now // self.window_s) * self.window_s
@@ -125,11 +154,15 @@ class S3AssetResolver:
         try:
             await asyncio.to_thread(self.client.head_object, Bucket=self.bucket, Key=key)
         except Exception as error:
-            # botocore ClientError exposes a structured response. Only an explicit
-            # missing-object response means missing; 403 and transport errors propagate.
-            response = getattr(error, "response", None)
-            detail = response.get("Error") if isinstance(response, dict) else None
-            if isinstance(detail, dict) and detail.get("Code") in MISSING_CODES:
+            if _missing(error):
                 return False
             raise
         return True
+
+
+def _missing(error: Exception) -> bool:
+    """botocore's ClientError exposes a structured response. Only an explicit missing-object
+    response means missing; 403 and transport errors propagate."""
+    response = getattr(error, "response", None)
+    detail = response.get("Error") if isinstance(response, dict) else None
+    return isinstance(detail, dict) and detail.get("Code") in MISSING_CODES

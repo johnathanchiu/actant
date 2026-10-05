@@ -6,11 +6,15 @@ import asyncio
 import io
 import random
 import urllib.error
+from collections.abc import Mapping
+from typing import cast
 
 import pytest
 from PIL import Image
 
 from actant import assets
+from actant.storage.s3 import S3AssetResolver, S3Client
+from actant.storage.sigv4 import SigningKeys
 from actant.assets import (
     AssetContext,
     AssetReference,
@@ -177,3 +181,60 @@ def test_a_missing_picture_is_asked_for_again() -> None:
     for _ in range(2):
         assert isinstance(asyncio.run(images.resolve(key, CONTEXT)), MissingAsset)
     assert len(store.reads) == 2
+
+
+class NoSuchKey(Exception):
+    response = {"Error": {"Code": "NoSuchKey"}}
+
+
+class Bucket:
+    """A boto3-like client of a few objects, counting the requests it is sent."""
+
+    def __init__(self, objects: dict[str, bytes]) -> None:
+        self.objects = objects
+        self.requests: list[tuple[str, str]] = []
+
+    def head_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]:
+        self.requests.append(("HEAD", Key))
+        return {}
+
+    def get_object(self, *, Bucket: str, Key: str) -> Mapping[str, io.BytesIO]:
+        self.requests.append(("GET", Key))
+        if Key not in self.objects:
+            raise NoSuchKey(Key)
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+
+def from_bucket(bucket: Bucket, key: str, **options: int) -> ResolvedImage | MissingAsset:
+    s3 = S3AssetResolver(
+        cast(S3Client, bucket),
+        endpoint_url="https://account.r2.cloudflarestorage.com",
+        region="auto",
+        keys=SigningKeys("key", "secret"),
+        bucket="b",
+        prefix="images/",
+    )
+    images = InlineImages(s3, image_side=SIDE, **options)
+    return asyncio.run(
+        images.resolve(AssetReference(f"s3://b/images/{key}", "image/png"), CONTEXT)
+    )
+
+
+def test_a_bucket_picture_is_one_get_and_goes_inline_as_from_its_url(tmp_path) -> None:
+    """From a resolver that reads bytes, a cold picture is one GET: no HEAD, no URL. It goes
+    inline exactly as the same picture read from a URL does."""
+
+    data = picture((2048, 1400), "PNG")
+    bucket = Bucket({"images/view.png": data})
+    found = from_bucket(bucket, "view.png")
+    assert bucket.requests == [("GET", "images/view.png")]
+    photo = tmp_path / "view.png"
+    photo.write_bytes(data)
+    assert found == resolve(photo.as_uri())
+
+
+def test_a_bucket_picture_gone_or_too_large_is_missing() -> None:
+    bucket = Bucket({"images/view.png": picture((64, 64), "PNG")})
+    assert isinstance(from_bucket(bucket, "gone.png"), MissingAsset)
+    found = from_bucket(bucket, "view.png", read_bytes=10)
+    assert isinstance(found, MissingAsset) and "larger than" in found.reason
