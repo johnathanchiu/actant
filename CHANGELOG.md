@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.36.1
+
+- OpenAI/Azure: a tool result's images stay in block order inside
+  `function_call_output.output` (a list of `input_text`/`input_image` parts), so each
+  caption sits beside its image. They were sent after all the text, in a follow-up user
+  message. A result without images is still a string.
+
 ## 0.36.0
 
 - Assistant messages record the part of `input_tokens` read from the provider's prompt
