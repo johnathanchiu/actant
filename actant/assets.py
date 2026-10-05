@@ -12,7 +12,7 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from actant.blocks import (
     AssetBlock,
@@ -75,6 +75,14 @@ class AssetResolver(Protocol):
     async def resolve(
         self, asset: AssetReference, context: AssetContext
     ) -> ResolvedImage | MissingAsset: ...
+
+
+@runtime_checkable
+class AssetReader(Protocol):
+    """A resolver that also gives an asset's bytes directly (such as
+    :class:`~actant.storage.s3.S3AssetResolver`): None when they are more than `limit`."""
+
+    async def read(self, asset: AssetReference, limit: int) -> bytes | MissingAsset | None: ...
 
 
 #: How many asset references one request resolves at once.
@@ -205,10 +213,13 @@ class InlineImages:
     ("Unable to download content from the provided URL before the timeout", 400). This wraps
     a URL resolver (such as :class:`~actant.storage.s3.S3AssetResolver`): each picture is
     read from its URL, `read_attempts` times at most, and resolved to bytes fitted by
-    :func:`fit_image`. One the store will not give fails the turn rather than going as a URL;
-    one that is no picture, or larger than `read_bytes`, is missing, said so. The choice
-    depends on the picture alone, so every turn sends a picture the same way and the prompt
-    cache keeps matching.
+    :func:`fit_image`. A resolver that reads bytes itself (:class:`AssetReader`) is read
+    once instead, with no URL and no existence check: its client's own retries and timeouts
+    apply, and a cold picture costs one GET on a pooled connection, not a HEAD and a GET on
+    a new one. One the store will not give fails the turn rather than going as a URL; one
+    that is no picture, or larger than `read_bytes`, is missing, said so. The choice depends
+    on the picture alone, so every turn sends a picture the same way and the prompt cache
+    keeps matching.
 
     A stored picture never changes (new bytes get a new key), so a fitted one is kept,
     `cache_bytes` of them, the least recently sent dropped first: a thread's next turn sends
@@ -277,8 +288,11 @@ class InlineImages:
     async def _read(
         self, asset: AssetReference, context: AssetContext
     ) -> ResolvedImage | MissingAsset:
-        from PIL import UnidentifiedImageError
-
+        if isinstance(self.resolver, AssetReader):
+            read = await self.resolver.read(asset, self.read_bytes)
+            if isinstance(read, MissingAsset):
+                return read
+            return await self._fit(asset, read)
         found = await self.resolver.resolve(asset, context)
         if isinstance(found, MissingAsset) or found.url is None:
             return found
@@ -296,6 +310,13 @@ class InlineImages:
                     "image %s: read %d failed: %s", asset.storage_key, attempt + 1, error
                 )
                 await asyncio.sleep(2**attempt)
+        return await self._fit(asset, data)
+
+    async def _fit(
+        self, asset: AssetReference, data: bytes | None
+    ) -> ResolvedImage | MissingAsset:
+        from PIL import UnidentifiedImageError
+
         if data is None:
             return MissingAsset(f"{asset.storage_key}: larger than a whole request's images")
         try:

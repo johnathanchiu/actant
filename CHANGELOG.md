@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `InlineImages` over a resolver that reads bytes itself (`AssetReader`, which
+  `S3AssetResolver` now is) reads a cold picture in one `get_object` on the client's pooled
+  connections, with no HEAD and no presigned-URL fetch. `S3Client` now also needs
+  `get_object`. The bytes sent are unchanged.
+
 ## 0.36.2
 
 - A service method can return an image as an `(image, caption)` pair (path or bytes, then
