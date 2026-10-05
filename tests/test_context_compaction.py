@@ -328,6 +328,27 @@ def test_the_dropped_prefix_holds_until_another_chunk_is_needed() -> None:
     assert drop_oldest_images(history, 4) == seven
 
 
+def test_images_in_a_tool_result_count_and_drop_in_block_order() -> None:
+    result = Message(
+        role="tool",
+        tool_call_id="tc_1",
+        content=[
+            TextBlock(text="a"),
+            AssetBlock(storage_key="k0", mime="image/png"),
+            TextBlock(text="b"),
+            AssetBlock(storage_key="k1", mime="image/png"),
+        ],
+    )
+
+    assert count_images([result]) == 2
+    assert drop_oldest_images([result, *_pictures(1)], 2)[0].content == [
+        TextBlock(text="a"),
+        TextBlock(text='[image id=k0] dropped from view; recall_image("k0") shows it again'),
+        TextBlock(text="b"),
+        AssetBlock(storage_key="k1", mime="image/png"),
+    ]
+
+
 def test_images_summarize_by_default() -> None:
     assert CompactionConfig().image_limit == "summarize"
 
