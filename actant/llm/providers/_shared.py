@@ -7,6 +7,8 @@ Single-provider helpers live in their owning provider module:
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import uuid
 from collections.abc import Sequence
@@ -25,6 +27,12 @@ from actant.llm.messages import Message, ToolCall
 ToolSchema = dict[str, object]
 #: A content block in a provider's own request shape.
 WireBlock = dict[str, object]
+logger = logging.getLogger(__name__)
+
+TOOL_OUTPUT_UNAVAILABLE = (
+    "No output was recorded for this tool call. It may or may not have taken effect. "
+    "Check its effects before retrying; do not assume success."
+)
 
 
 def env_api_key(name: str, explicit: str | None = None) -> str:
@@ -123,4 +131,33 @@ def sanitize_tool_messages(
                 message.tool_call_id = f"call_{uuid.uuid4().hex}"
         sanitized.append(message)
 
-    return sanitized
+    # Work from the complete request snapshot: a real result appearing later in the
+    # history wins. A cancelled workflow's surviving model activity can commit a call
+    # after cancellation repaired its transcript; never send that orphan to a provider.
+    result_ids = {message.tool_call_id for message in sanitized if message.role == "tool"}
+    paired: list[Message] = []
+    seen_results: set[str | None] = set()
+    for message in sanitized:
+        if message.role == "tool":
+            if message.tool_call_id in seen_results:
+                continue
+            seen_results.add(message.tool_call_id)
+        paired.append(message)
+        if message.role == "assistant":
+            for call in message.tool_calls or []:
+                if call.id in result_ids:
+                    continue
+                logger.warning(
+                    "tool output unavailable call_id=%s tool=%s", call.id, call.function.name
+                )
+                paired.append(
+                    Message(
+                        role="tool",
+                        tool_call_id=call.id,
+                        name=call.function.name,
+                        content=json.dumps(
+                            {"status": "interrupted", "error": TOOL_OUTPUT_UNAVAILABLE}
+                        ),
+                    )
+                )
+    return paired
