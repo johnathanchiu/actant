@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID
 import temporalio.client
 import temporalio.worker
 import temporalio.service
+from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from actant.blocks import BLOCKS, Block
@@ -165,20 +168,87 @@ class AgentRuntime:
         contact and signalled on every subsequent call. Idempotent:
         re-sending starts no new execution if one is already running.
         """
-        client = self.client
         wf_id = self._workflow_id(agent_id, thread_id)
-        msg = InboundMessage(
-            content=BLOCKS.dump_python(content, mode="json")
-            if isinstance(content, list)
-            else content,
-            tag=tag,
+        await self.client.start_workflow(
+            AgentThreadWorkflow.run,
+            self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id),
+            id=wf_id,
+            task_queue=self.config.task_queue,
+            start_signal=SignalName.INBOUND,
+            start_signal_args=[_inbound(content, tag)],
         )
-        agent_max_turns = self.config.max_turns_per_run
-        thread_input = ThreadInput(
+        # Signals don't have ids in Temporal; return the workflow id as
+        # a stable handle the caller can correlate against.
+        return wf_id
+
+    async def spawn(
+        self,
+        agent_id: str,
+        thread_id: str,
+        content: str | list[Block],
+        *,
+        parent_thread_id: str | None = None,
+        tag: str | None = None,
+        sandbox_id: str | None = None,
+        once: bool = True,
+    ) -> bool:
+        """Start a thread with its first message; whether this call started it.
+
+        With ``once`` a thread starts at most once, so a caller that runs
+        again (a worker restart, a replayed workflow activity) can spawn the
+        same id without the agent receiving its brief twice. The stores are
+        the record that a thread started, and they outlive Temporal's
+        retention; until the first run records the thread, Temporal refuses a
+        second execution under the same workflow id. A thread that started
+        takes later messages through ``send_message``.
+
+        Without ``once`` this is ``send_message``.
+        """
+        if not once:
+            await self.send_message(
+                agent_id,
+                thread_id,
+                content,
+                parent_thread_id=parent_thread_id,
+                tag=tag,
+                sandbox_id=sandbox_id,
+            )
+            return True
+        try:
+            await self.stores.threads.get(agent_id, thread_id)
+        except KeyError:
+            pass
+        else:
+            return False
+        thread_input = replace(
+            self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id),
+            carry_inbox=[_inbound(content, tag)],
+        )
+        try:
+            await self.client.start_workflow(
+                AgentThreadWorkflow.run,
+                thread_input,
+                id=self._workflow_id(agent_id, thread_id),
+                task_queue=self.config.task_queue,
+                id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+                id_conflict_policy=WorkflowIDConflictPolicy.FAIL,
+            )
+        except WorkflowAlreadyStartedError:
+            return False
+        return True
+
+    def _thread_input(
+        self,
+        agent_id: str,
+        thread_id: str,
+        parent_thread_id: str | None,
+        sandbox_id: str | None,
+    ) -> ThreadInput:
+        return ThreadInput(
             agent_id=agent_id,
             thread_id=thread_id,
-            max_turns_per_run=agent_max_turns,
-            external_resolution_timeout_seconds=(self.config.external_resolution_timeout_seconds),
+            max_turns_per_run=self.config.max_turns_per_run,
+            external_resolution_timeout_seconds=self.config.external_resolution_timeout_seconds,
             history_size_threshold=self.config.history_size_threshold,
             parent_thread_id=parent_thread_id,
             sandbox_id=sandbox_id,
@@ -186,17 +256,6 @@ class AgentRuntime:
             context_compaction=self.config.context_compaction,
             activity_timeouts=self.config.activity_timeouts,
         )
-        await client.start_workflow(
-            AgentThreadWorkflow.run,
-            thread_input,
-            id=wf_id,
-            task_queue=self.config.task_queue,
-            start_signal=SignalName.INBOUND,
-            start_signal_args=[msg],
-        )
-        # Signals don't have ids in Temporal; return the workflow id as
-        # a stable handle the caller can correlate against.
-        return wf_id
 
     async def resolve_tool_call(
         self,
@@ -298,3 +357,10 @@ class AgentRuntime:
             current_run_id=thread.active_run_id,
             cancelled=thread.status is ThreadStatus.CANCELLED,
         )
+
+
+def _inbound(content: str | list[Block], tag: str | None) -> InboundMessage:
+    return InboundMessage(
+        content=BLOCKS.dump_python(content, mode="json") if isinstance(content, list) else content,
+        tag=tag,
+    )

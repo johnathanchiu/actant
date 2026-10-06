@@ -6,6 +6,11 @@ affect users.
 
 ## Unreleased
 
+- `AgentRuntime.spawn(agent_id, thread_id, content, *, parent_thread_id, once=True)` starts a
+  thread with its first message at most once and returns whether this call started it. A
+  second spawn of the same id (a worker restart, a replayed activity, two callers at once)
+  delivers nothing, including after Temporal has forgotten the workflow: the stores record that
+  the thread started.
 - `Sandbox.sync(paths=[...])` pushes just those files, one after another in the given order,
   and stops at the first that fails, so a file listed last (a result marker) is durable only
   once the files before it are. `sync()` with no paths still pushes the whole disk.
