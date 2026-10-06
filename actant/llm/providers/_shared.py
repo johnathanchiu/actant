@@ -7,6 +7,8 @@ Single-provider helpers live in their owning provider module:
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import uuid
 from collections.abc import Sequence
@@ -25,6 +27,12 @@ from actant.llm.messages import Message, ToolCall
 ToolSchema = dict[str, object]
 #: A content block in a provider's own request shape.
 WireBlock = dict[str, object]
+logger = logging.getLogger(__name__)
+
+TOOL_OUTPUT_UNAVAILABLE = (
+    "No output was recorded for this tool call. It may or may not have taken effect. "
+    "Check its effects before retrying; do not assume success."
+)
 
 
 def env_api_key(name: str, explicit: str | None = None) -> str:
@@ -123,4 +131,28 @@ def sanitize_tool_messages(
                 message.tool_call_id = f"call_{uuid.uuid4().hex}"
         sanitized.append(message)
 
-    return sanitized
+    # A real result anywhere in the request wins; a call with none (e.g. its turn was
+    # cancelled) gets an explicit interrupted output, and duplicate results are sent once.
+    answered = {message.tool_call_id for message in sanitized if message.role == "tool"}
+    paired: list[Message] = []
+    sent: set[str | None] = set()
+    for message in sanitized:
+        if message.role == "tool":
+            if message.tool_call_id in sent:
+                continue
+            sent.add(message.tool_call_id)
+        paired.append(message)
+        paired.extend(
+            _interrupted(call) for call in message.tool_calls or [] if call.id not in answered
+        )
+    return paired
+
+
+def _interrupted(call: ToolCall) -> Message:
+    logger.warning("tool output unavailable call_id=%s tool=%s", call.id, call.function.name)
+    return Message(
+        role="tool",
+        tool_call_id=call.id,
+        name=call.function.name,
+        content=json.dumps({"status": "interrupted", "error": TOOL_OUTPUT_UNAVAILABLE}),
+    )
