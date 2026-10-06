@@ -128,8 +128,10 @@ class LocalSandbox:
             stderr.decode(errors="replace"),
         )
 
-    async def sync(self) -> ExecResult:
-        """The directory is already durable; nothing to push."""
+    async def sync(self, paths: Sequence[str] | None = None) -> ExecResult:
+        """The directory is already durable; nothing to push. ``paths`` are checked."""
+        for path in paths or ():
+            self._path(path)
         return ExecResult(0, "", "")
 
     async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:

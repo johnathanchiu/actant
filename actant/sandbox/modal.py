@@ -52,8 +52,10 @@ import contextlib
 import importlib
 import json
 import logging
-from collections.abc import Mapping, Sequence
+import shlex
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlsplit
@@ -268,6 +270,7 @@ class ModalSandboxProvider:
             spec.env,
             root=DISK_PATH if disk_sync else MOUNT_PATH,
             sync_argv=self.sync_argv(spec, sandbox_id) if disk_sync else None,
+            push_argv=partial(self.push_argv, spec, sandbox_id) if disk_sync else None,
             sync_timeout_s=spec.sync_timeout_s,
             scrub_env=spec.scrub_env,
             service_port=spec.service_port if spec.services else None,
@@ -380,20 +383,36 @@ class ModalSandboxProvider:
         last files."""
         plan = self._plan(spec, sandbox_id)
         pushed = plan.pushed
-        skipped = [r.path for r in plan.others] + [m.path for m in plan.mounts]
-        skipped += [
-            f"{pushed.path}/{folder}" if pushed.path else folder for folder in spec.push_exclude
-        ]
         # s5cmd 2.3 matches a local file's absolute path, less its leading "/".
         excludes = [
             arg
-            for path in skipped
+            for path in _skipped(spec, plan)
             if _inside(path, pushed.path)
             for arg in ("--exclude", f"{_disk(path).lstrip('/')}/*")
         ]
         return self._s5cmd(
             "sync", "--no-follow-symlinks", *excludes, f"{_disk(pushed.path)}/", pushed.source.url
         )
+
+    def push_argv(self, spec: SandboxSpec, sandbox_id: str, paths: Sequence[str]) -> list[str]:
+        """Push just ``paths``, files relative to the disk, one at a time in the given order.
+        A failed copy stops the rest, so a path listed last reaches the bucket only after
+        every one before it did. Each must be inside the pushed entry and outside what
+        :meth:`sync_argv` skips."""
+        plan = self._plan(spec, sandbox_id)
+        pushed, skipped = plan.pushed, _skipped(spec, plan)
+        copies: list[str] = []
+        for path in paths:
+            if (
+                path == pushed.path
+                or not _inside(path, pushed.path)
+                or any(_inside(path, s) for s in skipped)
+            ):
+                raise ValueError(f"{path!r} is not a file the push sends")
+            key = path[len(pushed.path) + 1 :] if pushed.path else path
+            argv = self._s5cmd("cp", "--no-follow-symlinks", _disk(path), pushed.source.url + key)
+            copies.append(shlex.join(argv))
+        return ["sh", "-c", " && ".join(copies)]
 
     def _seed_config(self, pushed: Restore, seed: str, mounts: Sequence[Mount]) -> SeedConfig:
         """Pull ``seed`` onto a new disk while copying it into its pushed prefix."""
@@ -449,6 +468,15 @@ class _Plan:
     mounts: list[Mount]
 
 
+def _skipped(spec: SandboxSpec, plan: _Plan) -> list[str]:
+    """What a push leaves out: the other restore entries, the mounts and ``push_exclude``."""
+    pushed = plan.pushed
+    skipped = [r.path for r in plan.others] + [m.path for m in plan.mounts]
+    return skipped + [
+        f"{pushed.path}/{folder}" if pushed.path else folder for folder in spec.push_exclude
+    ]
+
+
 def _mounted(restore: Restore, mounts: Sequence[Mount]) -> list[str]:
     """The paths of the mounts inside ``restore``'s, relative to it."""
     start = len(restore.path) + 1 if restore.path else 0
@@ -474,6 +502,7 @@ class ModalSandbox:
         *,
         root: str = MOUNT_PATH,
         sync_argv: Sequence[str] | None = None,
+        push_argv: Callable[[Sequence[str]], list[str]] | None = None,
         scrub_env: Sequence[str] = (),
         service_port: int | None = None,
         sync_timeout_s: float = 300.0,
@@ -484,6 +513,7 @@ class ModalSandbox:
         self._scrub = tuple(scrub_env)
         self._root = root
         self._sync_argv = list(sync_argv) if sync_argv else None
+        self._push_argv = push_argv
         self.id = str(sandbox.object_id)
         self._service_port = service_port
         self._endpoint: Endpoint | None = None
@@ -554,21 +584,27 @@ class ModalSandbox:
         code = await process.wait.aio()
         return ExecResult(code, stdout, stderr, timed_out=code == 124)
 
-    async def sync(self) -> ExecResult:
-        """Push the disk to the bucket prefix (``disk_sync``). A no-op for a mount."""
-        if self._sync_argv is None:
+    async def sync(self, paths: Sequence[str] | None = None) -> ExecResult:
+        """Push the disk to the bucket prefix (``disk_sync``), or just ``paths`` in their
+        order (:meth:`ModalSandboxProvider.push_argv`). A no-op for a mount."""
+        if self._sync_argv is None or paths == []:
             return ExecResult(0, "", "")
+        if paths is None:
+            argv = self._sync_argv
+        elif self._push_argv is not None:
+            argv = self._push_argv(paths)
+        else:
+            raise ValueError("this sandbox was opened without a scoped push")
         # Unscrubbed: s5cmd needs the bucket keys that ``scrub_env`` usually lists.
         async with heartbeating():
-            return await self._bounded_sync()
+            return await self._bounded_sync(argv)
 
-    async def _bounded_sync(self) -> ExecResult:
+    async def _bounded_sync(self, argv: Sequence[str]) -> ExecResult:
         """The push, killed in the container after ``sync_timeout_s``; a Modal API call that
         hangs past that plus :data:`API_SLACK_S` is reported as timed out, never awaited."""
-        assert self._sync_argv is not None
         try:
             return await asyncio.wait_for(
-                self._run(self._sync_argv, timeout=self._sync_timeout),
+                self._run(argv, timeout=self._sync_timeout),
                 self._sync_timeout + API_SLACK_S,
             )
         except TimeoutError:
@@ -583,7 +619,7 @@ class ModalSandbox:
         """
         if not await self._stop_host() and self._sync_argv is not None:
             try:
-                pushed = await self._bounded_sync()
+                pushed = await self._bounded_sync(self._sync_argv)
                 if pushed.returncode:
                     tail = pushed.stderr[-500:]
                     _log.warning("%r: final push exited %d: %s", self, pushed.returncode, tail)

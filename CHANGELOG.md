@@ -4,6 +4,12 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `Sandbox.sync(paths=[...])` pushes just those files, one after another in the given order,
+  and stops at the first that fails, so a file listed last (a result marker) is durable only
+  once the files before it are. `sync()` with no paths still pushes the whole disk.
+
 ## 0.36.4
 
 - Providers: a tool call with no recorded output (e.g. its turn was cancelled) is sent with an

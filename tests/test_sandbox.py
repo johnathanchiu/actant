@@ -322,3 +322,10 @@ async def test_closing_survives_a_reclaimed_sandbox_and_an_unknown_key(tmp_path:
     await SandboxRegistry({"fake": provider}, store).close("k")
     await SandboxRegistry({"fake": provider}, store).close("never")
     assert await store.get("k") is None
+
+
+async def test_local_sandbox_sync_checks_its_paths(tmp_path: Path) -> None:
+    sb = LocalSandbox(tmp_path)
+    assert (await sb.sync(["room.py", "jobs/a/result.json"])).returncode == 0
+    with pytest.raises(ValueError, match="escapes"):
+        await sb.sync(["../outside.py"])
