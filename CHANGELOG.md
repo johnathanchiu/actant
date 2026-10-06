@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `AgentRuntime.spawn(agent_id, thread_id, content, *, parent_thread_id, once=True)` starts a
+  thread with its first message at most once and returns whether this call started it. A
+  second spawn of the same id (a worker restart, a replayed activity, two callers at once)
+  delivers nothing, including after Temporal has forgotten the workflow: the stores record that
+  the thread started.
+
 ## 0.36.4
 
 - Providers: a tool call with no recorded output (e.g. its turn was cancelled) is sent with an
