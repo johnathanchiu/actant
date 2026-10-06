@@ -19,6 +19,15 @@ def output(call_id, text="actual result"):
     return Message(role="tool", tool_call_id=call_id, name="write", content=text)
 
 
+def _text(message: Message) -> str:
+    assert isinstance(message.content, str)
+    return message.content
+
+
+def _body(message: Message) -> dict[str, str]:
+    return json.loads(_text(message))
+
+
 def test_saved_re8ad81_orphan_gets_uncertain_output_only_in_request(caplog):
     call_id = "call_loHJN40ZI9cYNTMIZvrn9lGG"
     messages = [assistant(call_id)]
@@ -27,12 +36,12 @@ def test_saved_re8ad81_orphan_gets_uncertain_output_only_in_request(caplog):
     assert [m.to_dict() for m in messages] == before
     assert len(paired) == 2
     assert paired[1].tool_call_id == call_id
-    assert json.loads(paired[1].content) == {
+    assert _body(paired[1]) == {
         "status": "interrupted",
         "error": TOOL_OUTPUT_UNAVAILABLE,
     }
-    assert "may or may not have taken effect" in paired[1].content
-    assert "Check its effects before retrying" in paired[1].content
+    assert "may or may not have taken effect" in _text(paired[1])
+    assert "Check its effects before retrying" in _text(paired[1])
     assert call_id in caplog.text
     wire = OpenAIProvider.convert_messages(paired)
     assert wire[1]["type"] == "function_call_output"
@@ -51,7 +60,7 @@ def test_parallel_calls_only_fill_missing_results():
     paired = sanitize_tool_messages(messages)
     results = [m for m in paired if m.role == "tool"]
     assert [m.tool_call_id for m in results] == ["b", "c", "a"]
-    assert json.loads(results[0].content)["status"] == "interrupted"
+    assert _body(results[0])["status"] == "interrupted"
     assert [m.content for m in results[1:]] == ["actual result", "actual result"]
 
 
@@ -71,7 +80,7 @@ def test_cancelled_history_reopened_with_new_user_request():
     ]
     paired = sanitize_tool_messages(messages)
     assert paired[1].tool_call_id == "old"
-    assert json.loads(paired[1].content)["status"] == "interrupted"
+    assert _body(paired[1])["status"] == "interrupted"
     assert paired[2].content == "new assignment"
     assert paired[-1].content == "actual result"
 
