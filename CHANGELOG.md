@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.36.4
+
+- Providers: a tool call with no recorded output (e.g. its turn was cancelled) is sent with an
+  explicit interrupted output saying it may or may not have taken effect, instead of the
+  request failing with "No tool output found". A real result later in the history wins, and
+  duplicate results are sent once.
+
 ## 0.36.3
 
 - OpenAI/Azure: a request the provider's content filter refuses (`content_policy_violation`,
