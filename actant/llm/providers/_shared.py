@@ -131,33 +131,28 @@ def sanitize_tool_messages(
                 message.tool_call_id = f"call_{uuid.uuid4().hex}"
         sanitized.append(message)
 
-    # Work from the complete request snapshot: a real result appearing later in the
-    # history wins. A cancelled workflow's surviving model activity can commit a call
-    # after cancellation repaired its transcript; never send that orphan to a provider.
-    result_ids = {message.tool_call_id for message in sanitized if message.role == "tool"}
+    # A real result anywhere in the request wins; a call with none (e.g. its turn was
+    # cancelled) gets an explicit interrupted output, and duplicate results are sent once.
+    answered = {message.tool_call_id for message in sanitized if message.role == "tool"}
     paired: list[Message] = []
-    seen_results: set[str | None] = set()
+    sent: set[str | None] = set()
     for message in sanitized:
         if message.role == "tool":
-            if message.tool_call_id in seen_results:
+            if message.tool_call_id in sent:
                 continue
-            seen_results.add(message.tool_call_id)
+            sent.add(message.tool_call_id)
         paired.append(message)
-        if message.role == "assistant":
-            for call in message.tool_calls or []:
-                if call.id in result_ids:
-                    continue
-                logger.warning(
-                    "tool output unavailable call_id=%s tool=%s", call.id, call.function.name
-                )
-                paired.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=call.id,
-                        name=call.function.name,
-                        content=json.dumps(
-                            {"status": "interrupted", "error": TOOL_OUTPUT_UNAVAILABLE}
-                        ),
-                    )
-                )
+        paired.extend(
+            _interrupted(call) for call in message.tool_calls or [] if call.id not in answered
+        )
     return paired
+
+
+def _interrupted(call: ToolCall) -> Message:
+    logger.warning("tool output unavailable call_id=%s tool=%s", call.id, call.function.name)
+    return Message(
+        role="tool",
+        tool_call_id=call.id,
+        name=call.function.name,
+        content=json.dumps({"status": "interrupted", "error": TOOL_OUTPUT_UNAVAILABLE}),
+    )
