@@ -8,6 +8,9 @@ affect users.
 
 - `AgentRuntime.spawn(agent_id, thread_id, content, *, parent_thread_id)` starts a thread with its
   first message once; spawning it again does nothing.
+- `Sandbox.sync(paths=[...])` pushes just those files, one after another in the given order,
+  and stops at the first that fails, so a file listed last (a result marker) is durable only
+  once the files before it are. `sync()` with no paths still pushes the whole disk.
 
 ## 0.36.4
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -637,3 +638,60 @@ def test_push_exclude_keeps_folders_out_of_every_push() -> None:
 def test_push_exclude_holds_relative_folders(folder: str) -> None:
     with pytest.raises(ValueError, match="push_exclude"):
         SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, push_exclude=(folder,))
+
+
+async def test_a_scoped_sync_pushes_just_its_paths_in_order(
+    monkeypatch: pytest.MonkeyPatch, provider: ModalSandboxProvider
+) -> None:
+    fake = _FakeModal()
+    _use(monkeypatch, fake)
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, push_exclude=("renders",))
+    sandbox = await provider.open(spec, sandbox_id="t1")
+    fake.execs.clear()
+
+    assert (await sandbox.sync([])).returncode == 0 and fake.execs == []
+    await sandbox.sync(["room.py", "jobs/a/result.json"])
+    ((argv, _),) = fake.execs
+    assert argv[:2] == ("timeout", "300") and argv[2:4] == ("sh", "-c")
+    copy = " ".join([*S5, "cp", "--no-follow-symlinks"])
+    assert argv[4] == (
+        f"{copy} {DISK_PATH}/room.py s3://b/sandboxes/t1/room.py"
+        f" && {copy} {DISK_PATH}/jobs/a/result.json s3://b/sandboxes/t1/jobs/a/result.json"
+    )
+    for outside in ("", "renders/top.png"):
+        with pytest.raises(ValueError, match="push sends"):
+            await sandbox.sync([outside])
+
+
+def test_a_scoped_push_keys_paths_under_a_nested_pushed_entry() -> None:
+    provider = ModalSandboxProvider(app_name="app", bucket="b")
+    spec = SandboxSpec(
+        restore=(
+            Restore(Location("b", "sandboxes/t1/"), "work", push=True),
+            Restore(Location("b", "captures/c1/"), "work/capture", push=False),
+        ),
+    )
+    argv = provider.push_argv(spec, "t1", ["work/a b.py"])
+    assert (
+        argv[-1]
+        == f"s5cmd cp --no-follow-symlinks '{DISK_PATH}/work/a b.py' 's3://b/sandboxes/t1/a b.py'"
+    )
+    for outside in ("work", "other.py", "work/capture/f.jpg"):
+        with pytest.raises(ValueError, match="push sends"):
+            provider.push_argv(spec, "t1", [outside])
+
+
+def test_a_scoped_push_stops_at_the_first_failed_copy(tmp_path: Path) -> None:
+    """The last path is pushed only after every earlier one: the shell runs them in turn."""
+    log = tmp_path / "log"
+    fake_s5cmd = tmp_path / "s5cmd"
+    fake_s5cmd.write_text(
+        f'#!/bin/sh\necho "$3" >> {log}\ncase "$3" in *missing*) exit 1;; esac\n'
+    )
+    fake_s5cmd.chmod(0o755)
+    provider = ModalSandboxProvider(app_name="app", bucket="b")
+    spec = SandboxSpec(backend="modal", storage=Storage.DISK_SYNC)
+    argv = provider.push_argv(spec, "t1", ["a.py", "missing.glb", "result.json"])
+    env = {"PATH": f"{tmp_path}:/usr/bin:/bin"}
+    assert subprocess.run(argv, env=env, check=False).returncode == 1
+    assert log.read_text().split() == [f"{DISK_PATH}/a.py", f"{DISK_PATH}/missing.glb"]

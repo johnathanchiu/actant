@@ -76,10 +76,14 @@ class Sandbox(Protocol):
         env: Mapping[str, str] | None = None,
     ) -> ExecResult: ...
 
-    async def sync(self) -> ExecResult:
+    async def sync(self, paths: Sequence[str] | None = None) -> ExecResult:
         """Push the sandbox's files to durable storage. A no-op where storage already is
         the filesystem (``mount``, ``local``). ``close`` also pushes, best effort, so
-        calling this is only needed for a checkpoint mid-run."""
+        calling this is only needed for a checkpoint mid-run.
+
+        ``paths`` pushes just those files, one after another in the given order, and stops
+        at the first that fails: a file listed last is durable only once the ones before it
+        are. ``None`` pushes the whole disk, in no particular order."""
         ...
 
     async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
