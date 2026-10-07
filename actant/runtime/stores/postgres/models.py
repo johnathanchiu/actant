@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Dialect, ForeignKey, Index, Integer, Text, func, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Boolean, DateTime, Dialect, ForeignKey, Index, Integer, Text, func, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
@@ -59,8 +59,10 @@ class ActantThreadModel(ActantRuntimeBase):
     parent_turn_id: Mapped[str | None] = mapped_column(Text)
     parent_tool_call_id: Mapped[str | None] = mapped_column(Text)
     sandbox_id: Mapped[str | None] = mapped_column(Text)
-    #: ``AgentThread.sandbox_access`` as its fields; NULL: the definition's.
-    sandbox_access: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    #: ``AgentThread.sandbox_access``, field by field; all NULL: the definition's.
+    sandbox_user: Mapped[str | None] = mapped_column(Text)
+    sandbox_writable: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    sandbox_scratch: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

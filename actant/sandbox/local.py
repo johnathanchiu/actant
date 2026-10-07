@@ -23,10 +23,10 @@ from pathlib import Path
 import actant.sandbox.host as host
 from actant.sandbox.access import (
     SETUP_TIMEOUT_S,
+    AccessSetup,
     SandboxAccess,
     enforceable,
     run_argv,
-    setup_argv,
 )
 from actant.sandbox.base import Endpoint, Entry, ExecResult, ImageBucket, Sandbox, SandboxSpec
 from actant.sandbox.protocol import EntryConfig, Header, HostConfig
@@ -66,8 +66,7 @@ class LocalSandbox:
         self.host_process = host_process
         self._env = dict(env or {})
         self._scrub = tuple(scrub_env)
-        #: Whether the directory was made root's and read-only for ``exec(access=...)``.
-        self._locked = False
+        self._access = AccessSetup(str(self.root), self._as_root)
         self._warned = False
 
     def _path(self, path: str) -> Path:
@@ -116,7 +115,7 @@ class LocalSandbox:
         """With ``access``, the command runs as the agent's user where this process is root
         (a container); elsewhere, a developer's machine, it runs as this user, unenforced."""
         if access is not None and enforceable():
-            await self._ready(access)
+            await self._access.ready(access)
             argv = run_argv(access, argv)
         elif access is not None and not self._warned:
             _log.warning(
@@ -131,14 +130,8 @@ class LocalSandbox:
             env={**inherited, **(env or {})},
         )
 
-    async def _ready(self, access: SandboxAccess) -> None:
-        argv = setup_argv(access, str(self.root), lock=not self._locked)
-        ready = await self._run(argv, cwd=self.root, timeout=SETUP_TIMEOUT_S, env=_environment({}))
-        if ready.returncode:
-            raise RuntimeError(
-                f"sandbox access for {access.user!r} failed: {ready.stderr.strip()}"
-            )
-        self._locked = True
+    async def _as_root(self, argv: list[str]) -> ExecResult:
+        return await self._run(argv, cwd=self.root, timeout=SETUP_TIMEOUT_S, env=_environment({}))
 
     async def _run(
         self, argv: Sequence[str], *, cwd: Path, timeout: float, env: Mapping[str, str]

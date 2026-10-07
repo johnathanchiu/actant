@@ -12,8 +12,8 @@ affect users.
   elsewhere fail with `Permission denied`). Needs root in the sandbox (Modal, `disk_sync`);
   the `local` backend off root runs unenforced with a warning.
 - Per-thread access: `AgentRuntime.spawn(..., sandbox_access=...)` and `send_message(...)` on
-  first contact record a `SandboxAccess` on the thread (new `actant_threads.sandbox_access`
-  column, migration `c7e3a9d15f42`), so threads of one definition each own their own folder.
+  first contact record a `SandboxAccess` on the thread (new `actant_threads.sandbox_user`,
+  `sandbox_writable` and `sandbox_scratch` columns, migration `2c17f5c373e8`), so threads of one definition each own their own folder.
   Tools get the thread's access, else the definition's.
 
 ## 0.37.0

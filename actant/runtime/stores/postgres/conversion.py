@@ -33,21 +33,22 @@ def thread_from_row(row: ActantThreadModel) -> AgentThread:
         parent_turn_id=row.parent_turn_id,
         parent_tool_call_id=row.parent_tool_call_id,
         sandbox_id=row.sandbox_id,
-        sandbox_access=access_from_row(row.sandbox_access),
+        sandbox_access=thread_access(row),
     )
 
 
-def access_to_row(access: SandboxAccess | None) -> dict[str, object] | None:
-    if access is None:
+def thread_access(row: ActantThreadModel) -> SandboxAccess | None:
+    if row.sandbox_user is None:
         return None
-    return {"user": access.user, "writable": list(access.writable), "scratch": access.scratch}
+    return SandboxAccess(
+        row.sandbox_user, row.sandbox_writable or (), scratch=row.sandbox_scratch is not False
+    )
 
 
-def access_from_row(row: dict[str, object] | None) -> SandboxAccess | None:
-    if row is None:
-        return None
-    writable = cast(list[str], row["writable"])
-    return SandboxAccess(str(row["user"]), writable, scratch=bool(row["scratch"]))
+def set_thread_access(row: ActantThreadModel, access: SandboxAccess | None) -> None:
+    row.sandbox_user = None if access is None else access.user
+    row.sandbox_writable = None if access is None else list(access.writable)
+    row.sandbox_scratch = None if access is None else access.scratch
 
 
 def run_from_row(row: ActantRunModel) -> AgentRun:

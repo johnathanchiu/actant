@@ -17,12 +17,21 @@ not root, as it ignores a spec's ``image`` and ``gpu``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import os
 import re
 import shutil
-from collections.abc import Sequence
+import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
+
+_log = logging.getLogger(__name__)
+
+#: A setup that waits longer than this for another agent's is logged.
+SLOW_WAIT_S = 0.1
 
 #: How long readying an agent's user and paths may take (a ``chown -R`` of its folders).
 SETUP_TIMEOUT_S = 120
@@ -31,16 +40,22 @@ SETUP_TIMEOUT_S = 120
 _USER = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 
 #: Run as root before an agent's command. Positional: user, scratch dir ("" for none),
-#: workspace root, "lock" to make the workspace root's and read-only to others ("" not to),
-#: then the absolute writable paths. Everything is idempotent: ``useradd`` only for a new
-#: user, ``chown`` again every call so files root wrote since (a publish, a restore) are
-#: the agent's again. A writable path that does not exist yet is skipped.
+#: workspace root, the marker that records the workspace was restricted ("" to skip that
+#: step), "new" for a user this sandbox handle has not readied ("" otherwise), then the
+#: absolute writable paths. Restricting makes the workspace root's and read-only to others,
+#: once per workspace: ``mkdir`` of the marker is atomic, so of two handles one restricts.
+#: Then the agent's paths that exist are chowned (printed, one per line, so the caller
+#: knows which it owns now); one that does not exist yet is skipped.
 _SETUP = """set -e
-user=$1 scratch=$2 root=$3 lock=$4; shift 4
-id -u "$user" >/dev/null 2>&1 || useradd -M -s /bin/bash "$user"
-if [ -n "$lock" ]; then chown -R 0:0 "$root"; chmod -R go-w,a+rX "$root"; fi
-if [ -n "$scratch" ]; then mkdir -p "$scratch"; chown "$user" "$scratch"; chmod 700 "$scratch"; fi
-for path in "$@"; do if [ -e "$path" ]; then chown -R "$user" "$path"; fi; done
+user=$1 scratch=$2 root=$3 marker=$4 new=$5; shift 5
+if [ -n "$marker" ] && mkdir "$marker" 2>/dev/null; then
+  { chown -R 0:0 "$root" && chmod -R go-w,a+rX "$root"; } || { rmdir "$marker"; exit 1; }
+fi
+if [ -n "$new" ]; then
+  id -u "$user" >/dev/null 2>&1 || useradd -M -s /bin/bash "$user"
+  if [ -n "$scratch" ]; then mkdir -p "$scratch"; chown "$user" "$scratch"; chmod 700 "$scratch"; fi
+fi
+for path in "$@"; do if [ -e "$path" ]; then chown -R "$user" "$path"; echo "$path"; fi; done
 """
 
 
@@ -89,8 +104,16 @@ def enforceable() -> bool:
     )
 
 
-def setup_argv(access: SandboxAccess, root: str, *, lock: bool, tmp: str = "/tmp") -> list[str]:
+def setup_argv(
+    access: SandboxAccess,
+    root: str,
+    *,
+    restrict_workspace: bool,
+    new_user: bool,
+    tmp: str = "/tmp",
+) -> list[str]:
     """The root command that readies ``access`` in the workspace at ``root`` (absolute)."""
+    marker = f"{tmp}/actant-restricted-{hashlib.sha256(root.encode()).hexdigest()[:12]}"
     return [
         "bash",
         "-c",
@@ -99,9 +122,73 @@ def setup_argv(access: SandboxAccess, root: str, *, lock: bool, tmp: str = "/tmp
         access.user,
         access.scratch_dir(tmp) or "",
         root,
-        "lock" if lock else "",
+        marker if restrict_workspace else "",
+        "new" if new_user else "",
         *(f"{root}/{path}" for path in access.writable),
     ]
+
+
+class _Ran(Protocol):
+    """What ``AccessSetup`` reads of a finished command (an ``ExecResult``)."""
+
+    @property
+    def returncode(self) -> int: ...
+    @property
+    def stdout(self) -> str: ...
+    @property
+    def stderr(self) -> str: ...
+
+
+class AccessSetup:
+    """One sandbox's readying of its agents.
+
+    The first setup restricts the workspace; an agent's first makes its user and scratch dir
+    and chowns its paths. Setups take a mutex, so no agent's chown races the workspace's
+    restriction; commands never hold it, so agents' commands run in parallel. Once an agent
+    owns all its ``writable`` paths, later calls skip setup and the mutex altogether; a path
+    that did not exist yet is chowned on a later call once it does. ``run`` runs as root.
+    """
+
+    def __init__(self, root: str, run: Callable[[list[str]], Awaitable[_Ran]]) -> None:
+        self._root = root
+        self._run = run
+        self._mutex = asyncio.Lock()
+        self._restricted = False
+        #: Per readied user, the absolute paths it owns.
+        self._owned: dict[str, set[str]] = {}
+
+    def _missing(self, access: SandboxAccess) -> set[str] | None:
+        """The writable paths ``access.user`` does not own yet; ``None`` for a new user."""
+        owned = self._owned.get(access.user)
+        if owned is None:
+            return None
+        return {f"{self._root}/{path}" for path in access.writable} - owned
+
+    async def ready(self, access: SandboxAccess) -> None:
+        if self._missing(access) == set():
+            return
+        waited = time.monotonic()
+        async with self._mutex:
+            waited = time.monotonic() - waited
+            if waited > SLOW_WAIT_S:
+                _log.info("sandbox access for %r waited %.2fs for setup", access.user, waited)
+            missing = self._missing(access)
+            if missing == set():
+                return
+            argv = setup_argv(
+                access,
+                self._root,
+                restrict_workspace=not self._restricted,
+                new_user=missing is None,
+            )
+            result = await self._run(argv)
+            if result.returncode:
+                raise RuntimeError(
+                    f"sandbox access for {access.user!r} failed: {result.stderr.strip()}"
+                )
+            self._restricted = True
+            owned = self._owned.setdefault(access.user, set())
+            owned.update(line for line in result.stdout.splitlines() if line)
 
 
 def run_argv(access: SandboxAccess, argv: Sequence[str], *, tmp: str = "/tmp") -> list[str]:

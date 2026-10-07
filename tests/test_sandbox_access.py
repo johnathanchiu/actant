@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,7 +21,8 @@ from actant.sandbox.modal import ModalSandbox
 from actant.agents import AgentDefinition
 from actant.llm.providers.fake import FakeLLM
 from actant.runtime.stores import InMemoryRuntimeStores
-from actant.runtime.stores.postgres.conversion import access_from_row, access_to_row
+from actant.runtime.stores.postgres.conversion import set_thread_access, thread_access
+from actant.runtime.stores.postgres.models import ActantThreadModel
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.activities.runs import RunActivities
 from actant.runtime.temporal.activities.tools import ToolActivities
@@ -58,33 +60,69 @@ def test_run_argv_runs_as_the_user_with_its_scratch() -> None:
 
 def test_setup_argv_passes_paths_as_arguments() -> None:
     access = SandboxAccess("agent", writable=["objects/chair", "room.py"])
-    argv = setup_argv(access, "/ws", lock=True)
+    argv = setup_argv(access, "/ws", restrict_workspace=True, new_user=True)
     assert argv[:2] == ["bash", "-c"] and "useradd -M -s /bin/bash" in argv[2]
-    assert argv[4:] == [
-        *("agent", "/tmp/actant-agent", "/ws", "lock"),
-        *("/ws/objects/chair", "/ws/room.py"),
-    ]
-    unlocked = setup_argv(SandboxAccess("agent", scratch=False), "/ws", lock=False)
-    assert unlocked[4:] == ["agent", "", "/ws", ""]
+    user, scratch, root, marker, new, *paths = argv[4:]
+    assert (user, scratch, root, new) == ("agent", "/tmp/actant-agent", "/ws", "new")
+    assert marker.startswith("/tmp/actant-restricted-")
+    assert paths == ["/ws/objects/chair", "/ws/room.py"]
+    again = setup_argv(
+        SandboxAccess("agent", scratch=False), "/ws", restrict_workspace=False, new_user=False
+    )
+    assert again[4:] == ["agent", "", "/ws", "", ""]
+
+
+def _setup(argv: Sequence[str]) -> dict[str, Any] | None:
+    """A setup command's fields, or ``None`` for an agent's command."""
+    if "actant-access" not in argv:
+        return None
+    user, _, _, marker, new, *paths = argv[argv.index("actant-access") + 1 :]
+    return {"user": user, "restrict": bool(marker), "new": bool(new), "paths": paths}
 
 
 class _Modal:
-    """A Modal sandbox handle that records each ``exec`` and exits with ``code``."""
+    """A Modal sandbox handle that records each ``exec``. A setup exits with the next of
+    ``codes`` (0 once they run out) after ``setup_s``, printing the paths it owns; an
+    agent's command waits on ``command`` when given."""
 
-    def __init__(self, code: int = 0) -> None:
+    def __init__(
+        self,
+        codes: Sequence[int] = (),
+        *,
+        setup_s: float = 0.0,
+        command: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self.execs: list[tuple[str, ...]] = []
         self.object_id = "sb-1"
+        self.active_setups = 0
+        self.most_setups = 0
+        codes = list(codes)
 
         async def run(*argv: str, **_: Any) -> Any:
             self.execs.append(argv)
-            stderr = "useradd: denied" if code else ""
+            setup = _setup(argv)
+            code, stdout = 0, ""
+            if setup is not None:
+                self.active_setups += 1
+                self.most_setups = max(self.most_setups, self.active_setups)
+                try:
+                    await asyncio.sleep(setup_s)
+                finally:
+                    self.active_setups -= 1
+                code = codes.pop(0) if codes else 0
+                stdout = "".join(f"{path}\n" for path in setup["paths"])
+            elif command is not None:
+                await command()
             return SimpleNamespace(
-                stdout=SimpleNamespace(read=SimpleNamespace(aio=_value(""))),
-                stderr=SimpleNamespace(read=SimpleNamespace(aio=_value(stderr))),
+                stdout=SimpleNamespace(read=SimpleNamespace(aio=_value(stdout))),
+                stderr=SimpleNamespace(read=SimpleNamespace(aio=_value("denied" if code else ""))),
                 wait=SimpleNamespace(aio=_value(code)),
             )
 
         self.exec = SimpleNamespace(aio=run)
+
+    def setups(self) -> list[dict[str, Any]]:
+        return [s for s in map(_setup, self.execs) if s is not None]
 
 
 def _value(value: object) -> Any:
@@ -94,17 +132,32 @@ def _value(value: object) -> Any:
     return fn
 
 
-async def test_modal_exec_with_access_readies_then_runs_as_the_user() -> None:
+async def test_modal_exec_readies_once_then_runs_as_the_user() -> None:
     fake = _Modal()
     sandbox = ModalSandbox(fake, {}, root="/ws", scrub_env=("KEY",))
     access = SandboxAccess("agent", writable=["mine"])
     await sandbox.exec(["bash", "-lc", "true"], timeout=5, access=access)
     await sandbox.exec(["bash", "-lc", "true"], timeout=5, access=access)
-    setup, command, again, _ = fake.execs
-    # The workspace is locked once; the agent's paths are chowned on every call.
-    assert setup[:2] == ("timeout", "120") and setup[-2:] == ("lock", "/ws/mine")
-    assert again[-2:] == ("", "/ws/mine")
+    # One setup: once the agent owns its paths, later calls skip it.
+    assert fake.setups() == [
+        {"user": "agent", "restrict": True, "new": True, "paths": ["/ws/mine"]}
+    ]
+    setup, command, again = fake.execs
+    assert setup[:2] == ("timeout", "120") and command == again
     assert command[2:] == ("env", "-uKEY", *run_argv(access, ["bash", "-lc", "true"]))
+
+
+async def test_a_path_that_appears_later_is_chowned_then() -> None:
+    fake = _Modal()
+    sandbox = ModalSandbox(fake, {}, root="/ws")
+    await sandbox.exec(["true"], timeout=5, access=SandboxAccess("agent", writable=["a"]))
+    await sandbox.exec(["true"], timeout=5, access=SandboxAccess("agent", writable=["a", "b"]))
+    assert fake.setups()[1] == {
+        "user": "agent",
+        "restrict": False,
+        "new": False,
+        "paths": ["/ws/a", "/ws/b"],
+    }
 
 
 async def test_modal_exec_without_access_is_unchanged() -> None:
@@ -113,10 +166,67 @@ async def test_modal_exec_without_access_is_unchanged() -> None:
     assert fake.execs == [("timeout", "5", "true")]
 
 
-async def test_modal_setup_failure_raises() -> None:
-    sandbox = ModalSandbox(_Modal(code=1), {}, root="/ws")
-    with pytest.raises(RuntimeError, match="useradd: denied"):
-        await sandbox.exec(["true"], timeout=5, access=SandboxAccess("agent"))
+async def test_concurrent_first_execs_restrict_the_workspace_once() -> None:
+    fake = _Modal(setup_s=0.05)
+    sandbox = ModalSandbox(fake, {}, root="/ws")
+    chair = SandboxAccess("chair", writable=["chair"])
+    table = SandboxAccess("table", writable=["table"])
+    await asyncio.gather(
+        sandbox.exec(["true"], timeout=5, access=chair),
+        sandbox.exec(["true"], timeout=5, access=table),
+    )
+    setups = fake.setups()
+    assert fake.most_setups == 1  # serialized: no chown races the restriction
+    assert [s["restrict"] for s in setups] == [True, False]
+    assert sorted((s["user"], tuple(s["paths"])) for s in setups) == [
+        ("chair", ("/ws/chair",)),
+        ("table", ("/ws/table",)),
+    ]
+
+
+async def test_agents_commands_run_in_parallel(caplog: pytest.LogCaptureFixture) -> None:
+    started = 0
+    both = asyncio.Event()
+
+    async def command() -> None:
+        nonlocal started
+        started += 1
+        if started == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 2)  # times out if commands were serialized
+
+    fake = _Modal(setup_s=0.15, command=command)
+    sandbox = ModalSandbox(fake, {}, root="/ws")
+    with caplog.at_level(logging.INFO, logger="actant.sandbox.access"):
+        await asyncio.gather(
+            sandbox.exec(["sleep"], timeout=5, access=SandboxAccess("chair")),
+            sandbox.exec(["sleep"], timeout=5, access=SandboxAccess("table")),
+        )
+    assert any("waited" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_failed_setup_releases_the_mutex_and_is_retried() -> None:
+    fake = _Modal(codes=[1])
+    sandbox = ModalSandbox(fake, {}, root="/ws")
+    access = SandboxAccess("agent", writable=["mine"])
+    with pytest.raises(RuntimeError, match="denied"):
+        await sandbox.exec(["true"], timeout=5, access=access)
+    await asyncio.wait_for(sandbox.exec(["true"], timeout=5, access=access), 1)
+    assert [s["restrict"] for s in fake.setups()] == [True, True]
+
+
+async def test_a_cancelled_setup_releases_the_mutex() -> None:
+    fake = _Modal(setup_s=10)
+    sandbox = ModalSandbox(fake, {}, root="/ws")
+    task = asyncio.create_task(sandbox.exec(["true"], timeout=5, access=SandboxAccess("chair")))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    fake_fast = _Modal()
+    sandbox._sandbox = fake_fast  # the next setup returns at once
+    await asyncio.wait_for(sandbox.exec(["true"], timeout=5, access=SandboxAccess("table")), 1)
+    assert fake_fast.setups()[0]["restrict"]  # the cancelled one never recorded it
 
 
 async def test_local_exec_as_root_readies_once_then_runs_as_the_user(
@@ -134,7 +244,8 @@ async def test_local_exec_as_root_readies_once_then_runs_as_the_user(
     ) -> ExecResult:
         del self, cwd, timeout, env
         ran.append(list(argv))
-        return ExecResult(0, "", "")
+        setup = _setup(argv)
+        return ExecResult(0, "\n".join(setup["paths"]) if setup else "", "")
 
     monkeypatch.setattr(local_backend, "enforceable", lambda: True)
     monkeypatch.setattr(LocalSandbox, "_run", run)
@@ -142,9 +253,14 @@ async def test_local_exec_as_root_readies_once_then_runs_as_the_user(
     access = SandboxAccess("agent", writable=["mine"])
     await sandbox.exec(["true"], timeout=5, access=access)
     await sandbox.exec(["true"], timeout=5, access=access)
-    root = str(sandbox.root)
-    assert ran[0][-2:] == ["lock", f"{root}/mine"] and ran[2][-2:] == ["", f"{root}/mine"]
-    assert ran[1] == ran[3] == run_argv(access, ["true"])
+    setup, first, second = ran
+    assert _setup(setup) == {
+        "user": "agent",
+        "restrict": True,
+        "new": True,
+        "paths": [f"{sandbox.root}/mine"],
+    }
+    assert first == second == run_argv(access, ["true"])
 
 
 async def test_local_exec_off_root_runs_unenforced_and_warns_once(
@@ -168,16 +284,28 @@ def test_two_threads_of_one_definition_own_only_their_folders() -> None:
     table = SandboxAccess(SandboxAccess.user_for("thread-table"), writable=["objects/table"])
     assert chair.user != table.user
     for mine, theirs in ((chair, table), (table, chair)):
-        setup = setup_argv(mine, "/ws", lock=False)
-        assert setup[4] == mine.user and setup[-1] == f"/ws/{mine.writable[0]}"
-        assert f"/ws/{theirs.writable[0]}" not in setup and theirs.user not in setup
+        setup = _setup(setup_argv(mine, "/ws", restrict_workspace=False, new_user=True))
+        assert setup == {
+            "user": mine.user,
+            "restrict": False,
+            "new": True,
+            "paths": [f"/ws/{mine.writable[0]}"],
+        }
         assert run_argv(mine, ["true"])[:3] == ["runuser", "-u", mine.user]
 
 
-def test_access_round_trips_through_a_row() -> None:
+async def test_access_round_trips_through_a_thread_row() -> None:
     access = SandboxAccess("agent", writable=["a", "b/c"], scratch=False)
-    assert access_from_row(access_to_row(access)) == access
-    assert access_to_row(None) is None and access_from_row(None) is None
+    row = ActantThreadModel(agent_id="a", thread_id="t", status="idle")
+    set_thread_access(row, access)
+    assert (row.sandbox_user, row.sandbox_writable, row.sandbox_scratch) == (
+        "agent",
+        ["a", "b/c"],
+        False,
+    )
+    assert thread_access(row) == access
+    set_thread_access(row, None)
+    assert thread_access(row) is None and row.sandbox_writable is None
 
 
 _DEFAULT = SandboxAccess("agent-default", writable=["shared"])
@@ -237,23 +365,30 @@ async def test_as_root_the_os_refuses_another_agents_files(tmp_path: Path) -> No
             "echo a > mine/a.txt; echo b > theirs/b.txt; echo c >> shared.txt; "
             'cat shared.txt; echo d > "$TMPDIR/d.txt" && echo scratch ok'
         )
-        result = await sandbox.exec(["bash", "-c", script], timeout=30, access=access)
+        # A second thread of the same definition owns its own folder, not the first's; both
+        # start at once, so their setups race the workspace's restriction.
+        other = SandboxAccess(f"{user}-2", writable=["theirs"])
+        result, theirs = await asyncio.gather(
+            sandbox.exec(["bash", "-c", script], timeout=30, access=access),
+            sandbox.exec(
+                ["bash", "-c", "echo f > theirs/f.txt; echo g > mine/g.txt"],
+                timeout=30,
+                access=other,
+            ),
+        )
         assert result.stderr.count("Permission denied") == 2
         assert "root's" in result.stdout and "scratch ok" in result.stdout
         assert (tmp_path / "mine" / "a.txt").is_file()
         assert not (tmp_path / "theirs" / "b.txt").exists()
         assert (tmp_path / "shared.txt").read_text() == "root's\n"
-        # A second thread of the same definition owns its own folder, not the first's.
-        other = SandboxAccess(f"{user}-2", writable=["theirs"])
-        result = await sandbox.exec(
-            ["bash", "-c", "echo f > theirs/f.txt; echo g > mine/g.txt"], timeout=30, access=other
-        )
-        assert result.stderr.count("Permission denied") == 1
+        assert theirs.stderr.count("Permission denied") == 1
         assert (tmp_path / "theirs" / "f.txt").is_file()
         assert not (tmp_path / "mine" / "g.txt").exists()
         plain = await sandbox.exec(["bash", "-c", "echo e > theirs/e.txt"], timeout=30)
         assert plain.returncode == 0  # without access, as before
     finally:
+        marker = setup_argv(access, str(sandbox.root), restrict_workspace=True, new_user=False)[7]
+        shutil.rmtree(marker, ignore_errors=True)
         for name in (user, f"{user}-2"):
             shutil.rmtree(f"/tmp/actant-{name}", ignore_errors=True)
             subprocess.run(["userdel", name], capture_output=True, check=False)
