@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Per-agent sandbox access: `AgentDefinition(sandbox_access=SandboxAccess(user, writable))`
+  reaches tools as `CallContext.sandbox_access`, and `Sandbox.exec(..., access=...)` runs the
+  command as that agent's own Unix user, which can write only its `writable` paths (writes
+  elsewhere fail with `Permission denied`). Needs root in the sandbox (Modal, `disk_sync`);
+  the `local` backend off root runs unenforced with a warning.
+
 ## 0.37.0
 
 - `AgentRuntime.spawn(agent_id, thread_id, content, *, parent_thread_id)` starts a thread with its

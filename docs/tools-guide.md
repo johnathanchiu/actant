@@ -228,6 +228,38 @@ agent, thread, run and call ids without a sandbox. `ctx.parent_thread_id` is
 set when the calling thread is a subagent; `TaskTool` refuses to spawn from
 one, so delegation is one level deep.
 
+### Per-agent write access
+
+Agents that share one sandbox can each be held to their own files. Declare what an
+agent owns on its definition and pass it to `exec`:
+
+```python
+from actant.sandbox import SandboxAccess
+
+agent = AgentDefinition(
+    ...,
+    sandbox_access=SandboxAccess(
+        user=SandboxAccess.user_for("kitchen-planner"),
+        writable=["areas/kitchen", "notes/kitchen.md"],
+    ),
+)
+
+# in a tool that declared the sandbox and takes a CallContext
+await ctx.sandbox.exec(["bash", "-lc", command], timeout=120, access=ctx.sandbox_access)
+```
+
+The command runs as the agent's own Unix user (`runuser`), made once per sandbox. The
+first such call makes the workspace root's and read-only to agents; every call chowns the
+agent's `writable` paths (relative to the workspace root; ones that do not exist yet are
+skipped) to it. A write anywhere else fails with `Permission denied` in stderr. Reads stay
+open, and `scratch=True` (the default) gives it a private `/tmp/actant-<user>` as `HOME`
+and `TMPDIR`. `exec` without `access` is unchanged.
+
+Enforcing needs root, `useradd` and `runuser` where commands run, and a disk that keeps
+owners: Modal with `storage="disk_sync"`, not a `mount` bucket. The `local` backend runs as
+the developer, so there it logs a warning once and runs the command unenforced, as it
+ignores `image` and `gpu`; run as root (a container) it enforces like Modal.
+
 Backends: `local` (a directory under `mount`, subprocesses; explicitly
 registered) and `modal` (`actant[modal]`: a `modal.Sandbox` whose files live in
 your object storage, either mounted or restored to local disk and pushed back
