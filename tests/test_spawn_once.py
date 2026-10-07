@@ -18,6 +18,7 @@ from actant.runtime.temporal.activities import TemporalRuntimeActivities
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import TemporalRuntimeConfig
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
+from actant.sandbox import SandboxAccess
 from actant.tools.registry import ToolRegistry
 from runtime_fixtures import static_agents
 
@@ -108,5 +109,26 @@ async def test_spawn_after_the_thread_ran_delivers_nothing() -> None:
         await runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT)
         await asyncio.sleep(0.5)
         assert await _user_messages(stores) == ["brief"]
+
+    await _with_runtime(stores, _agent(replies=2), body)
+
+
+@pytest.mark.asyncio
+async def test_threads_of_one_definition_keep_the_access_they_were_started_with() -> None:
+    stores = InMemoryRuntimeStores()
+    chair = SandboxAccess("author-chair", writable=["objects/chair"])
+    table = SandboxAccess("author-table", writable=["objects/table"])
+
+    async def started(thread_id: str) -> bool:
+        messages = await stores.messages.list_for_thread(_AGENT, thread_id)
+        return any(m.role == "assistant" for m in messages)
+
+    async def body(runtime: AgentRuntime) -> None:
+        await runtime.spawn(_AGENT, "chair", "brief", sandbox_access=chair)
+        await runtime.send_message(_AGENT, "table", "brief", sandbox_access=table)
+        await _wait_for(lambda: started("chair"))
+        await _wait_for(lambda: started("table"))
+        assert (await stores.threads.get(_AGENT, "chair")).sandbox_access == chair
+        assert (await stores.threads.get(_AGENT, "table")).sandbox_access == table
 
     await _with_runtime(stores, _agent(replies=2), body)

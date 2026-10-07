@@ -19,6 +19,7 @@ from actant.llm.messages import Message
 from actant.runtime.compaction import compaction_of
 from actant.runtime.session import message_to_parts, tool_result_content
 from actant.runtime.stores.postgres.conversion import (
+    access_to_row,
     message_from_header,
     message_part_row,
     run_from_row,
@@ -77,6 +78,7 @@ class SQLAlchemyThreadStore:
                 model.parent_turn_id = thread.parent_turn_id
                 model.parent_tool_call_id = thread.parent_tool_call_id
                 model.sandbox_id = thread.sandbox_id
+                model.sandbox_access = access_to_row(thread.sandbox_access)
                 model.updated_at = datetime.now(UTC)
 
     async def list_children(self, thread_id: str) -> list[AgentThread]:

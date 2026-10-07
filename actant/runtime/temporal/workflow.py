@@ -231,6 +231,7 @@ class AgentThreadWorkflow:
                 max_turns=payload.max_turns_per_run,
                 parent_thread_id=payload.parent_thread_id,
                 sandbox_id=payload.sandbox_id,
+                sandbox_access=payload.sandbox_access,
                 summarizer=(payload.context_compaction or CompactionConfig()).summarizer,
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,

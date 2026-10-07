@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
+from actant.sandbox.access import SandboxAccess
+
 
 # === Configuration ===
 
@@ -290,6 +292,9 @@ class ThreadInput:
     #: The id of a sandbox a product opened that this thread works in (recorded on the
     #: thread as ``AgentThread.sandbox_id``); ``None`` gives it a sandbox of its own.
     sandbox_id: str | None = None
+    #: What this thread may write in its sandbox (recorded on the thread as
+    #: ``AgentThread.sandbox_access``); ``None``: the agent definition's.
+    sandbox_access: SandboxAccess | None = None
     #: JSON its starter gives each of this run's tool calls (``CallContext.context``): what a
     #: tool would otherwise query its starter's workflow for, which a busy workflow refuses
     #: once its query buffer is full. Kept across ``continue_as_new``.
@@ -307,6 +312,7 @@ class StartRunInput:
     max_turns: int | None
     parent_thread_id: str | None = None
     sandbox_id: str | None = None
+    sandbox_access: SandboxAccess | None = None
     #: ``CompactionConfig.summarizer``, checked before the run opens: a name the worker
     #: never registered fails the thread once, rather than every run that compacts.
     summarizer: str | None = None

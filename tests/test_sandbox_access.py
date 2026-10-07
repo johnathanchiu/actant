@@ -9,7 +9,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -17,6 +17,17 @@ import actant.sandbox.local as local_backend
 from actant.sandbox import ExecResult, LocalSandbox, SandboxAccess
 from actant.sandbox.access import enforceable, run_argv, setup_argv
 from actant.sandbox.modal import ModalSandbox
+from actant.agents import AgentDefinition
+from actant.llm.providers.fake import FakeLLM
+from actant.runtime.stores import InMemoryRuntimeStores
+from actant.runtime.stores.postgres.conversion import access_from_row, access_to_row
+from actant.runtime.temporal.activities.context import ActivityContext
+from actant.runtime.temporal.activities.runs import RunActivities
+from actant.runtime.temporal.activities.tools import ToolActivities
+from actant.runtime.temporal.types import StartRunInput
+from actant.tools.calls import ToolCallRecord
+from actant.tools.registry import ToolRegistry
+from runtime_fixtures import static_agents
 
 
 def test_access_rejects_bad_users_and_paths() -> None:
@@ -152,6 +163,66 @@ async def test_local_exec_off_root_runs_unenforced_and_warns_once(
     ]
 
 
+def test_two_threads_of_one_definition_own_only_their_folders() -> None:
+    chair = SandboxAccess(SandboxAccess.user_for("thread-chair"), writable=["objects/chair"])
+    table = SandboxAccess(SandboxAccess.user_for("thread-table"), writable=["objects/table"])
+    assert chair.user != table.user
+    for mine, theirs in ((chair, table), (table, chair)):
+        setup = setup_argv(mine, "/ws", lock=False)
+        assert setup[4] == mine.user and setup[-1] == f"/ws/{mine.writable[0]}"
+        assert f"/ws/{theirs.writable[0]}" not in setup and theirs.user not in setup
+        assert run_argv(mine, ["true"])[:3] == ["runuser", "-u", mine.user]
+
+
+def test_access_round_trips_through_a_row() -> None:
+    access = SandboxAccess("agent", writable=["a", "b/c"], scratch=False)
+    assert access_from_row(access_to_row(access)) == access
+    assert access_to_row(None) is None and access_from_row(None) is None
+
+
+_DEFAULT = SandboxAccess("agent-default", writable=["shared"])
+
+
+async def _context_access(
+    stores: InMemoryRuntimeStores, thread_id: str, monkeypatch: pytest.MonkeyPatch
+) -> SandboxAccess | None:
+    agent = AgentDefinition(
+        id="author",
+        name="author",
+        persona="",
+        llm=FakeLLM([]),
+        tools=ToolRegistry([]),
+        sandbox_access=_DEFAULT,
+    )
+    context = ActivityContext(stores=stores, resolve_agent=static_agents({}))
+
+    async def sandbox_for(*_: object) -> LocalSandbox:
+        return LocalSandbox(Path("/tmp"))
+
+    monkeypatch.setattr(context, "sandbox_for", sandbox_for)
+    record = SimpleNamespace(
+        agent_id="author", thread_id=thread_id, run_id="r", id="tc", turn_id="t"
+    )
+    tool = SimpleNamespace(needs_sandbox=True)
+    ctx = await ToolActivities(context)._call_context(agent, tool, cast(ToolCallRecord, record))
+    return ctx.sandbox_access
+
+
+async def test_a_thread_started_with_access_keeps_it_over_the_definitions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = InMemoryRuntimeStores()
+    runs = RunActivities(ActivityContext(stores=stores, resolve_agent=static_agents({})))
+    chair = SandboxAccess("author-chair", writable=["objects/chair"])
+    await runs.start_run(StartRunInput("author", "chair", "r1", None, sandbox_access=chair))
+    # A later start (a restart, a replay) without it keeps what was recorded.
+    await runs.start_run(StartRunInput("author", "chair", "r2", None))
+    await stores.threads.get_or_create("author", "plain")
+    assert (await stores.threads.get("author", "chair")).sandbox_access == chair
+    assert await _context_access(stores, "chair", monkeypatch) == chair
+    assert await _context_access(stores, "plain", monkeypatch) == _DEFAULT
+
+
 @pytest.mark.skipif(not enforceable(), reason="needs root, useradd and runuser (a sandbox)")
 async def test_as_root_the_os_refuses_another_agents_files(tmp_path: Path) -> None:
     os.chmod(tmp_path, 0o755)
@@ -172,8 +243,17 @@ async def test_as_root_the_os_refuses_another_agents_files(tmp_path: Path) -> No
         assert (tmp_path / "mine" / "a.txt").is_file()
         assert not (tmp_path / "theirs" / "b.txt").exists()
         assert (tmp_path / "shared.txt").read_text() == "root's\n"
+        # A second thread of the same definition owns its own folder, not the first's.
+        other = SandboxAccess(f"{user}-2", writable=["theirs"])
+        result = await sandbox.exec(
+            ["bash", "-c", "echo f > theirs/f.txt; echo g > mine/g.txt"], timeout=30, access=other
+        )
+        assert result.stderr.count("Permission denied") == 1
+        assert (tmp_path / "theirs" / "f.txt").is_file()
+        assert not (tmp_path / "mine" / "g.txt").exists()
         plain = await sandbox.exec(["bash", "-c", "echo e > theirs/e.txt"], timeout=30)
         assert plain.returncode == 0  # without access, as before
     finally:
-        shutil.rmtree(f"/tmp/actant-{user}", ignore_errors=True)
-        subprocess.run(["userdel", user], capture_output=True, check=False)
+        for name in (user, f"{user}-2"):
+            shutil.rmtree(f"/tmp/actant-{name}", ignore_errors=True)
+            subprocess.run(["userdel", name], capture_output=True, check=False)

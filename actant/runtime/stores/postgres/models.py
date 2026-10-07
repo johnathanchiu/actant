@@ -59,6 +59,8 @@ class ActantThreadModel(ActantRuntimeBase):
     parent_turn_id: Mapped[str | None] = mapped_column(Text)
     parent_tool_call_id: Mapped[str | None] = mapped_column(Text)
     sandbox_id: Mapped[str | None] = mapped_column(Text)
+    #: ``AgentThread.sandbox_access`` as its fields; NULL: the definition's.
+    sandbox_access: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

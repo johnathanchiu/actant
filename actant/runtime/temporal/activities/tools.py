@@ -230,7 +230,9 @@ class ToolActivities:
             tool_call_id=record.id,
             turn_id=record.turn_id,
             sandbox=sandbox,
-            sandbox_access=None if sandbox is None else agent.sandbox_access,
+            sandbox_access=None
+            if sandbox is None
+            else thread.sandbox_access or agent.sandbox_access,
             parent_thread_id=thread.parent_thread_id,
             context=context or {},
         )

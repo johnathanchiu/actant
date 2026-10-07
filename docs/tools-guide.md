@@ -248,6 +248,23 @@ agent = AgentDefinition(
 await ctx.sandbox.exec(["bash", "-lc", command], timeout=120, access=ctx.sandbox_access)
 ```
 
+When one definition runs many threads that each own a folder, give each thread its own
+access when starting it; it is recorded on the thread, so restarts and replays keep it,
+and takes the place of the definition's (which stays the default):
+
+```python
+await runtime.spawn(
+    "author",
+    "author-chair-1",
+    brief,
+    sandbox_access=SandboxAccess(
+        user=SandboxAccess.user_for("author-chair-1"), writable=["objects/chair-1"]
+    ),
+)
+```
+
+`send_message(..., sandbox_access=...)` does the same on a thread's first contact.
+
 The command runs as the agent's own Unix user (`runuser`), made once per sandbox. The
 first such call makes the workspace root's and read-only to agents; every call chowns the
 agent's `writable` paths (relative to the workspace root; ones that do not exist yet are
