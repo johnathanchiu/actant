@@ -68,6 +68,10 @@ class SandboxAccess:
     from an id). ``writable`` are paths relative to the workspace root that it owns; the rest
     of the workspace it can read but not change. ``scratch`` gives it a private directory
     outside the workspace as ``HOME`` and ``TMPDIR``.
+
+    A process running as root that writes inside an agent's writable paths must preserve the
+    file's owner (e.g. chown to the previous owner after an atomic replace); actant does not
+    re-chown on every call.
     """
 
     user: str

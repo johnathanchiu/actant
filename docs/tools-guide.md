@@ -270,8 +270,7 @@ first such call makes the workspace root's and read-only to agents, once; an age
 call chowns its `writable` paths (relative to the workspace root) to it. Setup is
 serialized per sandbox, the commands themselves never are, and once an agent owns all its
 paths later calls skip setup entirely; a path that did not exist yet is chowned on the
-first call after it appears. Files root writes inside an owned folder later (a publish)
-are root's until the agent's user is given them again. A write anywhere else fails with
+first call after it appears. A process running as root that writes inside an agent's writable paths must preserve the file's owner (e.g. chown to the previous owner after an atomic replace); actant does not re-chown on every call. A write anywhere else fails with
 `Permission denied` in stderr. Reads stay
 open, and `scratch=True` (the default) gives it a private `/tmp/actant-<user>` as `HOME`
 and `TMPDIR`. `exec` without `access` is unchanged.
