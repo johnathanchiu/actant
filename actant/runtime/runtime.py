@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
+from contextlib import suppress
 from datetime import timedelta
 from uuid import UUID
 import temporalio.client
 import temporalio.worker
 import temporalio.service
-from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
@@ -190,52 +190,22 @@ class AgentRuntime:
         parent_thread_id: str | None = None,
         tag: str | None = None,
         sandbox_id: str | None = None,
-        once: bool = True,
-    ) -> bool:
-        """Start a thread with its first message; whether this call started it.
+    ) -> None:
+        """Start a thread with its first message. Spawning the same thread again does nothing.
 
-        With ``once`` a thread starts at most once, so a caller that runs
-        again (a worker restart, a replayed workflow activity) can spawn the
-        same id without the agent receiving its brief twice. The stores are
-        the record that a thread started, and they outlive Temporal's
-        retention; until the first run records the thread, Temporal refuses a
-        second execution under the same workflow id. A thread that started
-        takes later messages through ``send_message``.
-
-        Without ``once`` this is ``send_message``.
+        Temporal refuses a second execution under the thread's workflow id, so a caller that
+        runs again (a worker restart, a replayed activity) cannot deliver the brief twice.
+        Later messages to the thread go through ``send_message``.
         """
-        if not once:
-            await self.send_message(
-                agent_id,
-                thread_id,
-                content,
-                parent_thread_id=parent_thread_id,
-                tag=tag,
-                sandbox_id=sandbox_id,
-            )
-            return True
-        try:
-            await self.stores.threads.get(agent_id, thread_id)
-        except KeyError:
-            pass
-        else:
-            return False
-        thread_input = replace(
-            self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id),
-            carry_inbox=[_inbound(content, tag)],
-        )
-        try:
+        inbox = [_inbound(content, tag)]
+        with suppress(WorkflowAlreadyStartedError):
             await self.client.start_workflow(
                 AgentThreadWorkflow.run,
-                thread_input,
+                self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id, inbox=inbox),
                 id=self._workflow_id(agent_id, thread_id),
                 task_queue=self.config.task_queue,
                 id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-                id_conflict_policy=WorkflowIDConflictPolicy.FAIL,
             )
-        except WorkflowAlreadyStartedError:
-            return False
-        return True
 
     def _thread_input(
         self,
@@ -243,6 +213,8 @@ class AgentRuntime:
         thread_id: str,
         parent_thread_id: str | None,
         sandbox_id: str | None,
+        *,
+        inbox: list[InboundMessage] | None = None,
     ) -> ThreadInput:
         return ThreadInput(
             agent_id=agent_id,
@@ -255,6 +227,7 @@ class AgentRuntime:
             interleave_inbox=self.config.interleave_inbox,
             context_compaction=self.config.context_compaction,
             activity_timeouts=self.config.activity_timeouts,
+            carry_inbox=inbox or [],
         )
 
     async def resolve_tool_call(

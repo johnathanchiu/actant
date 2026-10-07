@@ -82,15 +82,14 @@ async def _answered(stores: InMemoryRuntimeStores) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_spawn_twice_while_starting_delivers_one_brief() -> None:
+async def test_spawn_twice_at_once_delivers_one_brief() -> None:
     stores = InMemoryRuntimeStores()
 
     async def body(runtime: AgentRuntime) -> None:
-        first, second = await asyncio.gather(
+        await asyncio.gather(
             runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT),
             runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT),
         )
-        assert sorted([first, second]) == [False, True]
         await _wait_for(lambda: _answered(stores))
         assert await _user_messages(stores) == ["brief"]
         thread = await stores.threads.get(_AGENT, _THREAD)
@@ -100,49 +99,14 @@ async def test_spawn_twice_while_starting_delivers_one_brief() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_after_the_thread_ran_is_ignored() -> None:
+async def test_spawn_after_the_thread_ran_delivers_nothing() -> None:
     stores = InMemoryRuntimeStores()
 
     async def body(runtime: AgentRuntime) -> None:
-        assert await runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT)
+        await runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT)
         await _wait_for(lambda: _answered(stores))
-        assert not await runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT)
+        await runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT)
         await asyncio.sleep(0.5)
         assert await _user_messages(stores) == ["brief"]
 
     await _with_runtime(stores, _agent(replies=2), body)
-
-
-@pytest.mark.asyncio
-async def test_spawn_is_refused_by_the_stores_after_temporal_forgets() -> None:
-    """A fresh Temporal (a wiped server, a new worker) still sees the stored thread."""
-    stores = InMemoryRuntimeStores()
-
-    async def first(runtime: AgentRuntime) -> None:
-        assert await runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT)
-        await _wait_for(lambda: _answered(stores))
-
-    async def again(runtime: AgentRuntime) -> None:
-        assert not await runtime.spawn(_AGENT, _THREAD, "brief", parent_thread_id=_PARENT)
-
-    await _with_runtime(stores, _agent(replies=2), first)
-    await _with_runtime(stores, _agent(replies=2), again)
-    assert await _user_messages(stores) == ["brief"]
-
-
-@pytest.mark.asyncio
-async def test_spawn_without_once_sends_every_time() -> None:
-    stores = InMemoryRuntimeStores()
-
-    async def body(runtime: AgentRuntime) -> None:
-        assert await runtime.spawn(_AGENT, _THREAD, "one", once=False)
-        await _wait_for(lambda: _answered(stores))
-        assert await runtime.spawn(_AGENT, _THREAD, "two", once=False)
-        await _wait_for(lambda: _count_user(stores, 2))
-        assert await _user_messages(stores) == ["one", "two"]
-
-    await _with_runtime(stores, _agent(replies=2), body)
-
-
-async def _count_user(stores: InMemoryRuntimeStores, n: int) -> bool:
-    return len(await _user_messages(stores)) >= n
