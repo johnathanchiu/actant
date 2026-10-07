@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import secrets
 import signal
@@ -20,6 +21,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import actant.sandbox.host as host
+from actant.sandbox.access import (
+    SETUP_TIMEOUT_S,
+    AccessSetup,
+    SandboxAccess,
+    enforceable,
+    run_argv,
+)
 from actant.sandbox.base import Endpoint, Entry, ExecResult, ImageBucket, Sandbox, SandboxSpec
 from actant.sandbox.protocol import EntryConfig, Header, HostConfig
 
@@ -28,6 +36,8 @@ HOST_START_TIMEOUT_S = 60
 #: :mod:`actant.sandbox.entry`, named not imported: running a module this package imports
 #: with ``-m`` would load it twice.
 ENTRY_MODULE = "actant.sandbox.entry"
+
+_log = logging.getLogger(__name__)
 
 
 def _environment(env: Mapping[str, str]) -> dict[str, str]:
@@ -56,6 +66,8 @@ class LocalSandbox:
         self.host_process = host_process
         self._env = dict(env or {})
         self._scrub = tuple(scrub_env)
+        self._access = AccessSetup(str(self.root), self._as_root)
+        self._warned = False
 
     def _path(self, path: str) -> Path:
         target = (self.root / path).resolve()
@@ -98,12 +110,36 @@ class LocalSandbox:
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
+        access: SandboxAccess | None = None,
     ) -> ExecResult:
+        """With ``access``, the command runs as the agent's user where this process is root
+        (a container); elsewhere, a developer's machine, it runs as this user, unenforced."""
+        if access is not None and enforceable():
+            await self._access.ready(access)
+            argv = run_argv(access, argv)
+        elif access is not None and not self._warned:
+            _log.warning(
+                "%s: not root, so sandbox access for %r is not enforced", self.id, access.user
+            )
+            self._warned = True
         inherited = {k: v for k, v in _environment(self._env).items() if k not in self._scrub}
+        return await self._run(
+            argv,
+            cwd=self._path(cwd) if cwd else self.root,
+            timeout=timeout,
+            env={**inherited, **(env or {})},
+        )
+
+    async def _as_root(self, argv: list[str]) -> ExecResult:
+        return await self._run(argv, cwd=self.root, timeout=SETUP_TIMEOUT_S, env=_environment({}))
+
+    async def _run(
+        self, argv: Sequence[str], *, cwd: Path, timeout: float, env: Mapping[str, str]
+    ) -> ExecResult:
         process = await asyncio.create_subprocess_exec(
             *argv,
-            cwd=self._path(cwd) if cwd else self.root,
-            env={**inherited, **(env or {})},
+            cwd=cwd,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,

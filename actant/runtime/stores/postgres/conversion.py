@@ -18,6 +18,7 @@ from actant.runtime.stores.postgres.models import (
 )
 from actant.runtime.types.session import MessagePart, PartKind, WaitStatus
 from actant.runtime.types.threads import AgentRun, AgentThread, RunStatus, ThreadStatus
+from actant.sandbox.access import SandboxAccess
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 
@@ -32,7 +33,22 @@ def thread_from_row(row: ActantThreadModel) -> AgentThread:
         parent_turn_id=row.parent_turn_id,
         parent_tool_call_id=row.parent_tool_call_id,
         sandbox_id=row.sandbox_id,
+        sandbox_access=thread_access(row),
     )
+
+
+def thread_access(row: ActantThreadModel) -> SandboxAccess | None:
+    if row.sandbox_user is None:
+        return None
+    return SandboxAccess(
+        row.sandbox_user, row.sandbox_writable or (), scratch=row.sandbox_scratch is not False
+    )
+
+
+def set_thread_access(row: ActantThreadModel, access: SandboxAccess | None) -> None:
+    row.sandbox_user = None if access is None else access.user
+    row.sandbox_writable = None if access is None else list(access.writable)
+    row.sandbox_scratch = None if access is None else access.scratch
 
 
 def run_from_row(row: ActantRunModel) -> AgentRun:

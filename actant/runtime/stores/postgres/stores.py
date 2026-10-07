@@ -22,6 +22,7 @@ from actant.runtime.stores.postgres.conversion import (
     message_from_header,
     message_part_row,
     run_from_row,
+    set_thread_access,
     thread_from_row,
     tool_call_from_row,
     tool_result_part_row,
@@ -77,6 +78,7 @@ class SQLAlchemyThreadStore:
                 model.parent_turn_id = thread.parent_turn_id
                 model.parent_tool_call_id = thread.parent_tool_call_id
                 model.sandbox_id = thread.sandbox_id
+                set_thread_access(model, thread.sandbox_access)
                 model.updated_at = datetime.now(UTC)
 
     async def list_children(self, thread_id: str) -> list[AgentThread]:

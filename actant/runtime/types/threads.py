@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from actant.sandbox.access import SandboxAccess
+
 
 class ThreadStatus(StrEnum):
     IDLE = "idle"
@@ -46,6 +48,9 @@ class AgentThread:
     #: through ``SandboxRegistry.open``): its tools attach to it and never close it.
     #: ``None``: the thread's own sandbox, under the thread's id, opened on first use.
     sandbox_id: str | None = None
+    #: What this thread may write in its sandbox, set by whoever started it; ``None``: the
+    #: agent definition's ``sandbox_access``.
+    sandbox_access: SandboxAccess | None = None
 
 
 @dataclass

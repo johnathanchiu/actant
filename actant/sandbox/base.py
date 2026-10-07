@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from actant.sandbox.access import SandboxAccess
 from actant.sandbox.protocol import ServiceConfig
 
 
@@ -57,6 +58,10 @@ class Sandbox(Protocol):
     boundary: code running as the same user can read another process's
     ``/proc/<pid>/environ`` or call the service host.
 
+    ``exec`` with ``access`` runs the command as that agent's own Unix user (see
+    :mod:`actant.sandbox.access`): it writes only its ``writable`` paths, and a write
+    elsewhere fails with ``Permission denied`` in stderr. Without it, as before.
+
     """
 
     id: str
@@ -74,6 +79,7 @@ class Sandbox(Protocol):
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
+        access: SandboxAccess | None = None,
     ) -> ExecResult: ...
 
     async def sync(self, paths: Sequence[str] | None = None) -> ExecResult:

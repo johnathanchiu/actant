@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from actant.llm.base import LLMClient
 from actant.llm.messages import Message
+from actant.sandbox.access import SandboxAccess
 from actant.sandbox.base import SandboxSpec
 from actant.tools.registry import ToolRegistry
 
@@ -27,6 +28,9 @@ class AgentDefinition:
     #: Where this agent's sandboxed tools run. ``None`` means no tool may
     #: declare ``needs_sandbox``.
     sandbox: SandboxSpec | None = None
+    #: What this agent may write in its sandbox, for an agent that shares one with others.
+    #: Tools receive it as ``CallContext.sandbox_access`` and pass it to ``Sandbox.exec``.
+    sandbox_access: SandboxAccess | None = None
     #: How a run ends. ``reply``: a turn with no tool calls completes it,
     #: which is right for chat. ``terminal``: only a terminal tool result
     #: (``finish``, or any result with ``metadata["terminal"]``) completes

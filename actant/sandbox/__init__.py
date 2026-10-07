@@ -4,6 +4,7 @@ A standalone layer: the agent runtime depends on it, and it imports nothing from
 runtime, threads, runs or models.
 """
 
+from actant.sandbox.access import SandboxAccess
 from actant.sandbox.base import (
     ArtifactRef,
     ArtifactSink,
@@ -45,6 +46,7 @@ __all__ = [
     "RemoteRunner",
     "Runner",
     "Sandbox",
+    "SandboxAccess",
     "SandboxProvider",
     "SandboxRunner",
     "SandboxSpec",

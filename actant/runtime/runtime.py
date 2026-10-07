@@ -43,6 +43,7 @@ from actant.runtime.temporal.types import (
 from actant.runtime.temporal.workflow import WORKFLOWS, AgentThreadWorkflow
 from actant.runtime.thread import ThreadHandle
 from actant.runtime.types.threads import ThreadStatus
+from actant.sandbox.access import SandboxAccess
 from actant.tools.calls import ToolCallStatus
 from actant.sandbox.base import ArtifactSink
 from actant.sandbox.registry import SandboxRegistry
@@ -155,6 +156,7 @@ class AgentRuntime:
         parent_thread_id: str | None = None,
         tag: str | None = None,
         sandbox_id: str | None = None,
+        sandbox_access: SandboxAccess | None = None,
     ) -> str:
         """Signal the thread workflow with a new inbound message.
 
@@ -163,6 +165,8 @@ class AgentRuntime:
         see ``CallContext.parent_thread_id``. ``sandbox_id`` names a sandbox the
         caller opened (``SandboxRegistry.open``) for the thread to work in; it is
         recorded on the thread's first run and the thread never closes it.
+        ``sandbox_access`` is what this thread may write in it, in place of the agent
+        definition's (``SandboxAccess``); recorded on the first run like ``sandbox_id``.
 
         Uses ``signal_with_start`` so the workflow is created on first
         contact and signalled on every subsequent call. Idempotent:
@@ -171,7 +175,7 @@ class AgentRuntime:
         wf_id = self._workflow_id(agent_id, thread_id)
         await self.client.start_workflow(
             AgentThreadWorkflow.run,
-            self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id),
+            self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id, sandbox_access),
             id=wf_id,
             task_queue=self.config.task_queue,
             start_signal=SignalName.INBOUND,
@@ -190,18 +194,27 @@ class AgentRuntime:
         parent_thread_id: str | None = None,
         tag: str | None = None,
         sandbox_id: str | None = None,
+        sandbox_access: SandboxAccess | None = None,
     ) -> None:
         """Start a thread with its first message. Spawning the same thread again does nothing.
 
         Temporal refuses a second execution under the thread's workflow id, so a caller that
         runs again (a worker restart, a replayed activity) cannot deliver the brief twice.
-        Later messages to the thread go through ``send_message``.
+        Later messages to the thread go through ``send_message``. ``sandbox_id`` and
+        ``sandbox_access`` are as for ``send_message``.
         """
         inbox = [_inbound(content, tag)]
         with suppress(WorkflowAlreadyStartedError):
             await self.client.start_workflow(
                 AgentThreadWorkflow.run,
-                self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id, inbox=inbox),
+                self._thread_input(
+                    agent_id,
+                    thread_id,
+                    parent_thread_id,
+                    sandbox_id,
+                    sandbox_access,
+                    inbox=inbox,
+                ),
                 id=self._workflow_id(agent_id, thread_id),
                 task_queue=self.config.task_queue,
                 id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
@@ -213,6 +226,7 @@ class AgentRuntime:
         thread_id: str,
         parent_thread_id: str | None,
         sandbox_id: str | None,
+        sandbox_access: SandboxAccess | None,
         *,
         inbox: list[InboundMessage] | None = None,
     ) -> ThreadInput:
@@ -224,6 +238,7 @@ class AgentRuntime:
             history_size_threshold=self.config.history_size_threshold,
             parent_thread_id=parent_thread_id,
             sandbox_id=sandbox_id,
+            sandbox_access=sandbox_access,
             interleave_inbox=self.config.interleave_inbox,
             context_compaction=self.config.context_compaction,
             activity_timeouts=self.config.activity_timeouts,

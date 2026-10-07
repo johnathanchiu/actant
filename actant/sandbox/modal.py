@@ -62,6 +62,7 @@ from urllib.parse import urlsplit
 
 import actant.sandbox.entry as entry
 import actant.sandbox.host as host
+from actant.sandbox.access import SETUP_TIMEOUT_S, AccessSetup, SandboxAccess, run_argv
 from actant.heartbeat import heartbeating
 from actant.sandbox.base import (
     Endpoint,
@@ -517,6 +518,7 @@ class ModalSandbox:
         self.id = str(sandbox.object_id)
         self._service_port = service_port
         self._endpoint: Endpoint | None = None
+        self._access = AccessSetup(root, self._as_root)
 
     async def endpoint(self, *, refresh: bool = False) -> Endpoint | None:
         """A connect token for the service port, minted once and again on ``refresh``.
@@ -558,13 +560,20 @@ class ModalSandbox:
         cwd: str | None = None,
         timeout: float,
         env: Mapping[str, str] | None = None,
+        access: SandboxAccess | None = None,
     ) -> ExecResult:
         # The SDK drops ``None`` values from ``env`` rather than unsetting them, and
         # secrets are container-wide, so ``env -u`` (argv, no shell) removes them here.
         unset = [f"-u{name}" for name in self._scrub if name not in (env or {})]
         prefix = ["env", *unset] if unset else []
         async with heartbeating():
+            if access is not None:
+                await self._access.ready(access)
+                argv = run_argv(access, argv)
             return await self._run([*prefix, *argv], cwd=cwd, timeout=timeout, env=env)
+
+    async def _as_root(self, argv: list[str]) -> ExecResult:
+        return await self._run(argv, timeout=SETUP_TIMEOUT_S)
 
     async def _run(
         self,

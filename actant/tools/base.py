@@ -11,6 +11,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
+from actant.sandbox.access import SandboxAccess
 from actant.sandbox.base import Sandbox
 
 ToolSchema = dict[str, object]
@@ -107,6 +108,9 @@ class CallContext:
     tool_call_id: str
     turn_id: str
     sandbox: Sandbox | None = None
+    #: The agent's ``sandbox_access``, beside ``sandbox``: pass it to ``sandbox.exec`` to run
+    #: as the agent's own user.
+    sandbox_access: SandboxAccess | None = None
     #: Set when the calling thread is itself a subagent. One level of delegation
     #: only: a tool that spawns threads refuses when this is set.
     parent_thread_id: str | None = None
