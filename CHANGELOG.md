@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.37.0
 
 - `AgentRuntime.spawn(agent_id, thread_id, content, *, parent_thread_id)` starts a thread with its
   first message once; spawning it again does nothing.
