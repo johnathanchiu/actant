@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.38.0
 
 - Per-agent sandbox access: `AgentDefinition(sandbox_access=SandboxAccess(user, writable))`
   reaches tools as `CallContext.sandbox_access`, and `Sandbox.exec(..., access=...)` runs the
