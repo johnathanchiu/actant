@@ -6,6 +6,7 @@ Skipped unless s5cmd is on PATH and moto's server is importable
 
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import subprocess
@@ -234,3 +235,40 @@ def test_a_push_never_follows_a_link(endpoint: str, tmp_path: Path) -> None:
     assert _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*") == [
         "scenes/s1/room.py", "survey/cloud.npz"
     ]  # fmt: skip
+
+
+def test_an_included_file_lands_where_the_full_push_puts_it(endpoint: str, tmp_path: Path) -> None:
+    """``scenes`` is excluded but each scene's ``scene.glb`` is included: the bucket gets just
+    those, at the keys a push without the exclude gives them, and a second push sends nothing."""
+    bucket = f"include-{uuid.uuid4().hex[:12]}"
+    assert _s5(endpoint, "mb", f"s3://{bucket}").returncode == 0
+    provider = ModalSandboxProvider(app_name="x", bucket=bucket, endpoint_url=endpoint)
+    disk = tmp_path / "disk"
+    names = (
+        "room.py", "scenes/a/scene.glb", "scenes/a/frames/0001.jpg", "scenes/b/scene.glb",
+        "scenes/b/deep/scene.glb", "scenes/c/cache/scene.glb", "scenes/d/cache/scene.glb",
+    )  # fmt: skip
+    for name in names:
+        (disk / name).parent.mkdir(parents=True, exist_ok=True)
+        (disk / name).write_text(name)
+        # older than the upload, as a file between pushes is; s5cmd re-sends same-second ones
+        os.utime(disk / name, (1_000_000_000, 1_000_000_000))
+    local = DISK_PATH[1:], str(disk)[1:]
+
+    def push(spec: SandboxSpec, sandbox_id: str) -> str:
+        argv = [arg.replace(*local) for arg in provider.sync_argv(spec, sandbox_id)]
+        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
+
+    included = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        push_exclude=("scenes", "scenes/d"),
+        push_include=("scenes/*/scene.glb",),
+    )
+    push(included, "t1")
+    push(SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), "full")
+    keys = _keys(endpoint, f"s3://{bucket}/sandboxes/t1/*")
+    # ``*`` stays within one folder, and the nested exclude ``scenes/d`` still holds
+    assert keys == ["room.py", "scenes/a/scene.glb", "scenes/b/scene.glb"]
+    assert set(keys) <= set(_keys(endpoint, f"s3://{bucket}/sandboxes/full/*"))
+    assert push(included, "t1") == ""

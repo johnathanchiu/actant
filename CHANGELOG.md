@@ -4,6 +4,13 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `SandboxSpec(push_include=("scenes/*/scene.glb",))`: files inside a `push_exclude` folder
+  that every `disk_sync` push still sends, at the keys a push without that exclude would give
+  them. Each glob runs as its own `s5cmd sync` (unchanged files are skipped) under every other
+  exclude; one inside a restore entry or a mount is rejected. No includes: the push is as before.
+
 ## 0.38.1
 
 - `LocalSandbox.close()` no longer hangs when a process the service host started outlives the
