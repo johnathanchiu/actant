@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.39.0
 
 - `SandboxSpec(push_include=("scenes/*/scene.glb",))`: files inside a `push_exclude` folder
   that every `disk_sync` push still sends, at the keys a push without that exclude would give
