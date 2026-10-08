@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,6 +89,10 @@ class Counter:
 
     async def env(self, name: str) -> dict[str, str | None]:
         return {"host": os.environ.get(name), "script": script_env().get(name)}
+
+    async def spawn(self) -> int:
+        """A child that outlives the host with the host's stdout, as a worker pool's does."""
+        return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"]).pid
 
 
 #: The host a test serves ``Placed`` from, for :func:`relay`.

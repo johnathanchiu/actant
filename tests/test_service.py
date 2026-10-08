@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -269,6 +270,21 @@ async def test_close_stops_the_host_gracefully(tmp_path: Path) -> None:
     await call_host(endpoint, "counter", "bump", {"by": 3}, key="k")
     await opened.close()  # SIGTERM
     assert (opened.root / "closed-at-3").exists()
+
+
+async def test_close_stops_children_holding_the_hosts_stdout(tmp_path: Path) -> None:
+    provider = LocalSandboxProvider(tmp_path)
+    opened = await provider.open(
+        SandboxSpec(services=SERVICES, env={"PYTHONPATH": TESTS}), sandbox_id="t"
+    )
+    assert isinstance(opened, LocalSandbox)
+    endpoint = await opened.endpoint()
+    assert endpoint is not None
+    child = json.loads((await call_host(endpoint, "counter", "spawn", {}, key="k")).text)
+    await asyncio.wait_for(opened.close(), 15)  # hung on the child's open pipe before
+    await asyncio.sleep(0.2)
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)
 
 
 async def test_sandbox_runner_uses_the_thread_sandbox(sandbox: LocalSandbox) -> None:

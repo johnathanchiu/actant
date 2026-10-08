@@ -348,7 +348,9 @@ async def test_list_for_turn_returns_only_that_turns_messages_in_order(
     await stores.threads.get_or_create("a", "t")
     await stores.messages.append_user("a", "t", "earlier")
     await stores.messages.append_user("a", "t", "go", turn_id="turn")
-    await stores.messages.append_assistant("a", "t", "turn", Message(role="assistant", content="ok"))
+    await stores.messages.append_assistant(
+        "a", "t", "turn", Message(role="assistant", content="ok")
+    )
     await stores.messages.append_user("a", "t", "later", turn_id="other")
     turn = await stores.messages.list_for_turn("a", "t", "turn")
     assert [(m.role, m.content) for m in turn] == [("user", "go"), ("assistant", "ok")]
