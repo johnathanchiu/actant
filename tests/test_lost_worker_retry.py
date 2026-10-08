@@ -222,9 +222,7 @@ async def _run(
             await asyncio.wait_for(env.client.get_workflow_handle(workflow_id).result(), 30)
 
 
-async def test_a_model_turn_lost_mid_call_is_asked_again_without_storing_its_input_twice() -> (
-    None
-):
+async def test_a_model_turn_lost_mid_call_is_asked_again_without_storing_its_input_twice() -> None:
     fake = _DiesOnFirstCall([FakeResponse(text="done")])
     agent = AgentDefinition(id="a", name="a", persona="", llm=fake, tools=ToolRegistry([]))
     stores = InMemoryRuntimeStores()

@@ -176,16 +176,23 @@ class LocalSandbox:
         return self._endpoint
 
     async def close(self) -> None:
-        """Stop the service host, if any. The directory is the durable root."""
+        """Stop the service host and every process it started, if any. The directory is the
+        durable root."""
         process = self.host_process
-        if process is None or process.returncode is not None:
+        if process is None:
             return
-        process.terminate()
+        # the whole group: a child left holding the host's stdout keeps `wait` from returning
+        _signal_group(process, signal.SIGTERM)
         try:
             await asyncio.wait_for(process.wait(), 10)
         except TimeoutError:
-            process.kill()
+            _signal_group(process, signal.SIGKILL)
             await process.wait()
+
+
+def _signal_group(process: asyncio.subprocess.Process, signum: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signum)
 
 
 async def start_host(
@@ -210,6 +217,7 @@ async def start_host(
         cwd=root,
         env={**_environment(spec.env), host.TOKEN_ENV: token},
         stdout=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     assert process.stdout is not None
     try:
@@ -218,8 +226,7 @@ async def start_host(
         line = b""
     prefix, _, port = line.decode().strip().partition(" ")
     if prefix != host.READY_PREFIX:
-        with contextlib.suppress(ProcessLookupError):
-            process.kill()
+        _signal_group(process, signal.SIGKILL)
         await process.wait()
         raise RuntimeError(
             f"service host for {dict(spec.services)} did not start (exit {process.returncode})"
