@@ -4,6 +4,11 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## 0.38.1
+
+- `LocalSandbox.close()` no longer hangs when a process the service host started outlives the
+  host. The host runs in its own process group, and `close()` stops the whole group.
+
 ## 0.38.0
 
 - Per-agent sandbox access: `AgentDefinition(sandbox_access=SandboxAccess(user, writable))`
