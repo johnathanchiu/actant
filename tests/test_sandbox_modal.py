@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -638,6 +639,58 @@ def test_push_exclude_keeps_folders_out_of_every_push() -> None:
 def test_push_exclude_holds_relative_folders(folder: str) -> None:
     with pytest.raises(ValueError, match="push_exclude"):
         SandboxSpec(backend="modal", storage=Storage.DISK_SYNC, push_exclude=(folder,))
+
+
+def test_push_include_syncs_its_globs_after_the_push() -> None:
+    provider = ModalSandboxProvider(app_name="app", bucket="b", endpoint_url="https://r2.example")
+    spec = _scene(
+        push_exclude=("scenes", "scenes/a/cache", "renders"),
+        push_include=("scenes/*/scene.glb", "scenes/a/cache/*.json"),
+    )
+    excluded = _scene(push_exclude=("scenes", "scenes/a/cache", "renders"))
+    push, rest = provider.sync_argv(excluded, "t1"), " ".join(S5)
+    assert provider.sync_argv(spec, "t1") == [
+        "sh", "-c",
+        f"{shlex.join(push)}"
+        # the folders the glob is carved out of drop; the capture, renders and nested
+        # cache excludes still apply
+        f" && {rest} sync --no-follow-symlinks --exclude 'root/sandbox/capture/*'"
+        f" --exclude 'root/sandbox/scenes/a/cache/*' --exclude 'root/sandbox/renders/*'"
+        f" '{DISK_PATH}/scenes/*/scene.glb' s3://b/sandboxes/t1/scenes/"
+        f" && {rest} sync --no-follow-symlinks --exclude 'root/sandbox/capture/*'"
+        f" --exclude 'root/sandbox/renders/*'"
+        f" '{DISK_PATH}/scenes/a/cache/*.json' s3://b/sandboxes/t1/scenes/a/cache/"
+    ]  # fmt: skip
+
+
+def test_push_include_never_reaches_into_a_restore_entry_or_mount() -> None:
+    provider = ModalSandboxProvider(app_name="app", bucket="b")
+    into = _scene(push_exclude=("capture",), push_include=("capture/*.zip",))
+    with pytest.raises(ValueError, match="restore entry or a mount"):
+        provider.sync_argv(into, "t1")
+    mounted = _scene(
+        push_exclude=("scenes",),
+        push_include=("scenes/*/scene.glb",),
+        mounts=(Mount(Location("b", "m/"), "scenes/m"),),
+    )
+    # a mount below the glob's literal folder stays excluded
+    assert (
+        "--exclude 'root/sandbox/scenes/m/*' '/root/sandbox/scenes/*/scene.glb'"
+        in (provider.sync_argv(mounted, "t1")[2])
+    )
+
+
+@pytest.mark.parametrize(
+    "glob", ["", "/abs/x", "scenes/../x", "./scenes/x", "scenes//x", "scenes", "other/x.glb"]
+)
+def test_push_include_holds_relative_paths_inside_excluded_folders(glob: str) -> None:
+    with pytest.raises(ValueError, match="push_include"):
+        SandboxSpec(
+            backend="modal",
+            storage=Storage.DISK_SYNC,
+            push_exclude=("scenes",),
+            push_include=(glob,),
+        )
 
 
 async def test_a_scoped_sync_pushes_just_its_paths_in_order(

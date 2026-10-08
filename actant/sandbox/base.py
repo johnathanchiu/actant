@@ -236,6 +236,10 @@ class SandboxSpec:
     #: ``disk_sync``: folders, relative to the pushed folder, that no push sends (``"renders"``,
     #: ``"cache/frames"``): files a run can make again, or ones restored from elsewhere.
     push_exclude: tuple[str, ...] = ()
+    #: ``disk_sync``: s5cmd globs (``*`` within one folder), relative to the pushed folder,
+    #: for files inside a ``push_exclude`` folder that every push still sends, at the keys a
+    #: push without that exclude would give them (``"scenes/*/scene.glb"``).
+    push_include: tuple[str, ...] = ()
     #: ``disk_sync``: a bucket key prefix (``"templates/base/"``) that starts a new thread.
     #: When the thread's prefix is empty, the sandbox pulls the seed while the bucket copies
     #: it into the thread's prefix; startup waits for both. A thread with files ignores it.
@@ -265,6 +269,16 @@ class SandboxSpec:
             parts = folder.split("/")
             if not folder or folder.startswith("/") or any(p in ("", ".", "..") for p in parts):
                 raise ValueError(f"push_exclude holds relative folders, not {folder!r}")
+        for pattern in self.push_include:
+            parts = pattern.split("/")
+            if (
+                pattern.startswith("/")
+                or any(p in ("", ".", "..") for p in parts)
+                or not any(pattern.startswith(f"{folder}/") for folder in self.push_exclude)
+            ):
+                raise ValueError(
+                    f"push_include holds relative paths inside push_exclude folders, not {pattern!r}"
+                )
         if self.seed is not None and (
             self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
         ):

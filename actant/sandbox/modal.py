@@ -57,6 +57,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from http import HTTPStatus
+from itertools import takewhile
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -373,7 +374,8 @@ class ModalSandboxProvider:
 
     def sync_argv(self, spec: SandboxSpec, sandbox_id: str) -> list[str]:
         """Push the plan's pushed entry to its prefix, excluding the other entries inside it
-        and the spec's ``push_exclude`` folders (relative to it).
+        and the spec's ``push_exclude`` folders (relative to it); then each ``push_include``
+        glob, under every other exclude, to the keys the full push would give its files.
         Links are never followed: a link only points at a file the disk already holds (a
         pushed one, which the push sends at its own path) or one that is not the pushed
         entry's to send (a restore entry pulled read-only, an excluded folder, a mount), and
@@ -384,16 +386,32 @@ class ModalSandboxProvider:
         last files."""
         plan = self._plan(spec, sandbox_id)
         pushed = plan.pushed
-        # s5cmd 2.3 matches a local file's absolute path, less its leading "/".
-        excludes = [
-            arg
-            for path in _skipped(spec, plan)
-            if _inside(path, pushed.path)
-            for arg in ("--exclude", f"{_disk(path).lstrip('/')}/*")
-        ]
-        return self._s5cmd(
-            "sync", "--no-follow-symlinks", *excludes, f"{_disk(pushed.path)}/", pushed.source.url
-        )
+        skipped = [path for path in _skipped(spec, plan) if _inside(path, pushed.path)]
+        root, url = _disk(pushed.path), pushed.source.url
+        sync = self._s5cmd("sync", "--no-follow-symlinks", *_excludes(skipped), f"{root}/", url)
+        if not spec.push_include:
+            return sync
+        held = [r.path for r in plan.others] + [m.path for m in plan.mounts]
+        syncs = [sync]
+        for glob in spec.push_include:
+            prefix = _literal_dir(glob)
+            folder = f"{pushed.path}/{prefix}" if pushed.path else prefix
+            folder = folder.rstrip("/")
+            if any(_inside(folder, path) for path in held if _inside(path, pushed.path)):
+                raise ValueError(f"push_include {glob!r} is inside a restore entry or a mount")
+            # Every exclude but the folders the glob is carved out of still applies, and
+            # s5cmd keys a wildcard's files by their path below its literal folders.
+            kept = [path for path in skipped if not _inside(folder, path)]
+            syncs.append(
+                self._s5cmd(
+                    "sync",
+                    "--no-follow-symlinks",
+                    *_excludes(kept),
+                    f"{root}/{glob}",
+                    url + prefix,
+                )
+            )
+        return ["sh", "-c", " && ".join(shlex.join(argv) for argv in syncs)]
 
     def push_argv(self, spec: SandboxSpec, sandbox_id: str, paths: Sequence[str]) -> list[str]:
         """Push just ``paths``, files relative to the disk, one at a time in the given order.
@@ -482,6 +500,18 @@ def _mounted(restore: Restore, mounts: Sequence[Mount]) -> list[str]:
     """The paths of the mounts inside ``restore``'s, relative to it."""
     start = len(restore.path) + 1 if restore.path else 0
     return [m.path[start:] for m in mounts if _inside(m.path, restore.path)]
+
+
+def _excludes(paths: Sequence[str]) -> list[str]:
+    # s5cmd 2.3 matches a local file's absolute path, less its leading "/".
+    return [arg for path in paths for arg in ("--exclude", f"{_disk(path).lstrip('/')}/*")]
+
+
+def _literal_dir(glob: str) -> str:
+    """The folders of ``glob`` before its first wildcard, as a key prefix (``"scenes/"``)."""
+    folders = glob.split("/")[:-1]
+    literal = list(takewhile(lambda f: not any(c in f for c in "*?["), folders))
+    return "".join(f"{f}/" for f in literal)
 
 
 def _disk(path: str) -> str:
