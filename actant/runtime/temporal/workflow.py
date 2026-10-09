@@ -99,6 +99,10 @@ _LOST_TURN_RETRY = RetryPolicy(maximum_attempts=3)
 _COMPACT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=2), backoff_coefficient=2.0, maximum_attempts=3
 )
+#: A run's store writes (start, finalize, cancel) ride out a brief database outage, then
+#: fail the workflow rather than leave the run open forever. A ``ProgrammingError`` (a
+#: schema behind its migrations, a bad query) would fail the same way every time.
+_STORE_RETRY = RetryPolicy(maximum_attempts=5, non_retryable_error_types=["ProgrammingError"])
 
 
 @workflow.defn
@@ -235,6 +239,7 @@ class AgentThreadWorkflow:
                 summarizer=(payload.context_compaction or CompactionConfig()).summarizer,
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
+            retry_policy=_STORE_RETRY,
         )
         self._turn_count_total = started.turn_count
         payload = replace(payload, max_turns_per_run=started.max_turns)
@@ -255,6 +260,7 @@ class AgentThreadWorkflow:
                 stop_reason=self._stop_reason,
             ),
             start_to_close_timeout=_PROJECTION_TIMEOUT,
+            retry_policy=_STORE_RETRY,
         )
         self._current_run_id = None
 
@@ -568,6 +574,7 @@ class AgentThreadWorkflow:
                         turn_count=self._turn_count_total,
                     ),
                     start_to_close_timeout=_PROJECTION_TIMEOUT,
+                    retry_policy=_STORE_RETRY,
                 )
             )
         await asyncio.shield(
@@ -578,6 +585,7 @@ class AgentThreadWorkflow:
                     thread_id=payload.thread_id,
                 ),
                 start_to_close_timeout=_PROJECTION_TIMEOUT,
+                retry_policy=_STORE_RETRY,
             )
         )
 
