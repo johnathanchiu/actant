@@ -3,8 +3,6 @@
 No isolation. It is the development backend and the one tests use; in
 production the directory is whatever the operator mounted there. A spec's
 services are served by a host subprocess on 127.0.0.1 with a random token.
-Given an :class:`~actant.sandbox.base.ImageBucket`, that host uploads the images its
-services return and returns durable asset references (bucket keys from the environment).
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ from actant.sandbox.access import (
     enforceable,
     run_argv,
 )
-from actant.sandbox.base import Endpoint, Entry, ExecResult, ImageBucket, Sandbox, SandboxSpec
+from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec
 from actant.sandbox.protocol import EntryConfig, Header, HostConfig
 
 #: How long a host may take to import its services and bind.
@@ -195,11 +193,8 @@ def _signal_group(process: asyncio.subprocess.Process, signum: int) -> None:
         os.killpg(process.pid, signum)
 
 
-async def start_host(
-    spec: SandboxSpec, root: Path, images: ImageBucket | None = None
-) -> tuple[Endpoint, asyncio.subprocess.Process]:
-    """Launch the host for ``spec.services`` in ``root`` on a free port; return once it listens.
-    With ``images``, the host uploads returned images under the thread ``root`` names."""
+async def start_host(spec: SandboxSpec, root: Path) -> tuple[Endpoint, asyncio.subprocess.Process]:
+    """Launch the host for ``spec.services`` in ``root`` on a free port; return once it listens."""
     assert spec.services
     token = secrets.token_urlsafe(32)
     config = EntryConfig(
@@ -208,7 +203,6 @@ async def start_host(
             port=0,
             bind="127.0.0.1",
             scrub=list(spec.scrub_env),
-            images=None if images is None else host.image_upload_config(images, spec, root.name),
         )
     )
     argv = [sys.executable, "-m", ENTRY_MODULE, config.model_dump_json()]
@@ -250,12 +244,11 @@ class LocalSandboxProvider:
     """Sandboxes under ``spec.mount`` (or ``root``, or a temp dir), one directory per key.
 
     Service hosts live as long as this provider's process; ``attach`` reuses a
-    running one and restarts a dead one. ``images`` makes hosts return durable asset references.
+    running one and restarts a dead one.
     """
 
-    def __init__(self, root: Path | None = None, *, images: ImageBucket | None = None) -> None:
+    def __init__(self, root: Path | None = None) -> None:
         self.root = root
-        self.images = images
         self._live: dict[Path, LocalSandbox] = {}
 
     async def open(self, spec: SandboxSpec, *, sandbox_id: str) -> Sandbox:
@@ -277,7 +270,7 @@ class LocalSandboxProvider:
             return live
         if not spec.services:
             return LocalSandbox(root, spec.env, spec.scrub_env)
-        endpoint, process = await start_host(spec, root, self.images)
+        endpoint, process = await start_host(spec, root)
         sandbox = LocalSandbox(
             root, spec.env, spec.scrub_env, endpoint=endpoint, host_process=process
         )

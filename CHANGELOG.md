@@ -4,6 +4,25 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Breaking: images cross the sandbox boundary only as bytes, and the worker stores them in its
+  own storage. A sandbox and its worker may use different buckets, so a key written by one
+  must never reach the other. The service host no longer uploads images: `AssetSource`,
+  `ImageSourceKind`, `ImageUploadConfig`, `HostConfig.images`, `actant.sandbox.uploads`,
+  `ImageBucket`, `LocalSandboxProvider(images=...)`, `ModalSandboxProvider.image_prefix`,
+  `SandboxSpec.upload_images` and `image_upload_timeout_s`, `StorageStatus.image_error` and the
+  `sandbox` extra are removed. `InlineSource` loses its `kind`.
+- `AgentRuntime(asset_store=...)` takes an `actant.assets.AssetStore` (`put(key, data, mime)`
+  returning the storage key), on tools as `CallContext.asset_store`. A service tool stores each
+  returned image there inside its call, under `<thread_id>/images/<sha256><ext>` (the same bytes
+  once), and returns an `AssetBlock` with that key; without a store the image stays inline.
+  `actant.storage.s3.S3AssetStore(client, bucket=..., prefix=...)` writes with `put_object`;
+  give `S3AssetResolver` the same bucket and prefix, and do not expire it.
+- `to_tool_result(response, *, thread_id, store, max_image_bytes)` is async and exported from
+  `actant.tools`, replacing `image_block`. A response whose images total more than
+  `max_image_bytes` (default 16 MiB; `tools(cls, runner, max_image_bytes=...)`) fails the call.
+
 ## 0.39.0
 
 - `SandboxSpec(push_include=("scenes/*/scene.glb",))`: files inside a `push_exclude` folder

@@ -38,6 +38,12 @@ class S3Client(Protocol):
     def head_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]: ...
 
 
+class S3WriteClient(Protocol):
+    def put_object(
+        self, *, Bucket: str, Key: str, Body: bytes, ContentType: str
+    ) -> Mapping[str, object]: ...
+
+
 class S3AssetResolver:
     """Resolves stable references to presigned URLs.
 
@@ -133,3 +139,22 @@ class S3AssetResolver:
                 return False
             raise
         return True
+
+
+class S3AssetStore:
+    """Writes the worker's assets under ``prefix`` in ``bucket``, through an injected
+    boto3-compatible client. Give :class:`S3AssetResolver` the same bucket and prefix."""
+
+    def __init__(self, client: S3WriteClient, *, bucket: str, prefix: str) -> None:
+        if not bucket or not prefix or not prefix.endswith("/"):
+            raise ValueError("bucket and a nonempty prefix ending in '/' are required")
+        self.client, self.bucket, self.prefix = client, bucket, prefix
+
+    async def put(self, key: str, data: bytes, mime: str) -> str:
+        if key.startswith("/") or any(p in {"", ".", ".."} for p in key.split("/")):
+            raise ValueError(f"invalid asset key {key!r}")
+        full = self.prefix + key
+        await asyncio.to_thread(
+            self.client.put_object, Bucket=self.bucket, Key=full, Body=data, ContentType=mime
+        )
+        return full

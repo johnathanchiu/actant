@@ -14,14 +14,12 @@ under a per-sandbox prefix, in one of two ways (``SandboxSpec.storage``):
     remote files removed locally; a service host also pushes after its calls and every
     ``sync_interval_s``, each push bounded by ``sync_timeout_s``, and ``close``
     pushes once more. Restored files get their objects' mtimes, so a push
-    uploads only what changed. Images a service returns are uploaded at once under
-    ``image_prefix`` and returned as durable asset references when
-    ``SandboxSpec.upload_images`` is enabled. A read-only input too large to pull
+    uploads only what changed. A read-only input too large to pull
     (a capture) can be mounted into the disk instead (`SandboxSpec.mounts`);
     no pull or push touches a mount's path. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
     list them in ``scrub_env`` so agent-run code does not see them. The image
-    needs s5cmd (:func:`with_s5cmd`), and ``actant[sandbox]`` (boto3) to upload images.
+    needs s5cmd (:func:`with_s5cmd`).
 
 Either way a dead sandbox reopens on the same prefix. ``secret_name`` names a
 Modal secret holding ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` (plus
@@ -69,7 +67,6 @@ from actant.sandbox.base import (
     Endpoint,
     Entry,
     ExecResult,
-    ImageBucket,
     Location,
     Mount,
     Restore,
@@ -133,8 +130,6 @@ class ModalSandboxProvider:
     bucket: str
     key_prefix: str = "sandboxes/"
     endpoint_url: str | None = None
-    #: Where a ``disk_sync`` host uploads returned images: ``<image_prefix><sandbox_id>/``.
-    image_prefix: str = "actant-images/"
     secret_name: str | None = None
     #: Inline bucket credentials (same keys as ``secret_name``), sent with
     #: ``modal.Secret.from_dict`` so a test needs no persisted Modal secret.
@@ -337,15 +332,8 @@ class ModalSandboxProvider:
                 bind="0.0.0.0",
                 scrub=list(spec.scrub_env),
                 push=push,
-                images=host.image_upload_config(self.image_bucket(), spec, sandbox_id)
-                if disk_sync and spec.upload_images
-                else None,
             )
         return EntryConfig(restore=restore, host=served)
-
-    def image_bucket(self) -> ImageBucket:
-        """Where a ``disk_sync`` host uploads the images its services return."""
-        return ImageBucket(self.bucket, self.image_prefix, self.endpoint_url)
 
     def own_location(self, sandbox_id: str) -> Location:
         """A sandbox's own prefix: ``<key_prefix><sandbox_id>/`` in :attr:`bucket`."""

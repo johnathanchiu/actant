@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from temporalio.exceptions import ApplicationError
 
 from actant.agents import AgentDefinition
-from actant.assets import AssetResolver
+from actant.assets import AssetResolver, AssetStore
 from actant.runtime.events.publisher import EventSink
 from actant.runtime.events.publisher import ScopedEventSink
 from actant.runtime.events.runtime import RuntimeEvents
@@ -34,6 +34,7 @@ class ActivityContext:
         stores: RuntimeStores,
         resolve_agent: AgentResolver | None = None,
         assets: AssetResolver | None = None,
+        asset_store: AssetStore | None = None,
         event_sink: EventSink | None = None,
         message_preprocessor: MessagePreprocessor | None = None,
         run_completion_handler: RunCompletionHandler | None = None,
@@ -48,6 +49,8 @@ class ActivityContext:
         self.stores = stores
         self.resolve_agent = resolve_agent
         self.assets = assets
+        # Where tools store media they receive (a sandbox's images), read back by ``assets``.
+        self.asset_store = asset_store
         self.event_sink = event_sink
         self.message_preprocessor = message_preprocessor
         self.run_completion_handler = run_completion_handler

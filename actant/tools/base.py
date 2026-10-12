@@ -7,12 +7,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from actant.blocks import BLOCKS, Block
 from actant.core import JSONObject
 from actant.sandbox.access import SandboxAccess
 from actant.sandbox.base import Sandbox
+
+if TYPE_CHECKING:
+    from actant.assets import AssetStore
 
 ToolSchema = dict[str, object]
 ParamsT = TypeVar("ParamsT")
@@ -117,6 +120,9 @@ class CallContext:
     #: The thread's ``ThreadInput.context``, given by whoever started it; empty for
     #: admission checks.
     context: Mapping[str, Any] = field(default_factory=dict)
+    #: The worker's :class:`~actant.assets.AssetStore` (``AgentRuntime(asset_store=...)``):
+    #: where a tool stores media it returns, so results carry keys instead of bytes.
+    asset_store: AssetStore | None = None
 
 
 _CURRENT: ContextVar[CallContext | None] = ContextVar("actant_current_call", default=None)

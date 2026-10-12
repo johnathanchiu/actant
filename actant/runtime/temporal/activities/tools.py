@@ -235,6 +235,7 @@ class ToolActivities:
             else thread.sandbox_access or agent.sandbox_access,
             parent_thread_id=thread.parent_thread_id,
             context=context or {},
+            asset_store=self.context.asset_store,
         )
 
     async def _materialise(
