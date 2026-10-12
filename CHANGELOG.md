@@ -13,10 +13,11 @@ affect users.
   `ImageBucket`, `LocalSandboxProvider(images=...)`, `ModalSandboxProvider.image_prefix`,
   `SandboxSpec.upload_images` and `image_upload_timeout_s`, `StorageStatus.image_error` and the
   `sandbox` extra are removed. `InlineSource` loses its `kind`.
-- `AgentRuntime(asset_store=...)` takes an `actant.assets.AssetStore` (`put(key, data, mime)`
-  returning the storage key), on tools as `CallContext.asset_store`. A service tool stores each
-  returned image there inside its call, under `<thread_id>/images/<sha256><ext>` (the same bytes
-  once), and returns an `AssetBlock` with that key; without a store the image stays inline.
+- `AgentRuntime(asset_store=...)` takes an `actant.assets.AssetStore`
+  (`put_image(thread_id, data, mime)` returning the storage key it derived), on tools as
+  `CallContext.asset_store`. A service tool stores each returned image there inside its call,
+  under `<thread_id>/images/<sha256><ext>` (the same bytes once), and returns an `AssetBlock`
+  with that key; without a store the image stays inline.
   `actant.storage.s3.S3AssetStore(client, bucket=..., prefix=...)` writes with `put_object`;
   give `S3AssetResolver` the same bucket and prefix, and do not expire it.
 - `to_tool_result(response, *, thread_id, store, max_image_bytes)` is async and exported from
