@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.40.1
 
 - `S3AssetStore.put_image` accepts thread ids with dots and colons (`scene_x.planner`); 0.40.0 refused them.
 
