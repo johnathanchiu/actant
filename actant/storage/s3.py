@@ -144,7 +144,9 @@ class S3AssetResolver:
         return True
 
 
-_THREAD_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# One path segment: thread ids carry dots and colons (``scene_x.planner``), never a slash,
+# and are never "." or "..".
+_THREAD_ID = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9._:-]{1,255}")
 
 
 class S3AssetStore:
