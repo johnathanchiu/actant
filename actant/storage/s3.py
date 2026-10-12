@@ -10,7 +10,7 @@ authorization must check access before delegating to this adapter.
 from __future__ import annotations
 
 import asyncio
-import re
+from urllib.parse import quote
 import mimetypes
 import hashlib
 import time
@@ -144,11 +144,6 @@ class S3AssetResolver:
         return True
 
 
-# One path segment: thread ids carry dots and colons (``scene_x.planner``), never a slash,
-# and are never "." or "..".
-_THREAD_ID = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9._:-]{1,255}")
-
-
 class S3AssetStore:
     """Writes the worker's assets under ``prefix`` in ``bucket``, through an injected
     boto3-compatible client. Give :class:`S3AssetResolver` the same bucket and prefix."""
@@ -159,10 +154,13 @@ class S3AssetStore:
         self.client, self.bucket, self.prefix = client, bucket, prefix
 
     async def put_image(self, thread_id: str, data: bytes, mime: str) -> str:
-        if not _THREAD_ID.fullmatch(thread_id):
+        if thread_id in ("", ".", ".."):
             raise ValueError(f"invalid thread id {thread_id!r}")
+        # Thread ids are the caller's (``scene_x.object.fitted-4@ab12``); percent-encoding keeps
+        # any of them one key segment, so no id can reach outside its thread's images.
+        thread = quote(thread_id, safe="")
         ext = mimetypes.guess_extension(mime) or ""
-        key = f"{self.prefix}{thread_id}/images/{hashlib.sha256(data).hexdigest()}{ext}"
+        key = f"{self.prefix}{thread}/images/{hashlib.sha256(data).hexdigest()}{ext}"
         await asyncio.to_thread(
             self.client.put_object, Bucket=self.bucket, Key=key, Body=data, ContentType=mime
         )

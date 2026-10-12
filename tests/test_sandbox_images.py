@@ -55,9 +55,16 @@ async def test_s3_store_derives_a_content_addressed_key_under_its_prefix() -> No
     key = await store.put_image("t1", PNG, "image/png")
     assert key == f"assets/t1/images/{hashlib.sha256(PNG).hexdigest()}.png"
     assert s3.puts == [{"Bucket": "b", "Key": key, "Body": PNG, "ContentType": "image/png"}]
-    dotted = await store.put_image("scene_a.planner", PNG, "image/png")
-    assert dotted == f"assets/scene_a.planner/images/{hashlib.sha256(PNG).hexdigest()}.png"
-    for thread in ("../t1", "t1/x", "", ".", ".."):
+    digest = hashlib.sha256(PNG).hexdigest()
+    for thread, segment in (
+        ("scene_a.planner", "scene_a.planner"),
+        ("scene_a.object.fitted-4@ab12", "scene_a.object.fitted-4%40ab12"),
+        ("../t1", "..%2Ft1"),
+        ("t1/x", "t1%2Fx"),
+    ):
+        key = await store.put_image(thread, PNG, "image/png")
+        assert key == f"assets/{segment}/images/{digest}.png"
+    for thread in ("", ".", ".."):
         with pytest.raises(ValueError):
             await store.put_image(thread, PNG, "image/png")
 
