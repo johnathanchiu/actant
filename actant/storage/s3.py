@@ -10,6 +10,9 @@ authorization must check access before delegating to this adapter.
 from __future__ import annotations
 
 import asyncio
+import re
+import mimetypes
+import hashlib
 import time
 from collections.abc import Callable, Mapping
 from typing import Protocol
@@ -141,6 +144,9 @@ class S3AssetResolver:
         return True
 
 
+_THREAD_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
 class S3AssetStore:
     """Writes the worker's assets under ``prefix`` in ``bucket``, through an injected
     boto3-compatible client. Give :class:`S3AssetResolver` the same bucket and prefix."""
@@ -150,11 +156,12 @@ class S3AssetStore:
             raise ValueError("bucket and a nonempty prefix ending in '/' are required")
         self.client, self.bucket, self.prefix = client, bucket, prefix
 
-    async def put(self, key: str, data: bytes, mime: str) -> str:
-        if key.startswith("/") or any(p in {"", ".", ".."} for p in key.split("/")):
-            raise ValueError(f"invalid asset key {key!r}")
-        full = self.prefix + key
+    async def put_image(self, thread_id: str, data: bytes, mime: str) -> str:
+        if not _THREAD_ID.fullmatch(thread_id):
+            raise ValueError(f"invalid thread id {thread_id!r}")
+        ext = mimetypes.guess_extension(mime) or ""
+        key = f"{self.prefix}{thread_id}/images/{hashlib.sha256(data).hexdigest()}{ext}"
         await asyncio.to_thread(
-            self.client.put_object, Bucket=self.bucket, Key=full, Body=data, ContentType=mime
+            self.client.put_object, Bucket=self.bucket, Key=key, Body=data, ContentType=mime
         )
-        return full
+        return key

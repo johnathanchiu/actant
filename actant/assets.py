@@ -79,11 +79,12 @@ class AssetResolver(Protocol):
 
 class AssetStore(Protocol):
     """Where the worker writes media it receives (a sandbox service's images), in the same
-    storage its :class:`AssetResolver` reads. ``key`` is relative (``<thread>/images/<sha256>.png``);
-    the store returns the full ``AssetBlock.storage_key`` it wrote. The store owns its prefix
-    and must not expire it: history references these keys for the thread's life."""
+    storage its :class:`AssetResolver` reads. The store derives the key from the thread and
+    the bytes' sha256 (so a retry writes the same key) and returns the full
+    ``AssetBlock.storage_key``. It owns its prefix and must not expire it: history references
+    these keys for the thread's life."""
 
-    async def put(self, key: str, data: bytes, mime: str) -> str: ...
+    async def put_image(self, thread_id: str, data: bytes, mime: str) -> str: ...
 
 
 #: How many asset references one request resolves at once.

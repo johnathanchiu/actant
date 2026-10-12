@@ -32,7 +32,8 @@ class FakeStore:
     prefix: str = "worker/"
     puts: list[tuple[str, bytes, str]] = field(default_factory=list)
 
-    async def put(self, key: str, data: bytes, mime: str) -> str:
+    async def put_image(self, thread_id: str, data: bytes, mime: str) -> str:
+        key = f"{thread_id}/images/{hashlib.sha256(data).hexdigest()}.png"
         self.puts.append((key, data, mime))
         return self.prefix + key
 
@@ -48,15 +49,15 @@ class FakeS3:
         return {}
 
 
-async def test_s3_store_writes_under_its_prefix_and_refuses_escapes() -> None:
+async def test_s3_store_derives_a_content_addressed_key_under_its_prefix() -> None:
     s3 = FakeS3()
     store = S3AssetStore(s3, bucket="b", prefix="assets/")
-    assert await store.put("t1/images/x.png", PNG, "image/png") == "assets/t1/images/x.png"
-    assert s3.puts == [
-        {"Bucket": "b", "Key": "assets/t1/images/x.png", "Body": PNG, "ContentType": "image/png"}
-    ]
-    with pytest.raises(ValueError):
-        await store.put("../x.png", PNG, "image/png")
+    key = await store.put_image("t1", PNG, "image/png")
+    assert key == f"assets/t1/images/{hashlib.sha256(PNG).hexdigest()}.png"
+    assert s3.puts == [{"Bucket": "b", "Key": key, "Body": PNG, "ContentType": "image/png"}]
+    for thread in ("../t1", "t1/x", ""):
+        with pytest.raises(ValueError):
+            await store.put_image(thread, PNG, "image/png")
 
 
 def _inline(name: str = "image-0", data: bytes = PNG) -> Image:

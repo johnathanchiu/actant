@@ -15,7 +15,6 @@ import asyncio
 import base64
 import hashlib
 import inspect
-import mimetypes
 
 from pydantic import ValidationError
 
@@ -96,18 +95,20 @@ def _decoded_size(data_b64: str) -> int:
 
 
 async def _store(response: CallResponse, thread_id: str, store: AssetStore) -> list[Block]:
-    """Each image in ``store``, content-addressed: the same bytes are written once."""
-    keys: dict[str, tuple[bytes, str]] = {}
-    named: list[tuple[str, str]] = []
+    """Each image in ``store``; the same bytes are written once."""
+    unique: dict[str, tuple[bytes, str]] = {}
+    digests: list[str] = []
     for image in response.images:
         data = base64.b64decode(image.source.data_b64, validate=True)
-        ext = mimetypes.guess_extension(image.media_type) or ""
-        key = f"{thread_id}/images/{hashlib.sha256(data).hexdigest()}{ext}"
-        keys.setdefault(key, (data, image.media_type))
-        named.append((key, image.media_type))
-    stored = await asyncio.gather(*(store.put(k, d, m) for k, (d, m) in keys.items()))
-    full = dict(zip(keys, stored, strict=True))
-    return [AssetBlock(storage_key=full[key], mime=mime) for key, mime in named]
+        digest = hashlib.sha256(data).hexdigest()
+        unique.setdefault(digest, (data, image.media_type))
+        digests.append(digest)
+    keys = await asyncio.gather(*(store.put_image(thread_id, d, m) for d, m in unique.values()))
+    stored = dict(zip(unique, keys, strict=True))
+    return [
+        AssetBlock(storage_key=stored[digest], mime=image.media_type)
+        for digest, image in zip(digests, response.images, strict=True)
+    ]
 
 
 class ServiceInvocation(BaseToolInvocation[dict[str, object], ToolResult]):
