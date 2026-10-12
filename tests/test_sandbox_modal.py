@@ -21,7 +21,6 @@ from actant.sandbox.protocol import (
     EntryConfig,
     Header,
     HostConfig,
-    ImageUploadConfig,
     PushConfig,
     RestoreConfig,
     Route,
@@ -204,12 +203,6 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
             bind="0.0.0.0",
             scrub=["SERVICE_KEY", "AWS_SECRET_ACCESS_KEY"],
             push=PushConfig(argv=push, interval_s=30, timeout_s=120),
-            # Images upload beside the thread's prefix, never inside what the push mirrors.
-            images=ImageUploadConfig(
-                destination="s3://b/actant-images/t1/",
-                endpoint_url="https://r2.example",
-                timeout_s=10,
-            ),
         ),
     )
     assert kw["readiness_probe"] == _Probe(tcp=9000)
@@ -353,56 +346,6 @@ async def test_inline_bucket_env(monkeypatch: pytest.MonkeyPatch) -> None:
     await provider.open(SandboxSpec(backend="modal"), sandbox_id="t")
     assert fake.created[1]["secrets"] == []
     assert fake.created[1]["volumes"][MOUNT_PATH][2]["secret"] == ("dict", creds)
-
-
-async def test_disk_sync_uploads_references_without_public_signing_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake = _FakeModal()
-    _use(monkeypatch, fake)
-    provider = ModalSandboxProvider(
-        app_name="app", bucket="b", endpoint_url="http://10.0.0.5:9000"
-    )
-    spec = SandboxSpec(
-        backend="modal", storage=Storage.DISK_SYNC, services={"t": "pkg:T"}, network=True
-    )
-    await provider.open(spec, sandbox_id="t")
-    config = EntryConfig.model_validate_json(fake.created[0][3]).host
-    assert config is not None and config.images is not None
-    assert config.images.destination == "s3://b/actant-images/t/"
-    bytes_only = SandboxSpec(
-        backend="modal",
-        storage=Storage.DISK_SYNC,
-        services={"t": "pkg:T"},
-        network=True,
-        upload_images=False,
-    )
-    await provider.open(bytes_only, sandbox_id="t")
-    host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
-    assert host_config is not None and host_config.images is None
-    # Mounted storage never uploads images, so it needs no public endpoint either.
-    mounted = SandboxSpec(backend="modal", services={"t": "pkg:T"})
-    await provider.open(mounted, sandbox_id="t")
-    host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
-    assert host_config is not None and host_config.images is None
-
-    public = ModalSandboxProvider(
-        app_name="app",
-        bucket="b",
-        endpoint_url="http://10.0.0.5:9000",
-    )
-    timed = SandboxSpec(
-        backend="modal",
-        storage=Storage.DISK_SYNC,
-        services={"t": "pkg:T"},
-        network=True,
-        image_upload_timeout_s=2.5,
-    )
-    await public.open(timed, sandbox_id="t")
-    host_config = EntryConfig.model_validate_json(fake.created[0][3]).host
-    assert host_config is not None and host_config.images is not None
-    assert host_config.images.timeout_s == 2.5
-    assert host_config.images.endpoint_url == "http://10.0.0.5:9000"
 
 
 def test_with_s5cmd_installs_the_pinned_binary() -> None:

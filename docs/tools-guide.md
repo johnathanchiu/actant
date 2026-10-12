@@ -432,7 +432,6 @@ JSON of an `actant.sandbox.StorageStatus` (read it with
 | `last_error` | Short reason the latest push failed; `None` once one succeeds |
 | `consecutive_failures` | Failed pushes since the last success |
 | `pending` | Completed calls not yet covered by a successful push |
-| `image_error` | Why an image in this response went as bytes instead of a durable reference, or `None` |
 
 Warn when `consecutive_failures` is non-zero. The final push on shutdown is
 bounded the same way, so shutdown finishes even when storage is unreachable;
@@ -482,10 +481,15 @@ spec = SandboxSpec(
 
 ## Durable images
 
-A host with image storage uploads service images and returns `AssetSource(storage_key=...)`.
-`image_block(image)` produces an `AssetBlock(storage_key=..., mime=...)` for persistence.
-Without storage, or after a failed upload, images remain inline. Set
-`SandboxSpec(upload_images=False)` to always return bytes. Uploads have their own bounded timeout.
+A sandbox and the worker that drives it keep separate storage, so images cross the boundary only
+as bytes (`InlineSource`). The worker stores each one in its own `AssetStore`
+(`AgentRuntime(asset_store=...)`, reaching tools as `CallContext.asset_store`) inside the tool
+call, under `<thread_id>/images/<sha256><ext>` (the same bytes once), and the result carries
+`AssetBlock(storage_key=..., mime=...)`; bytes never reach Temporal. Without a store, images stay
+inline. One response's images may total `max_image_bytes` (`tools(cls, runner,
+max_image_bytes=...)`, default 16 MiB); a larger one fails the call. Direct runner callers use
+`to_tool_result(response, thread_id=..., store=...)`. `actant.storage.s3.S3AssetStore` writes
+under the same bucket and prefix an `S3AssetResolver` reads; the prefix must not expire.
 
 The host never signs URLs. Resolve references when preparing a model request or displaying an
 image. `AgentRuntime(assets=...)` accepts an `AssetResolver`. Direct runner callers can use the

@@ -46,10 +46,8 @@ one; never two at once. Each is killed (its process group) after ``timeout_s``. 
 host that pushes adds a :class:`~actant.sandbox.protocol.StorageStatus` to every
 call response (``CallResponse.storage``).
 
-Image uploads (``HostConfig.images``, :mod:`actant.sandbox.uploads`) never fail a call
-either. Each returned image is uploaded under a key named by its content hash, so the response
-carries a durable reference; an image whose upload fails goes
-inline, and ``StorageStatus.image_error`` says why.
+Returned images go back as bytes (``InlineSource``); the worker stores them in its own
+storage. The host never writes them to a bucket.
 """
 
 from __future__ import annotations
@@ -78,12 +76,11 @@ from http.client import HTTPConnection, HTTPSConnection
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from actant.logs import log_to_stderr
-from actant.sandbox.base import Endpoint, ImageBucket, SandboxSpec
+from actant.sandbox.base import Endpoint
 from actant.sandbox.protocol import (
     CallRequest,
     CancelRequest,
@@ -91,7 +88,6 @@ from actant.sandbox.protocol import (
     Header,
     HostConfig,
     Image,
-    ImageUploadConfig,
     InlineSource,
     PushConfig,
     Route,
@@ -99,9 +95,6 @@ from actant.sandbox.protocol import (
     StorageStatus,
 )
 from actant.sandbox.processes import Workers
-
-if TYPE_CHECKING:
-    from actant.sandbox.uploads import ImageUploader
 
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
 #: The line the host prints to stdout once it accepts connections: ``<prefix> <port>``.
@@ -121,8 +114,6 @@ KEEP_FINISHED_S = 600.0
 MAX_FINISHED = 1024
 #: How long a cancel waits for the cancelled method's cleanup before it answers.
 CANCEL_GRACE_S = 2.0
-#: Images a host uploads at once for one response.
-UPLOAD_CONCURRENCY = 8
 _IMAGE_MAGIC = {
     b"\x89PNG": "image/png",
     b"\xff\xd8\xff": "image/jpeg",
@@ -336,55 +327,6 @@ async def run_bounded(
     return None, stdout or b""
 
 
-def image_upload_config(
-    bucket: ImageBucket, spec: SandboxSpec, thread_id: str
-) -> ImageUploadConfig | None:
-    """The host's image uploads for ``thread_id``; ``None`` when the spec sends bytes."""
-    if not spec.upload_images:
-        return None
-    return ImageUploadConfig(
-        destination=bucket.destination(thread_id),
-        endpoint_url=bucket.endpoint_url,
-        timeout_s=spec.image_upload_timeout_s,
-    )
-
-
-async def upload_images(
-    response: CallResponse, uploader: ImageUploader
-) -> tuple[CallResponse, str | None]:
-    """``response`` with each image uploaded to durable storage where possible, and the reason
-    the first that could not be stayed inline. Never raises.
-
-    At most :data:`UPLOAD_CONCURRENCY` upload at once. After an upload fails, the images not yet
-    started stay inline without trying: a bucket that refused one would cost every other
-    image its own timeout."""
-    if not response.images:
-        return response, None
-    gate = asyncio.Semaphore(UPLOAD_CONCURRENCY)
-    bucket_failed = False
-    errors: list[str] = []
-
-    async def one(image: Image) -> Image:
-        nonlocal bucket_failed
-        async with gate:
-            if bucket_failed:
-                return image
-            try:
-                uploaded, error = await uploader.upload(image)
-            except Exception as exc:  # noqa: BLE001 -- an upload failure never fails the call
-                # A bug in this image's upload, not the bucket: the others still try.
-                errors.append(f"{image.name}: {type(exc).__name__}: {exc}"[:500])
-                return image
-            if error is not None:
-                # ``upload`` returns a reason only when the bucket refused or timed out.
-                errors.append(error)
-                bucket_failed = True
-            return uploaded
-
-    images = await asyncio.gather(*(one(image) for image in response.images))
-    return response.model_copy(update={"images": images}), errors[0] if errors else None
-
-
 _idle: dict[tuple[str, str], list[tuple[HTTPConnection, float]]] = {}
 _idle_lock = threading.Lock()
 
@@ -484,7 +426,6 @@ class Host:
         placed: Mapping[str, ServiceConfig] | None = None,
         token: str | None = None,
         push: PushConfig | None = None,
-        images: ImageUploadConfig | None = None,
     ) -> None:
         self.services = dict(services)
         self.methods = {name: frozenset(service_methods(cls)) for name, cls in services.items()}
@@ -495,11 +436,6 @@ class Host:
         }
         self.token = token
         self.push = push
-        self.images = images
-        # Imported here: boto3 is the ``sandbox`` extra, needed only by a host that uploads.
-        from actant.sandbox.uploads import ImageUploader
-
-        self.uploader = ImageUploader(images) if images else None
         # Futures, not instances: two parallel first calls share one ``open``.
         self.instances: dict[tuple[str, str], asyncio.Future[object]] = {}
         self._push_due = asyncio.Event()
@@ -600,26 +536,20 @@ class Host:
             payload = failure(error)
         finally:
             _CALL_SERVICE.reset(token)
-        image_error = None
-        if self.uploader:
-            payload, image_error = await upload_images(payload, self.uploader)
         if self.push:
             self._pending = True
             self._push_due.set()
-        if self.push or self.images:
-            status = self.storage_status(image_error=image_error)
-            payload = payload.model_copy(update={"storage": status})
+            payload = payload.model_copy(update={"storage": self.storage_status()})
         return payload
 
-    def storage_status(self, *, image_error: str | None = None) -> StorageStatus:
-        """The push status added to call responses, with this response's image error."""
+    def storage_status(self) -> StorageStatus:
+        """The push status added to call responses."""
         return StorageStatus(
             last_attempt_at=self._last_attempt,
             last_success_at=self._last_success,
             last_error=self._last_error,
             consecutive_failures=self._failures,
             pending=self._pending,
-            image_error=image_error,
         )
 
     async def pusher(self) -> None:
@@ -834,6 +764,6 @@ def main(config: HostConfig, services: Mapping[str, type] | None = None) -> int:
     services = load_services(config) if services is None else services
     token = os.environ.pop(TOKEN_ENV, None)
     placed = {n: s for n, s in config.services.items() if isinstance(s, ServiceConfig)}
-    host = Host(services, placed=placed, token=token, push=config.push, images=config.images)
+    host = Host(services, placed=placed, token=token, push=config.push)
     asyncio.run(serve(host, config.bind, config.port))
     return 0

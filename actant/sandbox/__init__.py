@@ -12,7 +12,6 @@ from actant.sandbox.base import (
     Endpoint,
     Entry,
     ExecResult,
-    ImageBucket,
     Sandbox,
     SandboxProvider,
     SandboxSpec,
@@ -21,7 +20,6 @@ from actant.sandbox.base import (
 from actant.sandbox.processes import host_function, on_host
 from actant.sandbox.protocol import (
     Image,
-    ImageSourceKind,
     InlineSource,
     ServiceConfig,
     StorageStatus,
@@ -37,8 +35,6 @@ __all__ = [
     "Entry",
     "ExecResult",
     "Image",
-    "ImageBucket",
-    "ImageSourceKind",
     "InlineSource",
     "LocalRunner",
     "LocalSandbox",

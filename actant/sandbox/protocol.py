@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
 
@@ -52,31 +52,20 @@ class CancelRequest(_Message):
     call_id: str = Field(min_length=1)
 
 
-class ImageSourceKind(StrEnum):
-    #: The bytes, base64-encoded in the response.
-    INLINE = "inline"
-    #: A storage key in the bucket; the model call resolves it.
-    ASSET = "asset"
-
-
 class InlineSource(_Message):
-    kind: Literal[ImageSourceKind.INLINE] = ImageSourceKind.INLINE
+    #: The bytes, base64-encoded in the response.
     data_b64: str
-
-
-class AssetSource(_Message):
-    kind: Literal[ImageSourceKind.ASSET] = ImageSourceKind.ASSET
-    storage_key: str
 
 
 class Image(_Message):
     """One image a service method returned. ``name`` is its sandbox-relative path, or
-    ``image-<n>`` for bytes. A host with :class:`ImageUploadConfig` sends a
-    :class:`AssetSource`; without one, or when an upload fails, the bytes go inline."""
+    ``image-<n>`` for bytes. Images cross the sandbox boundary only as bytes: the sandbox
+    and the worker keep separate storage, so the worker stores them in its own
+    (:func:`actant.tools.service.to_tool_result`)."""
 
     name: str
     media_type: str
-    source: Annotated[InlineSource | AssetSource, Field(discriminator="kind")]
+    source: InlineSource
     #: What the image shows; the model reads it right before the image, in place of
     #: ``Image <name>:``.
     caption: str | None = None
@@ -97,9 +86,6 @@ class StorageStatus(_Message):
     consecutive_failures: int = 0
     #: Calls completed that no successful push has covered.
     pending: bool = False
-    #: Why the first image in this response that went inline instead of as a URL did;
-    #: ``None`` when every image uploaded (or there were none).
-    image_error: str | None = None
 
 
 class CallResponse(_Message):
@@ -109,7 +95,7 @@ class CallResponse(_Message):
     #: The method's result ends the agent's run, as a terminal tool result does
     #: (``MetadataKey.TERMINAL``). Never set on an error.
     terminal: bool = False
-    #: Only from a host that pushes storage or uploads images; absent on the wire otherwise.
+    #: Only from a host that pushes storage; absent on the wire otherwise.
     storage: StorageStatus | None = None
 
     def to_json(self) -> bytes:
@@ -124,16 +110,6 @@ class PushConfig(_Message):
     argv: list[str] = Field(min_length=1)
     interval_s: PositiveFloat = 60.0
     timeout_s: PositiveFloat = 300.0
-
-
-class ImageUploadConfig(_Message):
-    """Upload bytes under a durable S3 reference. Signing belongs to the reader."""
-
-    destination: str = Field(pattern=r"^s3://[^/]+/(.*/)?$")
-    endpoint_url: str | None = None
-    # Each attempt's connect and read timeout (``uploads.upload_budget``). A failed or
-    # timed-out upload falls back to inline bytes.
-    timeout_s: PositiveFloat = Field(default=10.0, allow_inf_nan=False)
 
 
 class ServiceConfig(_Message):
@@ -166,7 +142,6 @@ class HostConfig(_Message):
     #: Names :func:`actant.sandbox.host.script_env` removes.
     scrub: list[str] = Field(default_factory=list)
     push: PushConfig | None = None
-    images: ImageUploadConfig | None = None
 
 
 class StampConfig(_Message):

@@ -251,12 +251,6 @@ class SandboxSpec:
     #: ``disk_sync``: read-only prefixes mounted into the disk, for inputs too large to pull.
     #: A mount's path is inside no other mount's, and no restore entry's is at or under it.
     mounts: tuple[Mount, ...] = ()
-    #: Upload returned images to configured storage and return durable references.
-    #: False returns inline bytes; signing and retention belong to storage adapters.
-    upload_images: bool = True
-    #: Seconds one attempt to upload an image may take (its connect and read timeouts); boto
-    #: retries it, and an image that never lands returns as inline bytes.
-    image_upload_timeout_s: float = 10.0
 
     def __post_init__(self) -> None:
         # Coerce (and validate) a plain string from an untyped config.
@@ -283,26 +277,6 @@ class SandboxSpec:
             self.storage != Storage.DISK_SYNC or not self.seed.endswith("/")
         ):
             raise ValueError("seed is a key prefix ending in '/', for disk_sync storage")
-        timeout = self.image_upload_timeout_s
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, int | float)
-            or not (math.isfinite(timeout) and timeout > 0)
-        ):
-            raise ValueError("image_upload_timeout_s must be a positive, finite number")
-
-
-@dataclass(frozen=True)
-class ImageBucket:
-    """Storage destination for service images, separate from workspace sync."""
-
-    bucket: str
-    prefix: str = "actant-images/"
-    endpoint_url: str | None = None
-
-    def destination(self, thread_id: str) -> str:
-        """The ``s3://`` prefix a thread's images upload to."""
-        return f"s3://{self.bucket}/{self.prefix}{thread_id}/"
 
 
 class SandboxProvider(Protocol):

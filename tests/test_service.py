@@ -311,22 +311,27 @@ async def test_sandbox_runners_share_a_client_they_leave_open(sandbox: LocalSand
         assert not client.is_closed
 
 
-def test_a_terminal_result_ends_the_run_and_an_error_never_does() -> None:
+async def test_a_terminal_result_ends_the_run_and_an_error_never_does() -> None:
     class Reported:
         text, images, terminal = "wrote it", [], True
 
+    async def result(response: CallResponse) -> ToolResult:
+        return await to_tool_result(response, thread_id="t", store=None)
+
     response = CallResponse.model_validate_json(host.encode_output(Reported()).to_json())
     assert response.terminal
-    assert to_tool_result(response).metadata[MetadataKey.TERMINAL] is True
+    assert (await result(response)).metadata[MetadataKey.TERMINAL] is True
     assert not host.encode_output("plain text").terminal
-    assert MetadataKey.TERMINAL not in to_tool_result(CallResponse(text="ok")).metadata
-    failed = to_tool_result(CallResponse(error="boom", terminal=True))
+    assert MetadataKey.TERMINAL not in (await result(CallResponse(text="ok"))).metadata
+    failed = await result(CallResponse(error="boom", terminal=True))
     assert failed.error and MetadataKey.TERMINAL not in failed.metadata
 
 
-def test_storage_status_lands_on_tool_metadata() -> None:
+async def test_storage_status_lands_on_tool_metadata() -> None:
     status = StorageStatus(pending=True)
-    result = to_tool_result(CallResponse(text="ok", storage=status))
+    result = await to_tool_result(
+        CallResponse(text="ok", storage=status), thread_id="t", store=None
+    )
     assert StorageStatus.model_validate(result.metadata[MetadataKey.STORAGE]) == status
 
 

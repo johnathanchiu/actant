@@ -47,7 +47,7 @@ from actant.sandbox.access import SandboxAccess
 from actant.tools.calls import ToolCallStatus
 from actant.sandbox.base import ArtifactSink
 from actant.sandbox.registry import SandboxRegistry
-from actant.assets import AssetResolver
+from actant.assets import AssetResolver, AssetStore
 
 
 #: Temporal's sandbox imports again, for every workflow it starts, each module it does not pass
@@ -75,6 +75,7 @@ class AgentRuntime:
         resolve_agent: AgentResolver | None = None,
         sandboxes: SandboxRegistry | None = None,
         assets: AssetResolver | None = None,
+        asset_store: AssetStore | None = None,
         artifact_sink: ArtifactSink | None = None,
         event_source: EventSource | None = None,
         event_sink: EventSink | None = None,
@@ -93,6 +94,7 @@ class AgentRuntime:
             resolve_agent=resolve_agent,
             sandboxes=sandboxes,
             assets=assets,
+            asset_store=asset_store,
             artifact_sink=artifact_sink,
             event_sink=event_sink,
             turn_gate=turn_gate,
