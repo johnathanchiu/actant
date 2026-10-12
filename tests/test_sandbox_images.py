@@ -64,8 +64,9 @@ async def test_s3_store_derives_a_content_addressed_key_under_its_prefix() -> No
     ):
         key = await store.put_image(thread, PNG, "image/png")
         assert key == f"assets/{segment}/images/{digest}.png"
-    with pytest.raises(ValueError):
-        await store.put_image("", PNG, "image/png")
+    for thread in ("", ".", ".."):
+        with pytest.raises(ValueError):
+            await store.put_image(thread, PNG, "image/png")
 
 
 def _inline(name: str = "image-0", data: bytes = PNG) -> Image:

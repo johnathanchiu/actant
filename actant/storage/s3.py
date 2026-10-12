@@ -154,8 +154,8 @@ class S3AssetStore:
         self.client, self.bucket, self.prefix = client, bucket, prefix
 
     async def put_image(self, thread_id: str, data: bytes, mime: str) -> str:
-        if not thread_id:
-            raise ValueError("an image needs its thread id")
+        if thread_id in ("", ".", ".."):
+            raise ValueError(f"invalid thread id {thread_id!r}")
         # Thread ids are the caller's (``scene_x.object.fitted-4@ab12``); percent-encoding keeps
         # any of them one key segment, so no id can reach outside its thread's images.
         thread = quote(thread_id, safe="")
