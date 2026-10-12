@@ -4,6 +4,10 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `S3AssetStore.put_image` percent-encodes the thread id into one key segment instead of validating it: thread ids are the caller's and carry `@` and other characters (`scene_x.object.fitted-4@ab12`), which 0.40.1 refused.
+
 ## 0.40.1
 
 - `S3AssetStore.put_image` accepts thread ids with dots and colons (`scene_x.planner`); 0.40.0 refused them.
