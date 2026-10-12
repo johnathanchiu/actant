@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.40.0
 
 - Breaking: images cross the sandbox boundary only as bytes, and the worker stores them in its
   own storage. A sandbox and its worker may use different buckets, so a key written by one
