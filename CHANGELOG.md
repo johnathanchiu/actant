@@ -4,6 +4,15 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Breaking: `ModalSandboxProvider(bucket_env=...)` is replaced by `bucket_credentials`, an async
+  callable asked at every open with the sandbox id and a `BucketAccess` (the prefixes its
+  storage writes and reads, the objects it writes outside them, and its lifetime), returning the
+  keys for that sandbox. A product mints keys scoped to those prefixes, so code running in a
+  `disk_sync` sandbox, which holds its keys for s5cmd, reaches only its own files.
+  `ModalSandboxProvider.access(spec, sandbox_id)` returns the same `BucketAccess`.
+
 ## 0.40.2
 
 - `S3AssetStore.put_image` percent-encodes the thread id into one key segment instead of validating it: thread ids are the caller's and carry `@` and other characters (`scene_x.object.fitted-4@ab12`), which 0.40.1 refused.

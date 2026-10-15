@@ -144,6 +144,20 @@ class Location:
         return f"s3://{self.bucket}/{self.prefix}"
 
 
+@dataclass(frozen=True)
+class BucketAccess:
+    """What one sandbox's storage touches, for keys scoped to it: the prefixes it writes
+    (its own, or its restore plan's pushed entry), the prefixes it only reads (the other
+    restore entries, the mounts, a seed) and single objects it writes outside them (a seed's
+    marker), for ``lifetime_s`` (the spec's ``timeout_s``)."""
+
+    write: tuple[Location, ...]
+    read: tuple[Location, ...]
+    #: ``s3://`` URLs.
+    objects: tuple[str, ...]
+    lifetime_s: int
+
+
 def _check_path(path: str, what: str) -> None:
     if path and any(part in ("", ".", "..") for part in path.split("/")):
         raise ValueError(f"a {what} path is relative and normalized: {path!r}")
