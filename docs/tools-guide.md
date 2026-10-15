@@ -417,6 +417,30 @@ the same). Modal's `terminate`, `timeout` and `idle_timeout` kill the container
 outright, so `close` does not run on those paths. The image needs actant and
 the services' package installed.
 
+Keys a sandbox's code must never read stay with the caller: code in the sandbox
+asks for what needs them, and the caller runs it. `await actant.sandbox.ask(name,
+args)` (or `ask_sync` from a thread or a subprocess) sends JSON `args` to the
+host, which hands the ask to a caller serving `name`; the caller's handler runs
+where its keys are and its JSON value comes back. A runner given `asks` serves
+them while its calls run:
+
+```python
+async def segment(args: dict) -> list[dict]:
+    return await sam(base64.b64decode(args["image"]), args["words"])  # the caller's keys
+
+runner = SandboxRunner("tools", asks={"segment": segment})
+
+# in the sandbox, anywhere under the host
+found = await ask("segment", {"image": b64, "words": ["chair"]})
+```
+
+Each ask goes to one caller; one no caller answers within its `timeout_s`
+(default 900) fails with `AskError`, as does one whose handler raised. Runners in
+one process share one poll per host and handler mapping, so pass the same
+mapping. The host sets `ACTANT_ASK_URL` and `ACTANT_ASK_TOKEN` in its own
+environment for its services and their subprocesses; `script_env()` drops both,
+and the token only asks.
+
 Storage pushes never fail or stall a run. The host pushes after calls and every
 `SandboxSpec.sync_interval_s` (default 60) while completed calls are unpushed,
 one push at a time; a push running longer than `sync_timeout_s` (default 300)

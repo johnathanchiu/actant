@@ -25,6 +25,8 @@ A :class:`Runner` says where the methods run: :class:`LocalRunner` in-process,
 :class:`RemoteRunner` against a host endpoint, or :class:`SandboxRunner` against a
 sandbox's host (a name in the spec's ``services``). Orchestration code calls a
 runner directly; :func:`actant.tools.tools` exposes a service to a model through one.
+A remote runner given ``asks`` answers the sandbox's asks while its calls run
+(:mod:`actant.sandbox.asks`).
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
 
 import actant.sandbox.host as host
 from actant.heartbeat import heartbeating
+from actant.sandbox.asks import AskHandler, serving
 from actant.sandbox.base import Endpoint, Sandbox
 from actant.sandbox.protocol import CallRequest, CallResponse, CancelRequest, Route
 
@@ -95,7 +98,8 @@ class LocalRunner:
 
 class RemoteRunner:
     """Runs methods of the host's ``service``. ``key`` names the host-side instance,
-    created from ``init`` on its first call."""
+    created from ``init`` on its first call; ``asks`` answers the host's asks while a call
+    runs."""
 
     needs_sandbox = False
 
@@ -107,6 +111,7 @@ class RemoteRunner:
         init: Mapping[str, object] | None = None,
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT_S,
+        asks: Mapping[str, AskHandler] | None = None,
     ) -> None:
         import httpx
 
@@ -115,6 +120,7 @@ class RemoteRunner:
         self.key = key
         self.init = dict(init or {})
         self.timeout = timeout
+        self.asks = asks
         self._client = httpx.AsyncClient(
             trust_env=False, limits=httpx.Limits(max_connections=MAX_HOST_CONNECTIONS)
         )
@@ -139,7 +145,8 @@ class RemoteRunner:
     ) -> CallResponse:
         del key, sandbox
         request = _call(self.service, self.key, self.init, method, args, call_id)
-        return (await _send(self.endpoint, request, self.timeout, self._client))[1]
+        async with serving(self.endpoint, self.asks or {}):
+            return (await _send(self.endpoint, request, self.timeout, self._client))[1]
 
 
 class SandboxRunner:
@@ -151,7 +158,9 @@ class SandboxRunner:
     ``client`` shares one HTTP connection pool across runners: a process that makes
     many short-lived runners passes the same client to each, so a call reuses an open
     connection to the host instead of a new TLS handshake. The runner never closes a
-    client it was given; without one it makes its own and :meth:`close` closes it."""
+    client it was given; without one it makes its own and :meth:`close` closes it.
+
+    ``asks`` answers the sandbox's asks while a call runs (:mod:`actant.sandbox.asks`)."""
 
     needs_sandbox = True
 
@@ -162,12 +171,14 @@ class SandboxRunner:
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT_S,
         client: httpx.AsyncClient | None = None,
+        asks: Mapping[str, AskHandler] | None = None,
     ) -> None:
         import httpx
 
         self.service = service
         self.init = dict(init or {})
         self.timeout = timeout
+        self.asks = asks
         self._owned = client is None
         self._client = client or httpx.AsyncClient(
             trust_env=False, limits=httpx.Limits(max_connections=MAX_HOST_CONNECTIONS)
@@ -198,11 +209,13 @@ class SandboxRunner:
         if key is None:
             return CallResponse(error="SandboxRunner.call needs a key")
         request = _call(self.service, key, self.init, method, args, call_id)
-        status, response = await _send(endpoint, request, self.timeout, self._client)
+        async with serving(endpoint, self.asks or {}):
+            status, response = await _send(endpoint, request, self.timeout, self._client)
         if status == HTTPStatus.UNAUTHORIZED:  # rejected before running: safe to retry
             endpoint = await sandbox.endpoint(refresh=True)
             assert endpoint is not None
-            _, response = await _send(endpoint, request, self.timeout, self._client)
+            async with serving(endpoint, self.asks or {}):
+                _, response = await _send(endpoint, request, self.timeout, self._client)
         return response
 
 
@@ -216,10 +229,13 @@ async def call_host(
     init: Mapping[str, object] | None = None,
     timeout: float = DEFAULT_CALL_TIMEOUT_S,
     call_id: str | None = None,
+    asks: Mapping[str, AskHandler] | None = None,
 ) -> CallResponse:
-    """``POST /v1/call`` to a service host. Transport failures become error responses."""
+    """``POST /v1/call`` to a service host, answering its ``asks`` while the call runs.
+    Transport failures become error responses."""
     request = _call(service, key, init or {}, method, args, call_id)
-    return (await _send(endpoint, request, timeout))[1]
+    async with serving(endpoint, asks or {}):
+        return (await _send(endpoint, request, timeout))[1]
 
 
 def _call(

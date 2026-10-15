@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 
+from actant.sandbox.asks import ask, ask_sync
 from actant.sandbox.host import Host, script_env
 from actant.sandbox.processes import host_function, on_host
 from actant.sandbox.protocol import CallRequest
@@ -164,3 +166,26 @@ class Stages:
     async def advance(self) -> str:
         self.stage += 1
         return f"stage {self.stage}"
+
+
+class Asker:
+    """Asks its caller from where code in a sandbox runs: a method, a thread, a subprocess."""
+
+    async def here(self, name: str, n: int) -> str:
+        return json.dumps(await ask(name, {"n": n}, timeout_s=5))
+
+    def in_a_thread(self, n: int) -> str:
+        return json.dumps(ask_sync("double", {"n": n}))
+
+    async def in_a_subprocess(self, n: int) -> str:
+        code = (
+            "import json, sys; from actant.sandbox import ask_sync; "
+            "print(json.dumps(ask_sync('double', {'n': int(sys.argv[1])})))"
+        )
+        done = await asyncio.to_thread(
+            subprocess.run, [sys.executable, "-c", code, str(n)], capture_output=True, text=True
+        )
+        return done.stdout.strip() or done.stderr
+
+    async def scripts_see(self) -> list[str]:
+        return sorted(name for name in script_env() if name.startswith("ACTANT_ASK"))
