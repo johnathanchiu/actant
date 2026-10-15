@@ -18,13 +18,16 @@ under a per-sandbox prefix, in one of two ways (``SandboxSpec.storage``):
     (a capture) can be mounted into the disk instead (`SandboxSpec.mounts`);
     no pull or push touches a mount's path. The tradeoff: s5cmd
     runs in the container, so the bucket keys are in the sandbox's environment;
-    list them in ``scrub_env`` so agent-run code does not see them. The image
-    needs s5cmd (:func:`with_s5cmd`).
+    list them in ``scrub_env`` so agent-run code does not see them, and give each
+    sandbox keys scoped to its own prefixes (``bucket_credentials``), since
+    scrubbing does not keep them from code that reads the host's environment. The
+    image needs s5cmd (:func:`with_s5cmd`).
 
 Either way a dead sandbox reopens on the same prefix. ``secret_name`` names a
 Modal secret holding ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` (plus
-``AWS_REGION``: ``auto`` for R2, ``us-east-1`` for MinIO), or pass them inline as
-``bucket_env``. The endpoint comes from ``endpoint_url`` (any https URL, a
+``AWS_REGION``: ``auto`` for R2, ``us-east-1`` for MinIO), the same keys for every
+sandbox; ``bucket_credentials`` instead mints them per sandbox at each open, for what
+its storage touches (:meth:`ModalSandboxProvider.access`). The endpoint comes from ``endpoint_url`` (any https URL, a
 cloudflared tunnel included); s5cmd uses path-style addressing for any custom
 endpoint, which MinIO needs.
 
@@ -51,7 +54,7 @@ import importlib
 import json
 import logging
 import shlex
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from http import HTTPStatus
@@ -64,6 +67,7 @@ import actant.sandbox.host as host
 from actant.sandbox.access import SETUP_TIMEOUT_S, AccessSetup, SandboxAccess, run_argv
 from actant.heartbeat import heartbeating
 from actant.sandbox.base import (
+    BucketAccess,
     Endpoint,
     Entry,
     ExecResult,
@@ -124,6 +128,7 @@ class ModalSandboxProvider:
     ``secret_name`` is a Modal secret holding the bucket's access keys. With
     ``storage="mount"`` the mount consumes it and the process never sees it;
     with ``"disk_sync"`` it is in the sandbox environment for s5cmd.
+    ``bucket_credentials`` takes its place with keys minted for one sandbox.
     """
 
     app_name: str
@@ -131,10 +136,12 @@ class ModalSandboxProvider:
     key_prefix: str = "sandboxes/"
     endpoint_url: str | None = None
     secret_name: str | None = None
-    #: Inline bucket credentials (same keys as ``secret_name``), sent with
-    #: ``modal.Secret.from_dict`` so a test needs no persisted Modal secret.
-    #: ``AWS_REGION`` defaults to ``us-east-1``. Takes precedence over ``secret_name``.
-    bucket_env: Mapping[str, str] | None = None
+    #: The bucket keys for one sandbox (same names as ``secret_name``'s, plus
+    #: ``AWS_SESSION_TOKEN`` for temporary ones), asked at every open with its id and what
+    #: its storage touches, so a reopened sandbox gets fresh ones. Sent with
+    #: ``modal.Secret.from_dict``, never recorded; ``AWS_REGION`` defaults to ``us-east-1``.
+    #: Takes precedence over ``secret_name``.
+    bucket_credentials: Callable[[str, BucketAccess], Awaitable[Mapping[str, str]]] | None = None
     #: The image for a spec without one: a spec reopened from its record
     #: (``actant.sandbox.store``) has none, as an image is not data.
     image: Any = None
@@ -157,8 +164,9 @@ class ModalSandboxProvider:
         config = self.entry_config(spec, sandbox_id)
         modal = importlib.import_module("modal")
         app = await modal.App.lookup.aio(self.app_name, create_if_missing=True, client=self.client)
-        if self.bucket_env is not None:
-            bucket_secret = modal.Secret.from_dict({"AWS_REGION": "us-east-1", **self.bucket_env})
+        if self.bucket_credentials is not None:
+            keys = await self.bucket_credentials(sandbox_id, self.access(spec, sandbox_id))
+            bucket_secret = modal.Secret.from_dict({"AWS_REGION": "us-east-1", **keys})
         elif self.secret_name:
             bucket_secret = modal.Secret.from_name(self.secret_name)
         else:
@@ -338,6 +346,20 @@ class ModalSandboxProvider:
     def own_location(self, sandbox_id: str) -> Location:
         """A sandbox's own prefix: ``<key_prefix><sandbox_id>/`` in :attr:`bucket`."""
         return Location(self.bucket, f"{self.key_prefix}{sandbox_id}/")
+
+    def access(self, spec: SandboxSpec, sandbox_id: str) -> BucketAccess:
+        """What the sandbox's storage touches: its own prefix (``mount``), or its restore
+        plan's pushed entry written, its other entries, mounts and seed read, and the seed's
+        marker written (``disk_sync``)."""
+        if spec.storage != Storage.DISK_SYNC:
+            return BucketAccess((self.own_location(sandbox_id),), (), (), spec.timeout_s)
+        plan = self._plan(spec, sandbox_id)
+        read = [r.source for r in plan.others] + [m.source for m in plan.mounts]
+        objects: tuple[str, ...] = ()
+        if spec.seed is not None:
+            read.append(Location(self.bucket, spec.seed))
+            objects = (self._marker(plan.pushed.source),)
+        return BucketAccess((plan.pushed.source,), tuple(read), objects, spec.timeout_s)
 
     def _plan(self, spec: SandboxSpec, sandbox_id: str) -> _Plan:
         """The spec's restore plan (by default the sandbox's own prefix at the root): its pushed

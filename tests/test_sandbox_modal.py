@@ -330,22 +330,55 @@ async def test_attach_to_an_exited_sandbox_is_gone(
         await provider.attach(SandboxSpec(backend="modal"), "sb-1")
 
 
-async def test_inline_bucket_env(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_bucket_credentials_are_minted_per_open_for_what_the_sandbox_touches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake = _FakeModal()
     _use(monkeypatch, fake)
+    asked: list[tuple[str, Any]] = []
+
+    async def mint(sandbox_id: str, access: Any) -> dict[str, str]:
+        asked.append((sandbox_id, access))
+        return {"AWS_ACCESS_KEY_ID": f"k{len(asked)}", "AWS_SECRET_ACCESS_KEY": "s"}
+
     provider = ModalSandboxProvider(
         app_name="app",
         bucket="b",
         endpoint_url="https://abc.trycloudflare.com",
-        bucket_env={"AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"},
+        secret_name="global",
+        bucket_credentials=mint,
     )
-    await provider.open(SandboxSpec(backend="modal", storage=Storage.DISK_SYNC), sandbox_id="t")
-    creds = {"AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"}
+    spec = SandboxSpec(
+        backend="modal",
+        storage=Storage.DISK_SYNC,
+        seed="templates/base/",
+        restore=(
+            Restore(Location("b", "runs/t/"), "", push=True),
+            Restore(Location("b", "shared/"), "shared", push=False),
+        ),
+        mounts=(Mount(Location("b", "captures/c/"), "capture"),),
+        timeout_s=900,
+    )
+    await provider.open(spec, sandbox_id="t")
+    creds = {"AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "k1", "AWS_SECRET_ACCESS_KEY": "s"}
     assert fake.created[1]["secrets"] == [("dict", creds)]
+    assert fake.created[1]["volumes"][f"{DISK_PATH}/capture"][2]["secret"] == ("dict", creds)
+    access = asked[0][1]
+    assert asked[0][0] == "t"
+    assert access.write == (Location("b", "runs/t/"),)
+    assert access.read == (
+        Location("b", "shared/"),
+        Location("b", "captures/c/"),
+        Location("b", "templates/base/"),
+    )
+    assert access.objects == ("s3://b/runs/t.actant-seeded",)
+    assert access.lifetime_s == 900
 
-    await provider.open(SandboxSpec(backend="modal"), sandbox_id="t")
+    await provider.open(SandboxSpec(backend="modal"), sandbox_id="u")
+    assert asked[1][1].write == (Location("b", "sandboxes/u/"),)
+    assert asked[1][1].read == ()
     assert fake.created[1]["secrets"] == []
-    assert fake.created[1]["volumes"][MOUNT_PATH][2]["secret"] == ("dict", creds)
+    assert fake.created[1]["volumes"][MOUNT_PATH][2]["secret"][1]["AWS_ACCESS_KEY_ID"] == "k2"
 
 
 def test_with_s5cmd_installs_the_pinned_binary() -> None:
