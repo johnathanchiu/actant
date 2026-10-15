@@ -5,6 +5,7 @@ runtime, threads, runs or models.
 """
 
 from actant.sandbox.access import SandboxAccess
+from actant.sandbox.asks import AskError, AskHandler, ask, ask_sync, asking, serving
 from actant.sandbox.base import (
     ArtifactRef,
     ArtifactSink,
@@ -30,6 +31,8 @@ from actant.sandbox.service import LocalRunner, RemoteRunner, Runner, SandboxRun
 __all__ = [
     "ArtifactRef",
     "ArtifactSink",
+    "AskError",
+    "AskHandler",
     "Backend",
     "Endpoint",
     "Entry",
@@ -49,7 +52,11 @@ __all__ = [
     "ServiceConfig",
     "Storage",
     "StorageStatus",
+    "ask",
+    "ask_sync",
+    "asking",
     "call_host",
     "host_function",
     "on_host",
+    "serving",
 ]

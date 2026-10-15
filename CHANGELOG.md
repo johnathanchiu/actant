@@ -4,6 +4,18 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Asks: code in a sandbox has its caller run what only the caller may, such as an API call
+  with keys the sandbox must never hold. `actant.sandbox.ask(name, args)` (`ask_sync` from a
+  thread or subprocess) posts JSON to the host (`POST /v1/ask`, with `ACTANT_ASK_TOKEN`, which
+  authorizes nothing else); a caller serving `name` takes it (`POST /v1/asks`), runs its
+  handler and answers (`POST /v1/answer`). `SandboxRunner`, `RemoteRunner` and `call_host`
+  take `asks={name: handler}` and serve them while their calls run; `serving(endpoint,
+  handlers)` serves them for a block. An ask no caller answers within its `timeout_s` fails.
+- The host sets `ACTANT_ASK_URL` and `ACTANT_ASK_TOKEN` in its environment once it listens;
+  `script_env()` always drops both.
+
 ## 0.40.2
 
 - `S3AssetStore.put_image` percent-encodes the thread id into one key segment instead of validating it: thread ids are the caller's and carry `@` and other characters (`scene_x.object.fitted-4@ab12`), which 0.40.1 refused.

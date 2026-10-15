@@ -22,6 +22,12 @@ class Route(StrEnum):
     CANCEL = "/v1/cancel"
     #: Close every instance, push storage once more, answer, and exit.
     SHUTDOWN = "/v1/shutdown"
+    #: Code in the sandbox ``POST``\ s an :class:`Ask`; the reply is its :class:`AskAnswer`.
+    ASK = "/v1/ask"
+    #: The caller ``POST``\ s an :class:`AsksRequest`; the reply is the :class:`Asks` waiting.
+    ASKS = "/v1/asks"
+    #: The caller ``POST``\ s an :class:`AskAnswer` to one ask it took.
+    ANSWER = "/v1/answer"
 
 
 class Header(StrEnum):
@@ -50,6 +56,40 @@ class CallRequest(_Message):
 
 class CancelRequest(_Message):
     call_id: str = Field(min_length=1)
+
+
+class Ask(_Message):
+    """Something code in the sandbox asks the caller to run (:mod:`actant.sandbox.asks`):
+    a handler the caller registered under ``name``, given ``args``."""
+
+    name: str = Field(min_length=1)
+    #: JSON only: the caller validates it, and never unpickles what the sandbox sent.
+    args: dict[str, Any] = Field(default_factory=dict)
+    #: How long the asker waits for an answer, a caller's run of the handler included.
+    timeout_s: PositiveFloat = 900.0
+    ask_id: str = Field(default_factory=lambda: uuid.uuid4().hex, min_length=1)
+
+
+class AskAnswer(_Message):
+    """What a handler returned for ``ask_id`` (JSON), or why it failed."""
+
+    ask_id: str = Field(min_length=1)
+    value: Any = None
+    error: str | None = None
+
+
+class AsksRequest(_Message):
+    """A caller's poll: the asks named in ``names`` waiting now, else the first that comes
+    within ``wait_s``."""
+
+    names: list[str] = Field(min_length=1)
+    wait_s: float = Field(default=20.0, ge=0, le=60)
+
+
+class Asks(_Message):
+    """The asks a poll took: each is now the polling caller's to answer."""
+
+    asks: list[Ask] = Field(default_factory=list)
 
 
 class InlineSource(_Message):

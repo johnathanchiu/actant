@@ -22,6 +22,13 @@ Protocol (JSON bodies, typed in :mod:`actant.sandbox.protocol`)::
     POST /v1/call CallRequest -> CallResponse
     POST /v1/cancel CancelRequest -> stop that call (its method sees CancelledError)
     POST /v1/shutdown         -> close instances, push, exit
+    POST /v1/ask     Ask         -> AskAnswer (from code in the sandbox: ``ACTANT_ASK_TOKEN``)
+    POST /v1/asks    AsksRequest -> Asks (a caller takes the asks it serves)
+    POST /v1/answer  AskAnswer   -> the answer to one ask it took
+
+Asks (:mod:`actant.sandbox.asks`) are how code in the sandbox has its caller run what
+only the caller may, an API call with the caller's keys: the host holds each ask until
+a caller serving its name takes it, and answers the asker with what that caller sent.
 
 Connections are kept alive (HTTP/1.1); :func:`post` is the pooled client.
 
@@ -63,6 +70,7 @@ import inspect
 import json
 import mimetypes
 import os
+import secrets
 import select
 import signal
 import sys
@@ -80,8 +88,13 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from actant.logs import log_to_stderr
+from actant.sandbox.asks import ASK_ENV, ASK_TOKEN_ENV, ASK_URL_ENV
 from actant.sandbox.base import Endpoint
 from actant.sandbox.protocol import (
+    Ask,
+    AskAnswer,
+    Asks,
+    AsksRequest,
     CallRequest,
     CancelRequest,
     CallResponse,
@@ -130,13 +143,14 @@ def scrub(names: Iterable[str]) -> None:
 
 
 def script_env() -> dict[str, str]:
-    """This process's environment minus the host's ``HostConfig.scrub`` names.
+    """This process's environment minus the host's ``HostConfig.scrub`` names and the
+    asks' address (``ACTANT_ASK_URL``, ``ACTANT_ASK_TOKEN``).
 
-    The host keeps every variable because methods call external APIs with them. Pass this
-    as ``env=`` to any subprocess a tool starts for code it did not write. Best
+    Pass this as ``env=`` to any subprocess a tool starts for code it did not write. Best
     effort, not a security boundary.
     """
-    return {name: value for name, value in os.environ.items() if name not in _scrub}
+    hidden = _scrub | ASK_ENV
+    return {name: value for name, value in os.environ.items() if name not in hidden}
 
 
 def service_methods(cls: type) -> list[str]:
@@ -405,6 +419,14 @@ def post(endpoint: Endpoint, path: str, body: bytes, timeout: float) -> tuple[in
 
 
 @dataclass
+class _Asked:
+    """One ask, from its arrival until it is answered or its asker stops waiting."""
+
+    ask: Ask
+    answer: asyncio.Future[AskAnswer]
+
+
+@dataclass
 class _Call:
     """One call id's run: the request that started it, and its task. A call cancelled
     before it arrived has no request and a cancelled task."""
@@ -450,6 +472,12 @@ class Host:
         self.writers: set[asyncio.StreamWriter] = set()
         #: Running, finished and cancelled calls, by call id (``KEEP_FINISHED_S``).
         self.calls: dict[str, _Call] = {}
+        #: What code in the sandbox asks with (``ACTANT_ASK_TOKEN``): asks, nothing else.
+        self.ask_token = secrets.token_urlsafe(32)
+        #: Asks unanswered, by id; ``untaken`` are those no caller has taken yet.
+        self.asked: dict[str, _Asked] = {}
+        self.untaken: dict[str, _Asked] = {}
+        self._new_ask = asyncio.Condition()
 
     async def instance(self, service: str, key: str, init: Mapping[str, object]) -> object:
         slot = (service, key)
@@ -509,6 +537,50 @@ class Host:
         entry.task.cancel()
         done, _ = await asyncio.wait([entry.task], timeout=CANCEL_GRACE_S)
         return CallResponse(text="cancelled" if done else "cancelling")
+
+    async def ask(self, ask: Ask) -> AskAnswer:
+        """``ask``'s answer from the caller that takes it, or why there is none."""
+        asked = _Asked(ask, asyncio.get_running_loop().create_future())
+        self.asked[ask.ask_id] = self.untaken[ask.ask_id] = asked
+        async with self._new_ask:
+            self._new_ask.notify_all()
+        try:
+            return await asyncio.wait_for(asyncio.shield(asked.answer), ask.timeout_s)
+        except TimeoutError:
+            why = (
+                "no caller took it" if ask.ask_id in self.untaken else "its caller never answered"
+            )
+            return AskAnswer(
+                ask_id=ask.ask_id,
+                error=f"AskError: ask {ask.name!r} unanswered after {ask.timeout_s:g} s: {why}",
+            )
+        finally:
+            self.asked.pop(ask.ask_id, None)
+            self.untaken.pop(ask.ask_id, None)
+
+    async def take(self, request: AsksRequest) -> Asks:
+        """The untaken asks named in ``request``, or the first to come within its wait."""
+        names = frozenset(request.names)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + request.wait_s
+        async with self._new_ask:
+            while True:
+                found = [a for a in self.untaken.values() if a.ask.name in names]
+                left = deadline - loop.time()
+                if found or left <= 0:
+                    break
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._new_ask.wait(), left)
+        for asked in found:
+            del self.untaken[asked.ask.ask_id]
+        return Asks(asks=[asked.ask for asked in found])
+
+    def answer(self, answer: AskAnswer) -> CallResponse:
+        asked = self.asked.get(answer.ask_id)
+        if asked is None or asked.answer.done():
+            return CallResponse(text="not waiting")
+        asked.answer.set_result(answer)
+        return CallResponse(text="answered")
 
     def _forget_finished(self) -> None:
         """Drop finished calls past ``KEEP_FINISHED_S``, then the oldest past
@@ -593,8 +665,10 @@ class Host:
             return HTTPStatus.NOT_FOUND, CallResponse(error=f"no route {verb} {path}")
         if verb != "POST":
             return HTTPStatus.METHOD_NOT_ALLOWED, CallResponse(error="use POST")
-        if self.token is not None and not hmac.compare_digest(
-            headers.get(Header.AUTHORIZATION.lower(), ""), f"Bearer {self.token}"
+        # code in the sandbox may ask with its own token, and do nothing else with it
+        token = self.ask_token if path == Route.ASK else self.token
+        if token is not None and not hmac.compare_digest(
+            headers.get(Header.AUTHORIZATION.lower(), ""), f"Bearer {token}"
         ):
             return HTTPStatus.UNAUTHORIZED, CallResponse(error="bad or missing bearer token")
         if int(headers.get(Header.CONTENT_LENGTH.lower()) or 0) > MAX_BODY:
@@ -639,7 +713,7 @@ class Host:
 
     async def handle(
         self, head: bytes, reader: asyncio.StreamReader
-    ) -> tuple[HTTPStatus, CallResponse, bool]:
+    ) -> tuple[HTTPStatus, BaseModel, bool]:
         """One request: its status, payload, and whether the connection must close."""
         try:
             lines = head.decode("latin-1").split("\r\n")
@@ -669,7 +743,20 @@ class Host:
         if path == Route.SHUTDOWN:
             await self.shutdown()
             return HTTPStatus.OK, CallResponse(text="stopped"), True
+        if path in (Route.ASK, Route.ASKS, Route.ANSWER):
+            return *(await self.relay(path, body)), close
         return *(await self.route(body)), close
+
+    async def relay(self, path: str, body: bytes) -> tuple[HTTPStatus, BaseModel]:
+        """An ask from the sandbox, a caller's poll for asks, or a caller's answer."""
+        try:
+            if path == Route.ASK:
+                return HTTPStatus.OK, await self.ask(Ask.model_validate_json(body))
+            if path == Route.ASKS:
+                return HTTPStatus.OK, await self.take(AsksRequest.model_validate_json(body))
+            return HTTPStatus.OK, self.answer(AskAnswer.model_validate_json(body))
+        except ValidationError as error:
+            return HTTPStatus.BAD_REQUEST, CallResponse(error=f"bad {path} request: {error}")
 
     async def close_instances(self) -> None:
         await asyncio.gather(*(workers.close() for workers in self.workers.values()))
@@ -696,11 +783,15 @@ class Host:
 async def respond(
     writer: asyncio.StreamWriter,
     status: HTTPStatus,
-    payload: CallResponse,
+    payload: BaseModel,
     *,
     close: bool = True,
 ) -> None:
-    data = payload.to_json()
+    data = (
+        payload.to_json()
+        if isinstance(payload, CallResponse)
+        else payload.model_dump_json().encode()
+    )
     head = [
         f"HTTP/1.1 {status.value} {status.phrase}",
         f"{Header.CONTENT_TYPE}: application/json",
@@ -731,6 +822,9 @@ async def serve(host: Host, bind: str, port: int) -> None:
     SIGKILL, which nothing can handle: close the sandbox through its handle instead."""
     server = await asyncio.start_server(host.connection, bind, port)
     bound = server.sockets[0].getsockname()[1]
+    # before any call: the services, their workers and subprocesses inherit the asks' address
+    os.environ[ASK_URL_ENV] = f"http://127.0.0.1:{bound}"
+    os.environ[ASK_TOKEN_ENV] = host.ask_token
     print(f"{READY_PREFIX} {bound}", flush=True)
     pusher = asyncio.create_task(host.pusher()) if host.push else None
     loop = asyncio.get_running_loop()
