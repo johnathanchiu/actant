@@ -94,7 +94,8 @@ class OpenAIProvider:
     event. ``azure`` marks an Azure OpenAI deployment, whatever the client's type, for
     its service limits (``max_images_per_request`` defaults to Azure's 50).
     ``cache_key`` is sent as ``prompt_cache_key`` on every request: requests that share
-    a prefix and a key reach the cache that holds it. Empty: none sent.
+    a prefix and a key reach the cache that holds it. Empty: none sent. OpenAI
+    refuses a key over 64 characters.
     """
 
     supports_allowed_tools = True
@@ -116,6 +117,8 @@ class OpenAIProvider:
         azure: bool = False,
         cache_key: str = "",
     ) -> None:
+        if len(cache_key) > 64:
+            raise ValueError(f"cache_key is {len(cache_key)} characters; OpenAI allows 64")
         self.model_id = model_id
         self.cache_key = cache_key
         # Limits for context compaction (``CompactionConfig``). The window
