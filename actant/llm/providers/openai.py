@@ -93,6 +93,8 @@ class OpenAIProvider:
     OpenAI timing out fetching an image URL, and a stream that closes before a terminal
     event. ``azure`` marks an Azure OpenAI deployment, whatever the client's type, for
     its service limits (``max_images_per_request`` defaults to Azure's 50).
+    ``cache_key`` is sent as ``prompt_cache_key`` on every request: requests that share
+    a prefix and a key reach the cache that holds it. Empty: none sent.
     """
 
     supports_allowed_tools = True
@@ -112,8 +114,10 @@ class OpenAIProvider:
         context_window_tokens: int | None = None,
         max_images_per_request: int | None = None,
         azure: bool = False,
+        cache_key: str = "",
     ) -> None:
         self.model_id = model_id
+        self.cache_key = cache_key
         # Limits for context compaction (``CompactionConfig``). The window
         # depends on the model and deployment, so it is never guessed. Images
         # per request are documented per service: Azure OpenAI rejects more
@@ -224,6 +228,8 @@ class OpenAIProvider:
             ),
             "store": False,
         }
+        if self.cache_key:
+            params["prompt_cache_key"] = self.cache_key
         converted_tools = self.convert_tools(tools)
         if converted_tools:
             params["tools"] = cast(list[ToolParam], converted_tools)

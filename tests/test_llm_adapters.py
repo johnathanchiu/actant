@@ -452,6 +452,14 @@ def test_astra_request_preserves_requested_reasoning_and_encrypted_state() -> No
     assert "reasoning.encrypted_content" in include
 
 
+def test_openai_request_sends_prompt_cache_key_only_when_set() -> None:
+    hello = [Message(role="user", content="hello")]
+    keyed = OpenAIProvider(model_id="gpt-6-astra", api_key="test", cache_key="planner")
+    assert keyed._request_params("System", hello, []).get("prompt_cache_key") == "planner"
+    plain = OpenAIProvider(model_id="gpt-6-astra", api_key="test")
+    assert "prompt_cache_key" not in plain._request_params("System", hello, [])
+
+
 @pytest.mark.asyncio
 async def test_openai_usage_callback_retains_cache_details(
     monkeypatch: pytest.MonkeyPatch,
