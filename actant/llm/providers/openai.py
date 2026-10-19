@@ -117,8 +117,6 @@ class OpenAIProvider:
         azure: bool = False,
         cache_key: str = "",
     ) -> None:
-        if len(cache_key) > 64:
-            raise ValueError(f"cache_key is {len(cache_key)} characters; OpenAI allows 64")
         self.model_id = model_id
         self.cache_key = cache_key
         # Limits for context compaction (``CompactionConfig``). The window
@@ -218,6 +216,17 @@ class OpenAIProvider:
             "call_id": message.tool_call_id or f"call_{uuid.uuid4().hex}",
             "output": content_to_openai_user_parts(message.content) if images else text,
         }
+
+    @property
+    def cache_key(self) -> str:
+        return self._cache_key
+
+    @cache_key.setter
+    def cache_key(self, key: str) -> None:
+        # refused here, where it is set, not by OpenAI's 400 on the first request
+        if len(key) > 64:
+            raise ValueError(f"cache_key is {len(key)} characters; OpenAI allows 64")
+        self._cache_key = key
 
     def _request_params(
         self, system: str, messages: Sequence[Message], tools: list[dict]

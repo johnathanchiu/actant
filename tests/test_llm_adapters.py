@@ -458,6 +458,8 @@ def test_openai_request_sends_prompt_cache_key_only_when_set() -> None:
     assert keyed._request_params("System", hello, []).get("prompt_cache_key") == "planner"
     plain = OpenAIProvider(model_id="gpt-6-astra", api_key="test")
     assert "prompt_cache_key" not in plain._request_params("System", hello, [])
+    with pytest.raises(ValueError):
+        plain.cache_key = "k" * 65
 
 
 @pytest.mark.asyncio
