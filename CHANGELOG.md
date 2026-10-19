@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.41.0
 
 - `OpenAIProvider(cache_key=...)` sends the Responses API's `prompt_cache_key` on every request. Requests that share a prefix and a key reach the cache that holds it; without one, OpenAI may route them to caches that do not. Empty (the default): none sent.
 
