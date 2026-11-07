@@ -29,6 +29,7 @@ class TemporalRuntimeActivities:
             self.tools.resolve_tool,
             self.tools.finalize_tool_group,
             self.runs.finalize_run,
+            self.runs.report_to_parent,
             self.threads.apply_thread_cancellation,
         ]
 

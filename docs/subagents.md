@@ -75,28 +75,41 @@ metadata for a viewer to place them under the correct task call.
 `SubThreadRegistry` is an in-memory event-routing index. Reconstruct it from
 thread projections after restart. It is not the durable completion mechanism.
 
-## Completion and harvesting
+## Completion
 
-Child completion is not automatically equivalent to “return the final text.”
-The coordinator owns harvest semantics. It might return:
+A thread started with `parent_thread_id` reports to its parent each time one of
+its runs ends, after the run is finalized. The report is a message on the
+parent's inbox, the same one a person's message arrives on, so a completing
+subagent and a user speaking are the same kind of event: a parent parked
+mid-run takes it in its next run, and a parent that has already closed is
+started again by it. `AgentRuntime` and `LocalThreadRuntime` both do this.
 
-- the last assistant message;
-- structured findings;
-- artifact references;
-- a success/failure envelope;
-- a product-specific result assembled from several stores.
+The message is one text block, tagged `subagent_report`
+(`actant.runtime.SUBAGENT_REPORT_TAG`), so a host can tell it from a person's:
 
-Register a `RunCompletionHandler` on `AgentRuntime`, or use the
-thread hooks. Either runs after the child's projections are committed. The
-handler harvests persisted child output and **sends the parent a message**
-saying the child is done.
+```text
+<subagent_report thread_id="thr_..." agent_id="researcher" run_id="..." status="completed">
+The final answer.
+</subagent_report>
+```
 
-That message is what resumes the parent. It arrives on the same inbox a
-person's message would, so a completing subagent and a user speaking are the
-same kind of event, and a parent that has already closed is restarted by it.
+`status` is how the run ended: `completed`, `exhausted`, `failed` or
+`cancelled`. A completed run's text is its terminal tool's (`finish`'s
+`summary`), else its last reply; any other run's is why it stopped.
+`SubagentReport` is the same thing as a value.
 
-Deliver it idempotently: completion handlers retry, and signals are not
-deduplicated.
+Each run reports once. A delivery attempted again finds the report in the
+parent's transcript, or the parent drops it by its run id while it is still
+queued. A parent that is cancelled hears nothing, so a cancel that reaches a
+child through its parent does not start the parent again.
+
+The parent is found by its thread id alone (`ThreadStore.find`), so a parent
+thread id must name one thread across agents, as `list_children` already
+assumes.
+
+Anything else a product harvests from a finished child (structured findings,
+artifact references) belongs in a `RunCompletionHandler`, which runs after the
+child's projections are committed.
 
 ## Nested delegation
 

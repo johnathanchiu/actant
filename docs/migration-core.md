@@ -159,8 +159,8 @@ and repair incomplete tool results without repeating uncertain side effects.
 
 Durable product effects belong in `run_completion_handler`, not a live event handler.
 Completion failures retry after finalization. Consumers must deduplicate by `run_id`;
-Actant does not promise exactly-once external delivery. Subagent notification should read
-persisted parent links, as the demo does, rather than depend on the spawning process.
+Actant does not promise exactly-once external delivery. A sub-thread reports to its parent
+through the runtime, from persisted parent links (`docs/subagents.md`).
 
 `InMemorySessionStore` and the unused `SessionStore` interface are removed. Use runtime
 stores. `message_to_parts` and `parts_to_messages` remain, along with existing Postgres models.

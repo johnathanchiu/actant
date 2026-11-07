@@ -34,6 +34,7 @@ from actant.runtime.compaction import (
 from actant.runtime.events.runtime import RuntimeEvents
 from actant.runtime.completion import RunCompletion
 from actant.runtime.gate import TurnStart
+from actant.runtime.subagents import parent_report
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
     ActivityName,
@@ -43,6 +44,7 @@ from actant.runtime.temporal.types import (
     CompactionTrigger,
     ContextSummary,
     FinalizeRunInput,
+    ReportToParentInput,
     RunOutcome,
     RunTurnInput,
     StartRunInput,
@@ -149,7 +151,9 @@ class RunActivities:
             thread.sandbox_access = payload.sandbox_access
         await self.context.stores.threads.update(thread)
         run = await self.context.stores.runs.get(payload.run_id)
-        return StartedRun(thread.turn_count, run.max_turns, resolution_error)
+        return StartedRun(
+            thread.turn_count, run.max_turns, resolution_error, thread.parent_thread_id
+        )
 
     @activity.defn(name=ActivityName.RUN_TURN)
     async def run_turn(self, payload: RunTurnInput) -> TurnResult:
@@ -809,6 +813,18 @@ class RunActivities:
             reason=payload.stop_reason or payload.outcome,
             message="",
         )
+
+    @activity.defn(name=ActivityName.REPORT_TO_PARENT)
+    async def report_to_parent(self, payload: ReportToParentInput) -> None:
+        """Message a finished sub-thread's parent (``actant.runtime.subagents``). Attempted
+        again, it finds the report in the parent's transcript, or the parent drops it."""
+        found = await parent_report(self.context.stores, payload)
+        if found is None:
+            return
+        if self.context.message_thread is None:
+            raise ApplicationError("no way to message a parent thread", non_retryable=True)
+        parent, message = found
+        await self.context.message_thread(parent.agent_id, parent.id, message)
 
 
 def _provider_limit(agent: AgentDefinition, name: str) -> int | None:

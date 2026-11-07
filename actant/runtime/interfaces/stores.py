@@ -34,6 +34,11 @@ class ThreadStore(Protocol):
         """Direct children across agents; parent thread IDs identify the lineage."""
         ...
 
+    async def find(self, thread_id: str) -> AgentThread | None:
+        """The thread with this id under any agent, as a parent link names one; ``None``
+        when there is none. Raises ``LookupError`` when several agents have one."""
+        ...
+
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]: ...
 
 

@@ -16,11 +16,14 @@ from actant.llm.messages import Message
 from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.gate import TurnGate
 from actant.runtime.interfaces.stores import RuntimeStores
+from actant.runtime.temporal.types import InboundMessage
 from actant.runtime.types.threads import AgentThread
 from actant.sandbox.base import ArtifactSink, Sandbox
 from actant.sandbox.registry import SandboxRegistry
 
 AgentResolver = Callable[[str, str], Awaitable[AgentDefinition]]
+#: Deliver a message to ``(agent_id, thread_id)``, starting the thread if it has closed.
+MessageThread = Callable[[str, str, InboundMessage], Awaitable[None]]
 
 MessagePreprocessor = Callable[[list[Message]], Awaitable[list[Message]]]
 
@@ -44,8 +47,11 @@ class ActivityContext:
         compaction_instructions: str = "",
         summarizers: Mapping[str, LLMClient] | None = None,
         cancel_children: Callable[[str], Awaitable[None]] | None = None,
+        message_thread: MessageThread | None = None,
     ) -> None:
         self.cancel_children = cancel_children
+        # How a sub-thread's report reaches its parent (``actant.runtime.subagents``).
+        self.message_thread = message_thread
         self.stores = stores
         self.resolve_agent = resolve_agent
         self.assets = assets

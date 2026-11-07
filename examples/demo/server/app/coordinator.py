@@ -1,7 +1,7 @@
 """Application-owned agent construction, delegation, and durable completion.
 
-DemoEvents routes live events using persisted parent links. Completion is a
-separate retryable callback, independent of the process that spawned the child.
+DemoEvents routes live events using persisted parent links. A finished
+sub-thread reports to its parent through the runtime, from the same links.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from actant.core import JSONObject
 from actant.agents import AgentDefinition
 from actant.runtime import AgentRuntime, TemporalRuntimeConfig
-from actant.runtime.completion import RunCompletion
 from actant.runtime.stores.in_memory import InMemoryEventPublisher
 from actant.runtime.stores.postgres import (
     SQLAlchemyMessageStore,
@@ -106,8 +105,8 @@ class DemoCoordinator:
 
         The parent is NOT parked: the id it gets is the whole tool
         result, and it is what `check_subagent` / `message_subagent` /
-        `stop_subagent` take. The parent hears about the ending when
-        `handle_run_completion` messages it.
+        `stop_subagent` take. The parent hears about the ending from the
+        runtime: the sub-thread reports to the parent its row names.
         """
         sub_agent_id = _SUBAGENT_IDS.get(name)
         if sub_agent_id is None:
@@ -210,75 +209,6 @@ class DemoCoordinator:
             answer=answer,
             payload=payload,
         )
-
-    async def handle_run_completion(self, completion: RunCompletion) -> None:
-        """Tell the parent its child finished, once the child's run is
-        persisted.
-
-        Nothing of the parent's is parked — its ``task()`` call completed the
-        moment the child was spawned. So completion is a MESSAGE on the
-        parent's inbox, the same one a person's message arrives on: it wakes
-        the parent whether it is parked or already closed.
-
-        This handler runs inside Temporal's retryable ``finalize_run``
-        activity, so it derives linkage and output from stores rather than
-        hooks or process memory. Harvest semantics are unchanged: the child's
-        last assistant message, tagged with which subagent produced it.
-        """
-        thread = await self.stores.threads.get(completion.agent_id, completion.thread_id)
-        if thread.parent_thread_id is None:
-            return
-        parent_agent_id = await self.agent_id_for(thread.parent_thread_id)
-        # Completion handlers retry and signals are not deduplicated, so the
-        # parent's own transcript is the "already delivered" record: the
-        # envelope names the run that finished, and every run of a child
-        # gets its own delivery. Registry presence cannot serve here — the
-        # handler runs in whichever worker finalized the child's run, which
-        # is not necessarily the one that spawned it. The window between the
-        # signal and the workflow persisting the message is not covered; a
-        # host that cannot tolerate a repeat wants its own delivery table.
-        delivered = await self.stores.messages.list_for_thread(
-            parent_agent_id, thread.parent_thread_id
-        )
-        if any(
-            message.role == "user"
-            and isinstance(message.content, str)
-            and completion.run_id in message.content
-            for message in delivered
-        ):
-            return
-
-        messages = await self.stores.messages.list_for_thread(
-            completion.agent_id, completion.thread_id
-        )
-        text = next(
-            (
-                message.content
-                for message in reversed(messages)
-                if message.role == "assistant"
-                and isinstance(message.content, str)
-                and message.content.strip()
-            ),
-            completion.outcome,
-        )
-        # The demo's subagent names and agent ids are the same strings, so the
-        # completing run identifies the subagent without a tool-call lookup.
-        envelope = {
-            "subagent": completion.agent_id,
-            "thread_id": completion.thread_id,
-            "run_id": completion.run_id,
-            "succeeded": completion.succeeded,
-            "text": text,
-        }
-        # The parent may itself be a sub-thread whose link this worker has
-        # never seen, and the message is about to start a run on it.
-        await self.runtime.send_message(
-            parent_agent_id,
-            thread.parent_thread_id,
-            f"Subagent finished:\n```json\n{json.dumps(envelope, indent=2)}\n```",
-        )
-        # The child's run is over, so its routing entry is dead weight until
-        # something wakes it again — and whatever does re-links it first.
 
     # ─── Shutdown ───────────────────────────────────────────────────
 
@@ -389,9 +319,6 @@ async def build_coordinator() -> DemoCoordinator:
         resolve_agent=resolve_agent,
         event_sink=DemoEvents(stores.threads, stores.publisher, list(agents)),
         event_source=stores.publisher,
-        run_completion_handler=lambda completion: coordinator_ref[0].handle_run_completion(
-            completion
-        ),
     )
     worker_task = asyncio.create_task(runtime.run_worker(), name="actant-demo-worker")
 

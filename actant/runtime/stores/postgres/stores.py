@@ -88,6 +88,19 @@ class SQLAlchemyThreadStore:
             )
             return [thread_from_row(row) for row in rows]
 
+    async def find(self, thread_id: str) -> AgentThread | None:
+        async with self.session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(ActantThreadModel)
+                    .where(ActantThreadModel.thread_id == thread_id)
+                    .limit(2)
+                )
+            )
+            if len(rows) > 1:
+                raise LookupError(f"thread {thread_id!r} exists under several agents")
+            return thread_from_row(rows[0]) if rows else None
+
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]:
         async with self.session_factory() as session:
             rows = await session.execute(

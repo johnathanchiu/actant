@@ -11,6 +11,11 @@ has `execute_activity`. What it gives up is exactly what Temporal was providing:
 survives the process, a tool awaiting a human has only this call's timeout, and a crash is a
 traceback rather than a replayable history.
 
+A thread run with ``parent_thread_id`` reports to its parent when a run ends, as under the
+workflow (``actant.runtime.subagents``): a parent running here takes the report in a run
+after its current one, and a parent not running is woken with it in the background
+(``idle`` waits for those).
+
     stores = InMemoryRuntimeStores()
     runtime = LocalThreadRuntime(ActivityContext(stores=stores, resolve_agent=...))
     outcome = await runtime.run(ThreadInput(agent_id=..., thread_id=...), messages)
@@ -23,8 +28,10 @@ import logging
 import uuid
 from dataclasses import replace
 
+from actant.runtime.subagents import parent_report
 from actant.runtime.temporal.activities.runs import RunActivities
 from actant.runtime.temporal.activities.tools import ToolActivities
+from actant.runtime.types.threads import AgentThread
 from actant.runtime.temporal.types import (
     AdmitDecision,
     AdmitInput,
@@ -34,6 +41,7 @@ from actant.runtime.temporal.types import (
     ExecuteInput,
     FinalizeRunInput,
     InboundMessage,
+    ReportToParentInput,
     RunOutcome,
     RunTurnInput,
     StartRunInput,
@@ -66,25 +74,89 @@ class LocalThreadRuntime:
     """The workflow's turn loop, in this process."""
 
     def __init__(self, context) -> None:
+        self._stores = context.stores
         self._runs = RunActivities(context)
         self._tools = ToolActivities(context)
         # A background summary in flight per (agent, thread), as the workflow keeps one,
         # and the threads with a run open (a summary written while none is stores itself).
         self._summarizing: dict[tuple[str, str], asyncio.Task[ContextSummary | None]] = {}
         self._running: set[tuple[str, str]] = set()
+        # What reached a running thread meanwhile (a sub-thread's report), for its next run;
+        # how each thread was last run, to wake it the same way; the wakes in flight.
+        self._inbox: dict[tuple[str, str], list[InboundMessage]] = {}
+        self._threads: dict[tuple[str, str], ThreadInput] = {}
+        self._woken: set[asyncio.Task[None]] = set()
 
     async def run(
         self,
         payload: ThreadInput,
         messages: list[InboundMessage] | None = None,
     ) -> LocalRun:
-        """Turns until the agent stops, its budget runs out, or a terminal tool ends it."""
+        """Turns until the agent stops, its budget runs out, or a terminal tool ends it.
+
+        A message that reaches the thread meanwhile starts another run once this one ends,
+        as the workflow's inbox does; the last run is the one returned."""
 
         self._running.add(self._key(payload))
+        return await self._drive(payload, messages)
+
+    async def idle(self) -> None:
+        """Wait for the parents that reports woke, and for any those runs woke in turn."""
+        while self._woken:
+            await asyncio.gather(*self._woken)
+
+    async def _drive(
+        self, payload: ThreadInput, messages: list[InboundMessage] | None
+    ) -> LocalRun:
+        key = self._key(payload)
+        self._threads[key] = payload
         try:
-            return await self._run(payload, messages)
+            outcome = await self._run(payload, messages)
+            while queued := self._inbox.pop(key, None):
+                outcome = await self._run(payload, queued)
+            return outcome
         finally:
-            self._running.discard(self._key(payload))
+            self._running.discard(key)
+
+    async def _report(
+        self, payload: ThreadInput, run_id: str, outcome: RunOutcome, stop_reason: str | None
+    ) -> None:
+        found = await parent_report(
+            self._stores,
+            ReportToParentInput(
+                agent_id=payload.agent_id,
+                thread_id=payload.thread_id,
+                run_id=run_id,
+                outcome=outcome.value,
+                stop_reason=stop_reason,
+            ),
+        )
+        if found is not None:
+            self._deliver(*found)
+
+    def _deliver(self, parent: AgentThread, message: InboundMessage) -> None:
+        key = (parent.agent_id, parent.id)
+        if key in self._running:
+            self._inbox.setdefault(key, []).append(message)
+            return
+        self._running.add(key)  # before the task starts, so a second report queues
+        payload = self._threads.get(key) or ThreadInput(
+            agent_id=parent.agent_id, thread_id=parent.id
+        )
+        task = asyncio.create_task(self._wake(payload, message))
+        self._woken.add(task)
+        task.add_done_callback(self._woken.discard)
+
+    async def _wake(self, payload: ThreadInput, message: InboundMessage) -> None:
+        try:
+            await self._drive(payload, [message])
+        except Exception as error:  # nobody awaits a wake; say so rather than lose it
+            logger.warning(
+                "actant.subagent.wake_failed thread=%s error=%s: %s",
+                payload.thread_id,
+                type(error).__name__,
+                error,
+            )
 
     async def _run(self, payload: ThreadInput, messages: list[InboundMessage] | None) -> LocalRun:
         run_id = uuid.uuid4().hex
@@ -111,6 +183,7 @@ class LocalThreadRuntime:
                     stop_reason=started.error,
                 )
             )
+            await self._report(payload, run_id, RunOutcome.FAILED, started.error)
             return LocalRun(RunOutcome.FAILED, started.turn_count, started.error)
         turns_remaining = started.max_turns
         turn_count = started.turn_count
@@ -208,6 +281,7 @@ class LocalThreadRuntime:
                 stop_reason=stop_reason,
             )
         )
+        await self._report(payload, run_id, outcome, stop_reason)
         # A summary ready by now is stored; one still being written stores itself.
         if (summary := await self._ready_summary(payload)) is not None:
             await self._store(payload, run_id, summary)

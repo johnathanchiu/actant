@@ -16,6 +16,7 @@ The workflow is a thin orchestrator. It:
    tools and durably suspends AWAIT_HUMAN tools until a person answers.
 4. Finalizes each tool group via ``finalize_tool_group`` (writes the
    tool_result messages — the transcript invariant lives there).
+   A sub-thread's run, once finalized, reports to its parent (``report_to_parent``).
 5. With ``context_compaction``, compacts the model's context when a turn
    reports that its request would cross a limit, then runs that turn again.
    With ``CompactionConfig.background``, a turn past that lower mark starts a
@@ -68,6 +69,7 @@ from actant.runtime.temporal.types import (
     ExecuteStatus,
     FinalizeRunInput,
     InboundMessage,
+    ReportToParentInput,
     ResolveToolInput,
     RunOutcome,
     RunTurnInput,
@@ -99,6 +101,9 @@ _LOST_TURN_RETRY = RetryPolicy(maximum_attempts=3)
 _COMPACT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=2), backoff_coefficient=2.0, maximum_attempts=3
 )
+#: A report to a parent attempted again finds it delivered (``report_to_parent``), so it is
+#: retried through a store or Temporal outage rather than lost.
+_REPORT_RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), maximum_attempts=5)
 
 
 @workflow.defn
@@ -135,11 +140,18 @@ class AgentThreadWorkflow:
         ) = None
         self._summary_ready: ContextSummary | None = None
         self._last_run_id = ""
+        # Messages that must arrive once (``InboundMessage.correlation_id``), by id.
+        self._correlation_ids: set[str] = set()
+        self._parent_thread_id: str | None = None
 
     # === Signals ===
 
     @workflow.signal
     def inbound(self, msg: InboundMessage) -> None:
+        if msg.correlation_id is not None:
+            if msg.correlation_id in self._correlation_ids:
+                return  # a delivery attempted again (``report_to_parent``)
+            self._correlation_ids.add(msg.correlation_id)
         self._inbox.append(msg)
 
     @workflow.signal
@@ -182,7 +194,8 @@ class AgentThreadWorkflow:
         self._turn_count_total = payload.turn_count_total
         # Carry-forward inbox lands here on continue_as_new.
         if payload.carry_inbox:
-            self._inbox.extend(payload.carry_inbox)
+            for msg in payload.carry_inbox:
+                self.inbound(msg)
 
         try:
             while True:
@@ -237,6 +250,7 @@ class AgentThreadWorkflow:
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )
         self._turn_count_total = started.turn_count
+        self._parent_thread_id = started.parent_thread_id
         payload = replace(payload, max_turns_per_run=started.max_turns)
         self._stop_reason = started.error
         outcome = (
@@ -257,6 +271,34 @@ class AgentThreadWorkflow:
             start_to_close_timeout=_PROJECTION_TIMEOUT,
         )
         self._current_run_id = None
+        await self._report_to_parent(payload, run_id, outcome, self._stop_reason)
+
+    async def _report_to_parent(
+        self, payload: ThreadInput, run_id: str, outcome: RunOutcome, stop_reason: str | None
+    ) -> None:
+        """Message the parent of a sub-thread how its run ended; nothing for a root thread."""
+        if self._parent_thread_id is None:
+            return
+        try:
+            await workflow.execute_activity_method(
+                RunActivities.report_to_parent,
+                ReportToParentInput(
+                    agent_id=payload.agent_id,
+                    thread_id=payload.thread_id,
+                    run_id=run_id,
+                    outcome=outcome.value,
+                    stop_reason=stop_reason,
+                ),
+                start_to_close_timeout=_PROJECTION_TIMEOUT,
+                retry_policy=_REPORT_RETRY,
+            )
+        except ActivityError as error:
+            workflow.logger.warning(
+                "actant.subagent.report_failed thread=%s parent=%s error=%s",
+                payload.thread_id,
+                self._parent_thread_id,
+                error.__cause__ or error,
+            )
 
     async def _run_agent(
         self,
@@ -556,19 +598,23 @@ class AgentThreadWorkflow:
 
     async def _record_cancellation(self, payload: ThreadInput) -> None:
         """Persist cancellation without leaving an open run or tool call."""
-        if self._current_run_id is not None:
+        run_id = self._current_run_id
+        if run_id is not None:
             await asyncio.shield(
                 workflow.execute_local_activity_method(
                     RunActivities.finalize_run,
                     FinalizeRunInput(
                         agent_id=payload.agent_id,
                         thread_id=payload.thread_id,
-                        run_id=self._current_run_id,
+                        run_id=run_id,
                         outcome=RunOutcome.CANCELLED.value,
                         turn_count=self._turn_count_total,
                     ),
                     start_to_close_timeout=_PROJECTION_TIMEOUT,
                 )
+            )
+            await asyncio.shield(
+                self._report_to_parent(payload, run_id, RunOutcome.CANCELLED, None)
             )
         await asyncio.shield(
             workflow.execute_activity_method(

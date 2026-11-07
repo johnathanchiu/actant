@@ -329,7 +329,7 @@ Events are observational. After reconnect, reload persisted messages and waiting
 before resuming the stream. Do not duplicate transcript writes in an event adapter.
 
 Use `RunCompletionHandler` for correctness-bearing work that must retry after a
-run projection commits, such as resolving the parent of a completed subagent.
+run projection commits, such as harvesting a completed subagent's artifacts.
 Pass it to `AgentRuntime`; unlike live events, handler failure keeps the
 finalization activity incomplete and eligible for retry. Handlers must be
 idempotent.

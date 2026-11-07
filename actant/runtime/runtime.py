@@ -103,6 +103,7 @@ class AgentRuntime:
             compaction_instructions=compaction_instructions,
             summarizers=summarizers,
             cancel_children=self._cancel_children,
+            message_thread=self._message_thread,
         )
         self._running = False
         self._worker: temporalio.worker.Worker | None = None
@@ -174,14 +175,26 @@ class AgentRuntime:
         contact and signalled on every subsequent call. Idempotent:
         re-sending starts no new execution if one is already running.
         """
-        wf_id = self._workflow_id(agent_id, thread_id)
+        return await self._signal_with_start(
+            self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id, sandbox_access),
+            _inbound(content, tag),
+        )
+
+    async def _message_thread(self, agent_id: str, thread_id: str, msg: InboundMessage) -> None:
+        """A sub-thread's report to its parent (``actant.runtime.subagents``)."""
+        await self._signal_with_start(
+            self._thread_input(agent_id, thread_id, None, None, None), msg
+        )
+
+    async def _signal_with_start(self, thread: ThreadInput, msg: InboundMessage) -> str:
+        wf_id = self._workflow_id(thread.agent_id, thread.thread_id)
         await self.client.start_workflow(
             AgentThreadWorkflow.run,
-            self._thread_input(agent_id, thread_id, parent_thread_id, sandbox_id, sandbox_access),
+            thread,
             id=wf_id,
             task_queue=self.config.task_queue,
             start_signal=SignalName.INBOUND,
-            start_signal_args=[_inbound(content, tag)],
+            start_signal_args=[msg],
         )
         # Signals don't have ids in Temporal; return the workflow id as
         # a stable handle the caller can correlate against.

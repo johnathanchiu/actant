@@ -57,6 +57,12 @@ class InMemoryThreadStore:
             if thread.parent_thread_id == thread_id
         ]
 
+    async def find(self, thread_id: str) -> AgentThread | None:
+        found = [t for (_a, i), t in self._threads.items() if i == thread_id]
+        if len(found) > 1:
+            raise LookupError(f"thread {thread_id!r} exists under several agents")
+        return replace(found[0]) if found else None
+
     async def list_for_agent(self, agent_id: str) -> list[AgentThread]:
         return [replace(t) for (a, _id), t in self._threads.items() if a == agent_id]
 

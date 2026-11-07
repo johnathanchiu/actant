@@ -186,6 +186,7 @@ class ActivityName(StrEnum):
     FINALIZE_TOOL_GROUP = "finalize_tool_group"
     FINALIZE_RUN = "finalize_run"
     APPLY_THREAD_CANCELLATION = "apply_thread_cancellation"
+    REPORT_TO_PARENT = "report_to_parent"
 
 
 class SignalName(StrEnum):
@@ -254,7 +255,9 @@ class InboundMessage:
     """
 
     content: str | list[dict[str, Any]]
+    #: ``user``, or ``subagent`` on a sub-thread's report (``actant.runtime.subagents``).
     source: str = "user"
+    #: Set on a message that must arrive once: the thread drops another with the same id.
     correlation_id: str | None = None
     # Stored on the message; ``CompactionConfig.keep`` names tags to keep.
     tag: str | None = None
@@ -323,6 +326,10 @@ class StartedRun:
     turn_count: int
     max_turns: int
     error: str | None = None
+    #: The thread's stored parent link: the run reports to it when it ends. Last and
+    #: defaulted, so a history recorded before it existed decodes to ``None`` and
+    #: replays without the report.
+    parent_thread_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +339,17 @@ class FinalizeRunInput:
     run_id: str
     outcome: str  # RunOutcome value
     turn_count: int
+    stop_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ReportToParentInput:
+    """A finished run of a sub-thread, for the report to its parent."""
+
+    agent_id: str
+    thread_id: str
+    run_id: str
+    outcome: str  # RunOutcome value
     stop_reason: str | None = None
 
 

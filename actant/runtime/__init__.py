@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from actant.runtime.temporal.activities.context import AgentResolver
     from actant.runtime.completion import RunCompletion, RunCompletionHandler
     from actant.runtime.gate import TurnGate, TurnStart
+    from actant.runtime.subagents import SUBAGENT_REPORT_TAG, SubagentReport
     from actant.runtime.temporal.types import (
         ActivityTimeouts,
         CompactionConfig,
@@ -26,6 +27,8 @@ __all__ = [
     "CompactionConfig",
     "RunCompletion",
     "RunCompletionHandler",
+    "SUBAGENT_REPORT_TAG",
+    "SubagentReport",
     "TemporalRuntimeConfig",
     "ThreadHandle",
     "TurnGate",
@@ -50,6 +53,10 @@ def __getattr__(name: str) -> Any:
         from actant.runtime import completion
 
         return getattr(completion, name)
+    if name in {"SUBAGENT_REPORT_TAG", "SubagentReport"}:
+        from actant.runtime import subagents
+
+        return getattr(subagents, name)
     if name in {"TurnGate", "TurnStart"}:
         from actant.runtime import gate
 

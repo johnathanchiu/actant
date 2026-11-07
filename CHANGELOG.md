@@ -4,6 +4,20 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- A sub-thread reports to its parent. When a run of a thread started with `parent_thread_id`
+  ends, its parent receives a message tagged `subagent_report` (`SUBAGENT_REPORT_TAG`) that
+  names the child's thread, agent and run, how the run ended (`completed`, `exhausted`,
+  `failed` or `cancelled`) and its final text; a parked parent takes it in its next run, a
+  closed one is started by it. Both `AgentRuntime` and `LocalThreadRuntime` deliver it, once
+  per run; a cancelled parent is not told. A host that messaged the parent from a
+  `RunCompletionHandler` should stop, or the parent hears twice.
+- Breaking for custom stores: `ThreadStore.find(thread_id)` returns the thread with that id
+  under any agent, or `None`, and raises `LookupError` when several agents have one.
+- `LocalThreadRuntime.run` runs again for messages that reached the thread meanwhile and
+  returns the last run; `LocalThreadRuntime.idle()` waits for parents a report woke.
+
 ## 0.41.0
 
 - `OpenAIProvider(cache_key=...)` sends the Responses API's `prompt_cache_key` on every request. Requests that share a prefix and a key reach the cache that holds it; without one, OpenAI may route them to caches that do not. Empty (the default): none sent.

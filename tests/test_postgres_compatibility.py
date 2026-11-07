@@ -333,6 +333,18 @@ async def test_child_lineage_crosses_agents(stores: SQLAlchemyRuntimeStores) -> 
     assert await stores.threads.list_children("missing") == []
 
 
+async def test_a_thread_is_found_by_its_id_under_any_agent(
+    stores: SQLAlchemyRuntimeStores,
+) -> None:
+    await stores.threads.get_or_create("parent-agent", "parent")
+    found = await stores.threads.find("parent")
+    assert found is not None and (found.agent_id, found.id) == ("parent-agent", "parent")
+    assert await stores.threads.find("missing") is None
+    await stores.threads.get_or_create("other-agent", "parent")
+    with pytest.raises(LookupError):
+        await stores.threads.find("parent")
+
+
 async def test_creating_a_run_again_returns_the_first_unchanged(
     stores: SQLAlchemyRuntimeStores,
 ) -> None:

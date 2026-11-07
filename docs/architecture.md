@@ -292,10 +292,10 @@ The parent/child relationship includes:
 
 Child lifecycle and streaming events may be dual-published to the root thread
 for UI display. Event routing is not the same thing as durable parent
-resolution. A `RunCompletionHandler` runs inside the retryable run-finalization
-activity and derives parent linkage from projections. The in-memory registry
-can therefore be rebuilt after restart without deciding whether the parent may
-resume.
+resolution. After a child's run is finalized, the workflow reports it to the
+parent (`report_to_parent`), which reads the parent link from projections. The
+in-memory registry can therefore be rebuilt after restart without deciding
+whether the parent may resume.
 
 See [subagents](subagents.md) for the public patterns and
 [coordinator guide](coordinator-guide.md) for application wiring.
