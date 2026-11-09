@@ -32,7 +32,7 @@ from actant.runtime.compaction import (
     pending_start,
 )
 from actant.runtime.events.runtime import RuntimeEvents
-from actant.runtime.completion import RunCompletion
+from actant.runtime.completion import RunCompletion, inbound_tags, last_word
 from actant.runtime.gate import TurnStart
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (
@@ -794,6 +794,10 @@ class RunActivities:
                 artifacts.extend(ref for ref in refs if isinstance(ref, dict))
 
         if self.context.run_completion_handler is not None:
+            history = await self.context.stores.messages.list_for_thread(
+                payload.agent_id, payload.thread_id
+            )
+            reply, last_call = last_word(history)
             await self.context.run_completion_handler(
                 RunCompletion(
                     agent_id=payload.agent_id,
@@ -802,6 +806,9 @@ class RunActivities:
                     outcome=payload.outcome,
                     stop_reason=payload.stop_reason,
                     artifacts=tuple(artifacts),
+                    reply=reply,
+                    last_call=last_call,
+                    tags=inbound_tags(history),
                 )
             )
         await self.context.events(thread, run_id=payload.run_id).on_complete(

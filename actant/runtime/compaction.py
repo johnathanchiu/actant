@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -261,29 +261,52 @@ def compaction_request(
     return [*labelled, Message(role="user", content=text)]
 
 
-def drop_oldest_images(messages: Sequence[Message], limit: int) -> list[Message]:
+def drop_oldest_images(
+    messages: Sequence[Message],
+    limit: int,
+    *,
+    view: Callable[[PromptBlock | None], str | None] | None = None,
+    label: Callable[[PromptBlock], str] | None = None,
+) -> list[Message]:
     """The request with its oldest images replaced by a text label, once it carries more
     than ``limit``; text is never touched. Images go in chunks of half the limit, so the
     count kept falls to about half and the dropped set (and the cached prefix with it)
     changes only when another chunk is needed, not every turn. The latest images go last.
+
+    ``view`` names what an image shows, from the block right before it (its caption, or
+    None): an image a later one shows the same view of is superseded, and superseded
+    images go first, oldest first. ``label`` is the text a dropped image becomes.
     """
     chunk = max(1, limit // 2)
     drop = max(0, math.ceil((count_images(messages) - limit) / chunk) * chunk)
     if drop == 0:
         return list(messages)
-    dropped: list[Message] = []
-    for message in messages:
-        if drop and isinstance(message.content, list) and any(map(_is_image, message.content)):
-            blocks: list[PromptBlock] = []
-            for block in message.content:
-                if drop and _is_image(block):
-                    drop -= 1
-                    blocks.append(TextBlock(text=_dropped_label(block)))
-                else:
-                    blocks.append(block)
-            message = replace(message, content=blocks)
-        dropped.append(message)
-    return dropped
+    images: list[tuple[int, int]] = []
+    views: list[str | None] = []
+    for i, message in enumerate(messages):
+        content = message.content if isinstance(message.content, list) else []
+        for j, block in enumerate(content):
+            if _is_image(block):
+                images.append((i, j))
+                views.append(view(content[j - 1] if j else None) if view else None)
+    later: set[str] = set()
+    superseded: set[int] = set()
+    for k in reversed(range(len(images))):
+        if (seen := views[k]) is not None:
+            if seen in later:
+                superseded.add(k)
+            later.add(seen)
+    order = [*sorted(superseded), *(k for k in range(len(images)) if k not in superseded)]
+    dropped = {images[k] for k in order[:drop]}
+    named = label or _dropped_label
+    out = list(messages)
+    for i in sorted({i for i, _ in dropped}):
+        content = cast(list[PromptBlock], messages[i].content)
+        blocks = [
+            TextBlock(text=named(b)) if (i, j) in dropped else b for j, b in enumerate(content)
+        ]
+        out[i] = replace(messages[i], content=blocks)
+    return out
 
 
 def _dropped_label(block: PromptBlock) -> str:
