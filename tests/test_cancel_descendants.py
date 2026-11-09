@@ -88,3 +88,22 @@ async def test_cancelling_a_closed_thread_records_it_cancelled_with_its_calls_cl
     assert (await stores.tool_calls.get("c")).status is ToolCallStatus.COMPLETED
     messages = await stores.messages.list_for_thread("a", "t")
     assert [m.tool_call_id for m in messages if m.role == "tool"] == ["c"]
+
+
+async def test_cancel_threads_stops_unrelated_threads_and_skips_one_never_started() -> None:
+    stores = InMemoryRuntimeStores()
+    for name in ["planner", "author"]:
+        thread = await stores.threads.get_or_create(name, name)
+        thread.status = ThreadStatus.ACTIVE
+        await stores.threads.update(thread)
+    handles = {name: Mock(cancel=AsyncMock()) for name in ["planner", "author", "never"]}
+    handles["never"].cancel.side_effect = RPCError("none", RPCStatusCode.NOT_FOUND, b"")
+    client = Mock()
+    client.get_workflow_handle.side_effect = lambda wid: handles[wid.rsplit("-", 1)[-1]]
+    runtime = AgentRuntime(client=cast(Client, client), stores=stores)
+    cancelled = await runtime.cancel_threads(
+        [("planner", "planner"), ("never", "never"), ("author", "author")]
+    )
+    assert cancelled == ["planner", "author"]
+    handles["author"].cancel.assert_awaited_once()
+    assert (await stores.threads.get("author", "author")).status == ThreadStatus.CANCELLED

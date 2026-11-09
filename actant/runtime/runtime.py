@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from datetime import timedelta
 from uuid import UUID
@@ -314,6 +314,19 @@ class AgentRuntime:
 
         await record_cancelled(self.stores, agent_id, thread_id)
         await self._cancel_children(thread_id)
+
+    async def cancel_threads(self, threads: Iterable[tuple[str, str]]) -> list[str]:
+        """Stop each ``(agent_id, thread_id)`` and its persisted descendants, as
+        :meth:`cancel_thread` does, related or not. A thread that never started (no
+        workflow, nothing stored) is skipped, not an error: an application that names
+        the threads it may have started cancels them all in one call. The ids of those
+        cancelled, in order."""
+        cancelled: list[str] = []
+        for agent_id, thread_id in threads:
+            with suppress(ThreadNotFoundError):
+                await self.cancel_thread(agent_id, thread_id)
+                cancelled.append(thread_id)
+        return cancelled
 
     async def _cancel_children(self, thread_id: str) -> None:
         for child in await self.stores.threads.list_children(thread_id):
