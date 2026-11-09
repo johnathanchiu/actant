@@ -946,3 +946,12 @@ def test_a_hung_seed_copy_fails_startup_within_the_timeout(tmp_path: Path) -> No
     started = time.monotonic()
     assert not restore(RestoreConfig(argv=_EMPTY, seed=seed, timeout_s=0.5))
     assert time.monotonic() - started < 10
+
+
+async def test_runners_share_one_client_per_event_loop_and_never_close_it() -> None:
+    from actant.sandbox import shared_client
+
+    client = shared_client()
+    async with SandboxRunner("counter", client=client):
+        pass
+    assert shared_client() is client and not client.is_closed

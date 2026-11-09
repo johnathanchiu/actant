@@ -34,6 +34,7 @@ import contextlib
 from collections.abc import Mapping
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Protocol
+from weakref import WeakKeyDictionary
 
 from pydantic import ValidationError
 
@@ -142,6 +143,26 @@ class RemoteRunner:
         return (await _send(self.endpoint, request, self.timeout, self._client))[1]
 
 
+#: How long :func:`shared_client` keeps an idle connection to a host open for the next
+#: call: an agent's tool calls come a model turn apart, longer than httpx's 5 s default.
+SHARED_KEEPALIVE_S = 20.0
+_shared: WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = WeakKeyDictionary()
+
+
+def shared_client() -> httpx.AsyncClient:
+    """This process's one HTTP client to service hosts, per event loop, uncapped: pass it
+    to every :class:`SandboxRunner` so each call reuses an open connection to its host
+    instead of a new TLS handshake. Never closed by a runner."""
+    import httpx
+
+    loop = asyncio.get_running_loop()
+    client = _shared.get(loop)
+    if client is None:
+        limits = httpx.Limits(max_connections=None, keepalive_expiry=SHARED_KEEPALIVE_S)
+        client = _shared[loop] = httpx.AsyncClient(trust_env=False, limits=limits)
+    return client
+
+
 class SandboxRunner:
     """Runs methods of ``service`` (a name in ``SandboxSpec.services``) on ``sandbox``'s
     host, one instance per ``key`` (a tool passes its thread id), created from ``init``.
@@ -149,8 +170,8 @@ class SandboxRunner:
     :meth:`Sandbox.endpoint`.
 
     ``client`` shares one HTTP connection pool across runners: a process that makes
-    many short-lived runners passes the same client to each, so a call reuses an open
-    connection to the host instead of a new TLS handshake. The runner never closes a
+    many short-lived runners passes the same client to each (:func:`shared_client`), so
+    a call reuses an open connection to the host instead of a new TLS handshake. The runner never closes a
     client it was given; without one it makes its own and :meth:`close` closes it."""
 
     needs_sandbox = True
