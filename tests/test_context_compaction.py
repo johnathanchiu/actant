@@ -20,7 +20,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
 
 from actant.agents import AgentDefinition
-from actant.blocks import AssetBlock, CompactionBlock, TextBlock
+from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
@@ -1030,3 +1030,24 @@ async def test_a_summarizer_that_fails_falls_back_to_the_agents_model() -> None:
     assert await s.run("first", CompactionConfig(summarizer="down")) is RunOutcome.COMPLETED
     [(_, block)] = await s.compactions()
     assert block.summary == "SUMMARY" and len(down.calls) == 1
+
+
+def test_a_superseded_view_drops_before_an_older_one() -> None:
+    views = ["door", "sink", "door", "chair", "sink"]
+    pictures = [
+        Message(
+            role="user",
+            content=[TextBlock(text=v), AssetBlock(storage_key=f"k{i}", mime="image/png")],
+        )
+        for i, v in enumerate(views)
+    ]
+
+    def view(block: PromptBlock | None) -> str | None:
+        return block.text if isinstance(block, TextBlock) else None
+
+    request = drop_oldest_images(pictures, 4, view=view, label=lambda b: "gone")
+    gone = [i for i, m in enumerate(request) if count_images([m]) == 0]
+    assert gone == [0, 1]  # both superseded (door 0, sink 1), not merely the oldest
+    assert request[0].content == [TextBlock(text="door"), TextBlock(text="gone")]
+    request = drop_oldest_images(pictures[:4] + [pictures[3]], 4, view=view)
+    assert [count_images([m]) for m in request] == [0, 1, 1, 0, 1]  # door 0, the first chair
