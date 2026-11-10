@@ -6,7 +6,7 @@ affect users.
 
 ## Unreleased
 
-- `AnthropicProvider.complete` accepts `allowed_tools` that names every tool sent (it restricts nothing) instead of raising; a strict subset still raises `NotImplementedError`.
+- `AnthropicProvider.complete` accepts `allowed_tools` that names exactly the tools sent (it limits nothing; the model may still answer without a tool call) instead of raising. Any other set still raises `NotImplementedError`, now naming the tools sent.
 
 ## 0.41.1
 
