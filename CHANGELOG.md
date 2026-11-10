@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.41.2
 
 - `AnthropicProvider.complete` accepts `allowed_tools` that names exactly the tools sent (it limits nothing; the model may still answer without a tool call) instead of raising. Any other set still raises `NotImplementedError`, now naming the tools sent.
 
