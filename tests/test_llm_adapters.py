@@ -10,6 +10,9 @@ import pytest
 from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
 from actant.llm import Message, ToolCall, ToolCallFunction, provider_for_model
 from actant.llm.providers._shared import sanitize_tool_messages
+from anthropic.types import TextBlock as AnthropicText
+from anthropic.types import ThinkingBlock, ToolUseBlock
+
 from actant.llm.providers.anthropic import AnthropicProvider
 from actant.llm.providers.gemini import GeminiProvider
 from actant.llm.providers.openai import (
@@ -288,7 +291,7 @@ async def test_anthropic_reports_usage_in_the_openai_shape(
     response = SimpleNamespace(
         id="msg_1",
         stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text="ok")],
+        content=[AnthropicText(type="text", text="ok")],
         usage=SimpleNamespace(
             input_tokens=40,
             cache_read_input_tokens=5000,
@@ -614,3 +617,52 @@ def test_an_azure_deployment_is_declared_not_guessed_from_the_client() -> None:
         api_version="2025-04-01-preview",
     )
     assert OpenAIProvider("gpt-x", client=sdk).max_images_per_request == 50
+
+
+@pytest.mark.asyncio
+async def test_anthropic_sends_a_turn_back_exactly_as_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # signed thinking with empty text (the default display), interleaved with tool calls
+    returned = [
+        ThinkingBlock(type="thinking", thinking="", signature="s1"),
+        ToolUseBlock(type="tool_use", id="t1", name="see", input={"a": 1}),
+        ThinkingBlock(type="thinking", thinking="", signature="s2"),
+        AnthropicText(type="text", text="done"),
+    ]
+    response = SimpleNamespace(
+        id="m",
+        stop_reason="end_turn",
+        content=returned,
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
+
+    class Stream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get_final_message(self):
+            return response
+
+    provider = AnthropicProvider(model_id="claude-fable-5-2", api_key="test")
+    monkeypatch.setattr(provider.client.messages, "stream", lambda **kw: Stream())
+    message, _ = await provider._stream({}, None)  # pyright: ignore[reportArgumentType]
+    sent = AnthropicProvider.convert_messages([message])
+    assert sent == [
+        {"role": "assistant", "content": [b.model_dump(exclude_none=True) for b in returned]}
+    ]
+
+
+def test_openai_replays_only_its_own_reasoning_items() -> None:
+    message = Message(
+        role="assistant",
+        reasoning_items=[
+            {"type": "thinking", "thinking": "", "signature": "s"},
+            {"type": "reasoning", "id": "r1"},
+        ],
+    )
+    items = OpenAIProvider.convert_messages([message])
+    assert [i["type"] for i in items] == ["reasoning"]

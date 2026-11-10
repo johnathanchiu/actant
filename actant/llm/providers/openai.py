@@ -186,7 +186,12 @@ class OpenAIProvider:
     def _convert_assistant_message(message: Message) -> list[ToolSchema]:
         items: list[ToolSchema] = []
         if message.reasoning_items is not None:
-            items.extend(cast(list[ToolSchema], message.reasoning_items))
+            # its own reasoning items only; another provider's turn may sit in the same thread
+            items.extend(
+                cast(ToolSchema, item)
+                for item in message.reasoning_items
+                if isinstance(item, dict) and item.get("type") == "reasoning"
+            )
         for tool_call in message.tool_calls or []:
             call_id = tool_call.id or f"call_{uuid.uuid4().hex}"
             items.append(

@@ -4,6 +4,11 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `AnthropicProvider` sends each assistant turn back exactly as the API returned it (kept in `Message.reasoning_items`). It used to drop signed thinking with empty text, the default display on Opus 4.7+, Fable and Mythos, and merge several thinking blocks into one, which Claude Fable 5.2 rejects as an edited history.
+- `OpenAIProvider` replays only its own `reasoning` items, so a thread that ran on another provider does not send that provider's blocks.
+
 ## 0.41.0
 
 - `OpenAIProvider(cache_key=...)` sends the Responses API's `prompt_cache_key` on every request. Requests that share a prefix and a key reach the cache that holds it; without one, OpenAI may route them to caches that do not. Empty (the default): none sent.

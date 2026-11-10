@@ -118,6 +118,10 @@ class AnthropicProvider:
             if message.role == "user":
                 converted.append({"role": "user", "content": _content(message.content)})
             elif message.role == "assistant":
+                if _returned(message):
+                    # sent back exactly as returned: thinking blocks are bound to the history
+                    converted.append({"role": "assistant", "content": message.reasoning_items})
+                    continue
                 blocks: list[object] = []
                 if message.thought_summary and message.thinking_signature:
                     thinking_block: ToolSchema = {
@@ -329,6 +333,8 @@ class AnthropicProvider:
                 tool_calls=tool_calls or None,
                 thought_summary=thought or None,
                 thinking_signature=thinking_signature,
+                reasoning_items=[b.model_dump(exclude_none=True) for b in response.content]
+                or None,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=_usage_int(usage, "cache_read_input_tokens"),
@@ -362,6 +368,16 @@ def _message_chars(message: Message) -> int:
         total += len(tc.function.arguments or "")
         total += len(tc.function.name or "")
     return total
+
+
+_RETURNED = ("text", "thinking", "redacted_thinking", "tool_use")
+
+
+def _returned(message: Message) -> bool:
+    """Whether the turn carries its blocks as this API returned them (another provider's
+    reasoning items do not)."""
+    items = message.reasoning_items or []
+    return bool(items) and all(isinstance(b, dict) and b.get("type") in _RETURNED for b in items)
 
 
 def _tool_call_from_block(block: object) -> ToolCall:
