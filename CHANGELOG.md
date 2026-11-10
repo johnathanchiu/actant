@@ -6,8 +6,8 @@ affect users.
 
 ## Unreleased
 
-- `AnthropicProvider` replays an assistant turn that thought exactly as the API returned it: every thinking block in place, signed blocks with empty text included (the default display on Claude Opus 4.7 and later, Fable and Mythos), kept in `Message.reasoning_items`. It used to drop thinking whose text was empty and merge several blocks into one under the first signature, which models with preserved thinking (Claude Fable 5.2 on every account) reject as an edited history, and which made every model re-plan each turn.
-- `OpenAIProvider` replays only `reasoning` items from `Message.reasoning_items`, so a thread that ran on another provider does not send that provider's blocks.
+- `AnthropicProvider` sends each assistant turn back exactly as the API returned it (kept in `Message.reasoning_items`). It used to drop signed thinking with empty text, the default display on Opus 4.7+, Fable and Mythos, and merge several thinking blocks into one, which Claude Fable 5.2 rejects as an edited history.
+- `OpenAIProvider` replays only its own `reasoning` items, so a thread that ran on another provider does not send that provider's blocks.
 
 ## 0.41.0
 
