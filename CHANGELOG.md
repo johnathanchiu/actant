@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.41.1
 
 - `AnthropicProvider` sends each assistant turn back exactly as the API returned it (kept in `Message.reasoning_items`). It used to drop signed thinking with empty text, the default display on Opus 4.7+, Fable and Mythos, and merge several thinking blocks into one, which Claude Fable 5.2 rejects as an edited history.
 - `OpenAIProvider` replays only its own `reasoning` items, so a thread that ran on another provider does not send that provider's blocks.
