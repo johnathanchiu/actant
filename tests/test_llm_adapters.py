@@ -614,3 +614,84 @@ def test_an_azure_deployment_is_declared_not_guessed_from_the_client() -> None:
         api_version="2025-04-01-preview",
     )
     assert OpenAIProvider("gpt-x", client=sdk).max_images_per_request == 50
+
+
+def test_anthropic_replays_empty_signed_thinking() -> None:
+    # newer models return thinking with empty text by default; the signed block still goes back
+    converted = AnthropicProvider.convert_messages(
+        [Message(role="assistant", content="ok", thinking_signature="sig_1")]
+    )
+    assert converted[0]["content"] == [
+        {"type": "thinking", "thinking": "", "signature": "sig_1"},
+        {"type": "text", "text": "ok"},
+    ]
+
+
+def test_anthropic_replays_a_turn_exactly_as_returned() -> None:
+    returned = [
+        {"type": "thinking", "thinking": "", "signature": "s1"},
+        {"type": "tool_use", "id": "t1", "name": "see", "input": {"a": 1}},
+        {"type": "thinking", "thinking": "", "signature": "s2"},
+        {"type": "text", "text": "now"},
+        {"type": "tool_use", "id": "t2", "name": "see", "input": {"a": 2}},
+    ]
+    calls = [
+        ToolCall(id=i, function=ToolCallFunction(name="see", arguments="{}")) for i in ("t1", "t2")
+    ]
+    message = Message(role="assistant", tool_calls=calls, reasoning_items=list(returned))
+    assert AnthropicProvider.convert_messages([message])[0]["content"] == returned
+    # a tool call the history no longer carries is left out, the rest unchanged
+    message.tool_calls = calls[1:]
+    assert AnthropicProvider.convert_messages([message])[0]["content"] == [
+        returned[0],
+        *returned[2:],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_keeps_returned_blocks_for_replay(monkeypatch: pytest.MonkeyPatch) -> None:
+    blocks = [
+        SimpleNamespace(type="thinking", thinking="", signature="s1"),
+        SimpleNamespace(type="tool_use", id="t1", name="see", input={}),
+        SimpleNamespace(type="thinking", thinking="", signature="s2"),
+        SimpleNamespace(type="text", text="done"),
+    ]
+    response = SimpleNamespace(
+        id="m",
+        stop_reason="end_turn",
+        content=blocks,
+        usage=SimpleNamespace(
+            input_tokens=1,
+            output_tokens=1,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    class Stream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get_final_message(self):
+            return response
+
+    provider = AnthropicProvider(model_id="claude-fable-5-2", api_key="test")
+    monkeypatch.setattr(provider.client.messages, "stream", lambda **kw: Stream())
+    message, _ = await provider._stream({}, None)  # pyright: ignore[reportArgumentType]
+    assert message.reasoning_items == [vars(b) for b in blocks]
+    assert AnthropicProvider.convert_messages([message])[0]["content"] == [vars(b) for b in blocks]
+
+
+def test_openai_replays_only_its_own_reasoning_items() -> None:
+    message = Message(
+        role="assistant",
+        reasoning_items=[
+            {"type": "thinking", "thinking": "", "signature": "s"},
+            {"type": "reasoning", "id": "r1"},
+        ],
+    )
+    items = OpenAIProvider.convert_messages([message])
+    assert [i["type"] for i in items] == ["reasoning"]

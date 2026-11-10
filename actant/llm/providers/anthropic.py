@@ -118,11 +118,15 @@ class AnthropicProvider:
             if message.role == "user":
                 converted.append({"role": "user", "content": _content(message.content)})
             elif message.role == "assistant":
+                exact = _replayed_blocks(message)
+                if exact is not None:
+                    converted.append({"role": "assistant", "content": exact})
+                    continue
                 blocks: list[object] = []
-                if message.thought_summary and message.thinking_signature:
+                if message.thinking_signature:
                     thinking_block: ToolSchema = {
                         "type": "thinking",
-                        "thinking": message.thought_summary,
+                        "thinking": message.thought_summary or "",
                         "signature": message.thinking_signature,
                     }
                     blocks.append(thinking_block)
@@ -297,8 +301,13 @@ class AnthropicProvider:
         thought = ""
         thinking_signature: str | None = None
         tool_calls: list[ToolCall] = []
+        # The turn's blocks as returned, replayed unchanged: thinking is bound to the history
+        # before it, empty text included (the default display on newer models).
+        returned: list[object] = []
 
         for block in getattr(response, "content", []) or []:
+            if getattr(block, "type", None) in _REPLAYED:
+                returned.append(_block_dict(block))
             block_type = getattr(block, "type", None)
             if block_type == "text":
                 text += getattr(block, "text", "") or ""
@@ -329,6 +338,7 @@ class AnthropicProvider:
                 tool_calls=tool_calls or None,
                 thought_summary=thought or None,
                 thinking_signature=thinking_signature,
+                reasoning_items=returned if any(_is_thinking(b) for b in returned) else None,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=_usage_int(usage, "cache_read_input_tokens"),
@@ -362,6 +372,37 @@ def _message_chars(message: Message) -> int:
         total += len(tc.function.arguments or "")
         total += len(tc.function.name or "")
     return total
+
+
+_REPLAYED = ("thinking", "redacted_thinking", "text", "tool_use")
+
+
+def _block_dict(block: object) -> dict[str, object]:
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        return cast(dict[str, object], dump(exclude_none=True))
+    return {k: v for k, v in vars(block).items() if v is not None}
+
+
+def _is_thinking(block: object) -> bool:
+    return isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking")
+
+
+def _replayed_blocks(message: Message) -> list[object] | None:
+    """An assistant turn's blocks exactly as the API returned them, when it thought: thinking
+    blocks in place, tool uses still in the history (a tool call the history no longer
+    carries is left out). None for a turn with no stored thinking."""
+    items = message.reasoning_items or []
+    if not any(_is_thinking(b) for b in items):
+        return None
+    kept = {call.id for call in message.tool_calls or []}
+    return [
+        b
+        for b in items
+        if isinstance(b, dict)
+        and b.get("type") in _REPLAYED
+        and (b.get("type") != "tool_use" or b.get("id") in kept)
+    ]
 
 
 def _tool_call_from_block(block: object) -> ToolCall:
