@@ -4,6 +4,10 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- `AnthropicProvider.complete` accepts `allowed_tools` that names every tool sent (it restricts nothing) instead of raising; a strict subset still raises `NotImplementedError`.
+
 ## 0.41.1
 
 - `AnthropicProvider` sends each assistant turn back exactly as the API returned it (kept in `Message.reasoning_items`). It used to drop signed thinking with empty text, the default display on Opus 4.7+, Fable and Mythos, and merge several thinking blocks into one, which Claude Fable 5.2 rejects as an edited history.

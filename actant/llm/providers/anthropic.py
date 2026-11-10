@@ -227,7 +227,10 @@ class AnthropicProvider:
         allowed_tools: tuple[str, ...],
         max_output_tokens: int | None,
     ) -> Message:
-        if allowed_tools:
+        # Naming every tool sent restricts nothing; a subset would need a narrower list,
+        # which would break the cached prefix.
+        sent = {tool["function"]["name"] for tool in tools if "function" in tool}
+        if allowed_tools and not sent <= set(allowed_tools):
             raise NotImplementedError(
                 "Anthropic does not support allowed_tools with a stable full tool list"
             )
