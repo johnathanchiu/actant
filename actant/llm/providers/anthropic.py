@@ -227,9 +227,14 @@ class AnthropicProvider:
         allowed_tools: tuple[str, ...],
         max_output_tokens: int | None,
     ) -> Message:
-        if allowed_tools:
+        # The API cannot limit a turn to some of the tools it is sent, and dropping the rest
+        # would change the cached prefix. Allowing exactly the tools sent limits nothing, so it
+        # is sent as usual: the model may still answer without calling one.
+        sent = {tool["function"]["name"] for tool in tools if "function" in tool}
+        if allowed_tools and set(allowed_tools) != sent:
             raise NotImplementedError(
-                "Anthropic does not support allowed_tools with a stable full tool list"
+                "Anthropic cannot limit a turn to some of its tools: allowed_tools must name "
+                f"exactly the tools sent ({sorted(sent)}), got {sorted(allowed_tools)}"
             )
         params = self._request_params(system, messages, tools)
         if max_output_tokens is not None:

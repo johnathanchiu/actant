@@ -666,3 +666,31 @@ def test_openai_replays_only_its_own_reasoning_items() -> None:
     )
     items = OpenAIProvider.convert_messages([message])
     assert [i["type"] for i in items] == ["reasoning"]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_allowed_tools_must_name_exactly_the_tools_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = AnthropicProvider(model_id="claude-fable-5-2", api_key="test")
+    sent: list[dict] = []
+
+    async def fake(params, listener):
+        sent.append(params)
+        return Message(role="assistant", content="ok"), 0
+
+    monkeypatch.setattr(provider, "_stream", fake)
+    tools = [make_tool_schema(name, "d", {}) for name in ("answer", "look")]
+    await provider.complete(
+        "S", [Message(role="user", content="hi")], tools, allowed_tools=("look", "answer")
+    )
+    assert "tool_choice" not in sent[0]
+    for limited in (("answer",), ("answer", "look", "other")):
+        with pytest.raises(NotImplementedError):
+            await provider.complete(
+                "S", [Message(role="user", content="hi")], tools, allowed_tools=limited
+            )
+    with pytest.raises(NotImplementedError):  # no tools sent: nothing to allow
+        await provider.complete(
+            "S", [Message(role="user", content="hi")], [], allowed_tools=("x",)
+        )
