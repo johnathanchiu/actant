@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.42.0
 
 - Breaking: `OpenAIProvider` no longer takes `azure` and no longer reads a 50-image limit off an `AsyncAzureOpenAI` client. `max_images_per_request` defaults to 1,500; a gateway that takes fewer passes its own. `InlineImages` and image dropping are unchanged.
 
