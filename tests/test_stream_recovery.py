@@ -179,7 +179,7 @@ _IMAGE_BLOCKED = "Image processing blocked due to content policy violation."
 
 
 async def test_failed_then_content_policy_error_is_content_blocked() -> None:
-    """Azure fails a request whose image its filter refuses with ``response.failed`` (no
+    """A gateway fails a request whose image its filter refuses with ``response.failed`` (no
     error) and then an ``error`` event naming why: that is ``ContentBlocked``, not retried."""
     failed = {
         "type": "response.failed",
@@ -222,7 +222,7 @@ async def test_sse_error_payload_is_not_retried_unless_transient() -> None:
 
 
 async def test_sse_error_payload_naming_no_code_is_retried() -> None:
-    """Azure's peak-load refusal arrives mid-stream as an ``error`` object with a message and
+    """A peak-load refusal arrives mid-stream as an ``error`` object with a message and
     no code or type: a server failure, not the request's, so it is sent again."""
     refusal = {
         "type": "error",

@@ -594,29 +594,17 @@ def test_anthropic_turn_budget_must_be_positive() -> None:
         AnthropicProvider(model_id="claude-opus-5-5", api_key="test", turn_s=0)
 
 
-def test_an_azure_deployment_is_declared_not_guessed_from_the_client() -> None:
+def test_images_per_request_default_to_openai_and_take_an_override() -> None:
     import openai
 
     from actant.llm.providers.openai import OpenAIProvider
 
-    gateway = openai.AsyncOpenAI(
-        base_url="https://example.openai.azure.com/openai/v1", api_key="k"
-    )
+    gateway = openai.AsyncOpenAI(base_url="https://example.com/openai/v1", api_key="k")
     assert OpenAIProvider("gpt-x", client=gateway).max_images_per_request == 1_500
-    declared = OpenAIProvider("gpt-x", client=gateway, azure=True)
-    assert declared.azure and declared.max_images_per_request == 50
     assert (
-        OpenAIProvider(
-            "gpt-x", client=gateway, azure=True, max_images_per_request=7
-        ).max_images_per_request
+        OpenAIProvider("gpt-x", client=gateway, max_images_per_request=7).max_images_per_request
         == 7
     )
-    sdk = openai.AsyncAzureOpenAI(
-        azure_endpoint="https://example.openai.azure.com",
-        api_key="k",
-        api_version="2025-04-01-preview",
-    )
-    assert OpenAIProvider("gpt-x", client=sdk).max_images_per_request == 50
 
 
 @pytest.mark.asyncio

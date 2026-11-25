@@ -374,8 +374,10 @@ summarizing compaction, and it is off unless a thread opts in:
 ```python
 from actant.runtime import AgentRuntime, CompactionConfig, TemporalRuntimeConfig
 
-# The limits are the model client's: Azure OpenAI rejects more than 50 images.
-llm = OpenAIProvider("gpt-x", client=client, azure=True, context_window_tokens=1_000_000)
+# The limits are the model client's: a gateway that takes fewer images says so.
+llm = OpenAIProvider(
+    "gpt-x", client=client, max_images_per_request=50, context_window_tokens=1_000_000
+)
 config = TemporalRuntimeConfig(
     context_compaction=CompactionConfig(threshold=0.9, keep=["brief", "tool:read_checklist"])
 )
@@ -423,7 +425,7 @@ the worker registers, configured for speed (low reasoning effort), and `summary_
 caps its output, which is most of the call's time:
 
 ```python
-fast = OpenAIProvider("gpt-x", client=client, azure=True, thinking_level="low")
+fast = OpenAIProvider("gpt-x", client=client, thinking_level="low")
 runtime = AgentRuntime(
     client=temporal_client,
     stores=stores,
@@ -469,7 +471,7 @@ compaction rows included. Images before the row are not sent again;
 `RecallImageTool(stores.messages)` gives the agent `recall_image(id)` to attach
 one again from the asset store by the id the summary lists. Limits left `None`
 fall back to attributes of the same names on the model client (`OpenAIProvider`
-declares 50 images on an `AsyncAzureOpenAI` client and 1,500 otherwise).
+declares 1,500 images unless given `max_images_per_request`).
 
 ## Production checklist
 

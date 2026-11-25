@@ -40,7 +40,7 @@ qwen = ["openai>=1.60"]
 # mount only needs the bucket keys as a Modal secret.
 modal = ["modal>=1.5.5,<2"]
 # `actant.assets.InlineImages`: pictures fitted and sent inline, for providers that cannot
-# fetch URLs (Azure OpenAI).
+# fetch URLs.
 images = ["pillow>=10.1"]
 providers = [
   "anthropic>=0.40",

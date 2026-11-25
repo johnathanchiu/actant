@@ -77,8 +77,7 @@ def content_to_openai_user_parts(
     return parts or [{"type": "input_text", "text": ""}]
 
 
-#: Images one request may carry: Azure OpenAI rejects more than 50; OpenAI documents 1,500.
-AZURE_REQUEST_IMAGES = 50
+#: Images one request may carry: OpenAI documents 1,500.
 OPENAI_REQUEST_IMAGES = 1_500
 
 
@@ -91,9 +90,7 @@ class OpenAIProvider:
     including retries. Only transient failures retry: timeouts, connection errors,
     408/409/429/5xx, server or rate-limit error codes, a stream error naming no code,
     OpenAI timing out fetching an image URL, and a stream that closes before a terminal
-    event. ``azure`` marks an Azure OpenAI deployment, whatever the client's type, for
-    its service limits (``max_images_per_request`` defaults to Azure's 50).
-    ``cache_key`` is sent as ``prompt_cache_key`` on every request: requests that share
+    event. ``cache_key`` is sent as ``prompt_cache_key`` on every request: requests that share
     a prefix and a key reach the cache that holds it. Empty: none sent. OpenAI
     refuses a key over 64 characters.
     """
@@ -114,22 +111,16 @@ class OpenAIProvider:
         attempts: int = 3,
         context_window_tokens: int | None = None,
         max_images_per_request: int | None = None,
-        azure: bool = False,
         cache_key: str = "",
     ) -> None:
         self.model_id = model_id
         self.cache_key = cache_key
         # Limits for context compaction (``CompactionConfig``). The window
         # depends on the model and deployment, so it is never guessed. Images
-        # per request are documented per service: Azure OpenAI rejects more
-        # than 50, OpenAI accepts 1,500. ``azure`` says which service this is: an
-        # Azure deployment reached through a plain ``AsyncOpenAI(base_url=...)``
-        # looks like OpenAI from the client's type.
+        # per request default to OpenAI's documented 1,500; a gateway that
+        # takes fewer says so with ``max_images_per_request``.
         self.context_window_tokens = context_window_tokens
-        self.azure = azure or isinstance(client, openai.AsyncAzureOpenAI)
-        self.max_images_per_request = max_images_per_request or (
-            AZURE_REQUEST_IMAGES if self.azure else OPENAI_REQUEST_IMAGES
-        )
+        self.max_images_per_request = max_images_per_request or OPENAI_REQUEST_IMAGES
         self.thinking_level = thinking_level
         # This provider owns retries; SDK retries would stack under each attempt.
         self.client = (
@@ -367,7 +358,7 @@ class OpenAIProvider:
             arguments = ""
             open_call: tuple[str | None, str | None] = (None, None)
             emitting = False
-            # Azure fails a filtered request with ``response.failed`` (no error), then an
+            # A gateway may fail a filtered request with ``response.failed`` (no error), then an
             # ``error`` event naming why: the failure is raised at that event or stream end.
             failed: Response | None = None
             while True:
@@ -486,7 +477,7 @@ class OpenAIProvider:
                 cast(JSONObject, usage.model_dump(mode="json")),
                 response.status or "unknown",
             )
-        # ``cache_write_tokens`` is Azure's, beside the SDK's ``cached_tokens``.
+        # ``cache_write_tokens`` is some gateways', beside the SDK's ``cached_tokens``.
         details = getattr(usage, "input_tokens_details", None)
         message = Message(
             role="assistant",
@@ -531,8 +522,8 @@ class StreamInterrupted(RuntimeError):
 
 
 class ContentBlocked(StreamInterrupted):
-    """The provider's content filter refused the request's input (Azure's
-    ``content_policy_violation``); the same input is refused again, so it never retries."""
+    """The provider's content filter refused the request's input
+    (``content_policy_violation``); the same input is refused again, so it never retries."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message, retryable=False)
@@ -574,7 +565,7 @@ def _is_transient(error: Exception) -> bool:
         # The SDK raises a bare APIError for an SSE payload carrying an ``error`` object: the
         # server accepted the request (HTTP 200) and failed it while streaming. A code or type
         # says which side is at fault; one that names neither is a server failure like a 5xx
-        # (Azure's peak-load refusal is one), worth another attempt within the budget.
+        # (a peak-load refusal is one), worth another attempt within the budget.
         body = error.body if isinstance(error.body, Mapping) else {}
         named = {body.get("code"), body.get("type")} - {None}
         return not named or bool(named & _TRANSIENT_CODES)
