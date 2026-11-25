@@ -139,10 +139,10 @@ async def prepare_messages(
     return prepared
 
 
-#: The largest picture a whole request of pictures may hold, read before it is fitted: Azure
-#: OpenAI's Responses API takes at most 50 MB of images in one request. Larger is missing.
+#: The largest picture a whole request of pictures may hold, read before it is fitted: the
+#: Responses API takes at most 50 MB of images in one request. Larger is missing.
 READ_IMAGE_BYTES = 50_000_000
-#: The largest picture sent inline: 50 of them (Azure's per-request image limit),
+#: The largest picture sent inline: 50 of them,
 #: base64-encoded (4/3 the bytes), stay within 90% of :data:`READ_IMAGE_BYTES`.
 INLINE_IMAGE_BYTES = READ_IMAGE_BYTES * 9 // 10 // 50 * 3 // 4
 #: The longest side the model looks at: OpenAI scales a picture to fit 2048 x 2048 first.
@@ -211,7 +211,7 @@ def fit_image(
 class InlineImages:
     """Sends each picture in the request itself, for a provider that cannot fetch URLs.
 
-    Azure OpenAI's fetcher times out on presigned URLs that OpenAI direct fetches fine
+    Some gateways' fetchers time out on presigned URLs that OpenAI direct fetches fine
     ("Unable to download content from the provided URL before the timeout", 400). This wraps
     a URL resolver (such as :class:`~actant.storage.s3.S3AssetResolver`): each picture is
     read from its URL, `read_attempts` times at most, and resolved to bytes fitted by

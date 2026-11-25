@@ -4,6 +4,10 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Breaking: `OpenAIProvider` no longer takes `azure` and no longer reads a 50-image limit off an `AsyncAzureOpenAI` client. `max_images_per_request` defaults to 1,500; a gateway that takes fewer passes its own. `InlineImages` and image dropping are unchanged.
+
 ## 0.41.2
 
 - `AnthropicProvider.complete` accepts `allowed_tools` that names exactly the tools sent (it limits nothing; the model may still answer without a tool call) instead of raising. Any other set still raises `NotImplementedError`, now naming the tools sent.
