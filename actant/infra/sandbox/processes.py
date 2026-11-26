@@ -2,7 +2,7 @@
 
 The host still takes every request: its checks, call ids, cancels, image uploads and pushes.
 A placed service's call is run by the worker its key was dealt to on the key's first call; the
-worker (:mod:`actant.sandbox.worker`) serves its keys' instances as the host would, so it
+worker (:mod:`actant.infra.sandbox.worker`) serves its keys' instances as the host would, so it
 validates the arguments and encodes the result, and the host sends that response on.
 
 A worker that exits fails its calls in flight (never sent again: each may have run in part).
@@ -36,7 +36,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from enum import StrEnum
 from typing import ParamSpec, TypeVar, cast, overload
 
-from actant.sandbox.protocol import CallRequest, CallResponse, ServiceConfig, WorkerConfig
+from actant.infra.sandbox.protocol import CallRequest, CallResponse, ServiceConfig, WorkerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ class HostLink:
             future.set_result(outcome)
 
 
-#: Set in a worker process (:mod:`actant.sandbox.worker`).
+#: Set in a worker process (:mod:`actant.infra.sandbox.worker`).
 _link: HostLink | None = None
 
 
@@ -200,7 +200,7 @@ class Worker:
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
-                "actant.sandbox.worker",
+                "actant.infra.sandbox.worker",
                 config.model_dump_json(),
                 str(theirs.fileno()),
                 stdin=asyncio.subprocess.DEVNULL,

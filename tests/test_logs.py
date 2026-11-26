@@ -7,7 +7,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from actant.logs import log_to_stderr
+from actant.infra.logs import log_to_stderr
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def test_actant_records_reach_stderr_once_and_the_root_is_untouched(
     before = root.handlers[:], root.level
     log_to_stderr()
     log_to_stderr()
-    logging.getLogger("actant.sandbox.processes").info("worker 1 started for p")
+    logging.getLogger("actant.infra.sandbox.processes").info("worker 1 started for p")
     logging.getLogger("elsewhere").info("not ours")
     assert capfd.readouterr().err == "worker 1 started for p\n"
     assert len(package.handlers) == 1

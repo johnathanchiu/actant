@@ -1,10 +1,10 @@
-"""One worker process of a placed service (:mod:`actant.sandbox.processes`).
+"""One worker process of a placed service (:mod:`actant.infra.sandbox.processes`).
 
 ::
 
-    python -m actant.sandbox.worker '<WorkerConfig JSON>' <fd>
+    python -m actant.infra.sandbox.worker '<WorkerConfig JSON>' <fd>
 
-Serves its service on its end of the host's socketpair with a :class:`~actant.sandbox.host.Host`
+Serves its service on its end of the host's socketpair with a :class:`~actant.infra.sandbox.host.Host`
 that has no HTTP server: the same instances per key, argument checks, encoding and cancels.
 Exits once the socket closes, after closing its instances.
 """
@@ -18,11 +18,11 @@ import socket
 import sys
 from typing import cast
 
-from actant.logs import log_to_stderr
-from actant.sandbox import host
-from actant.sandbox import processes
-from actant.sandbox.processes import Kind, frame, receive, send
-from actant.sandbox.protocol import CallRequest, WorkerConfig
+from actant.infra.logs import log_to_stderr
+from actant.infra.sandbox import host
+from actant.infra.sandbox import processes
+from actant.infra.sandbox.processes import Kind, frame, receive, send
+from actant.infra.sandbox.protocol import CallRequest, WorkerConfig
 
 
 async def serve(config: WorkerConfig, fd: int) -> None:

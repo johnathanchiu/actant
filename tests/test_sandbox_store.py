@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from actant.sandbox import SandboxSpec, Storage
-from actant.sandbox.base import Location, Mount, Restore
-from actant.sandbox.protocol import ServiceConfig
-from actant.sandbox.store import InMemorySandboxStore, spec_from_json, spec_to_json
+from actant.infra.sandbox import SandboxSpec, Storage
+from actant.infra.sandbox.base import Location, Mount, Restore
+from actant.infra.sandbox.protocol import ServiceConfig
+from actant.infra.sandbox.store import InMemorySandboxStore, spec_from_json, spec_to_json
 
 
 def test_a_spec_round_trips_through_json_without_its_image() -> None:

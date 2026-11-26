@@ -18,7 +18,7 @@ import uuid
 
 import pytest
 
-from actant.storage.sigv4 import SigningKeys, presign_get
+from actant.infra.storage.sigv4 import SigningKeys, presign_get
 
 ENDPOINT = os.environ.get("ACTANT_TEST_S3_ENDPOINT", "")
 BUCKET = os.environ.get("ACTANT_TEST_S3_BUCKET", "")

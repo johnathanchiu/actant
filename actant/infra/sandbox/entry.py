@@ -2,9 +2,9 @@
 
 ::
 
-    python -m actant.sandbox.entry '<EntryConfig JSON>'
+    python -m actant.infra.sandbox.entry '<EntryConfig JSON>'
 
-One :class:`~actant.sandbox.protocol.EntryConfig` document, validated before
+One :class:`~actant.infra.sandbox.protocol.EntryConfig` document, validated before
 anything runs. The restore runs to completion before the host binds its port, so
 a readiness probe on that port (or on :data:`READY_FILE` without a host) only
 passes once the files are in place. The services' modules are imported while the
@@ -55,8 +55,8 @@ from typing import IO
 
 from pydantic import BaseModel, ValidationError
 
-import actant.sandbox.host as host
-from actant.sandbox.protocol import EntryConfig, RestoreConfig, StampConfig
+import actant.infra.sandbox.host as host
+from actant.infra.sandbox.protocol import EntryConfig, RestoreConfig, StampConfig
 
 READY_FILE = "/tmp/actant-ready"
 #: How often a running pull reports its progress.
@@ -276,7 +276,7 @@ def stamp(
 def main(argv: Sequence[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if len(args) != 1:
-        print("usage: python -m actant.sandbox.entry '<EntryConfig JSON>'", file=sys.stderr)
+        print("usage: python -m actant.infra.sandbox.entry '<EntryConfig JSON>'", file=sys.stderr)
         return 2
     try:
         config = EntryConfig.model_validate_json(args[0])

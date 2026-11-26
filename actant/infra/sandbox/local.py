@@ -18,22 +18,22 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-import actant.sandbox.host as host
-from actant.sandbox.access import (
+import actant.infra.sandbox.host as host
+from actant.infra.sandbox.access import (
     SETUP_TIMEOUT_S,
     AccessSetup,
     SandboxAccess,
     enforceable,
     run_argv,
 )
-from actant.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec
-from actant.sandbox.protocol import EntryConfig, Header, HostConfig
+from actant.infra.sandbox.base import Endpoint, Entry, ExecResult, Sandbox, SandboxSpec
+from actant.infra.sandbox.protocol import EntryConfig, Header, HostConfig
 
 #: How long a host may take to import its services and bind.
 HOST_START_TIMEOUT_S = 60
-#: :mod:`actant.sandbox.entry`, named not imported: running a module this package imports
+#: :mod:`actant.infra.sandbox.entry`, named not imported: running a module this package imports
 #: with ``-m`` would load it twice.
-ENTRY_MODULE = "actant.sandbox.entry"
+ENTRY_MODULE = "actant.infra.sandbox.entry"
 
 _log = logging.getLogger(__name__)
 

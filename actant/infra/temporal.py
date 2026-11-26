@@ -1,4 +1,5 @@
-"""Heartbeats for a Temporal activity while slow work runs inside it.
+"""Temporal helpers any actant worker uses, agent or not: the workflow runner, and
+heartbeats for an activity while slow work runs inside it.
 
 A Temporal activity with a heartbeat timeout is retried as lost when it stops beating.
 Work that waits minutes on something else (a sandbox opening, a pull, a push, a call
@@ -13,6 +14,15 @@ import contextlib
 from collections.abc import AsyncIterator
 
 from temporalio import activity
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
+
+#: Temporal's sandbox imports again, for every workflow it starts, each module it does not pass
+#: through. Importing ``AgentThreadWorkflow`` imports ``actant.runtime`` as its package, which
+#: took about 5.5 s of CPU per thread workflow. actant keeps no module state a workflow could
+#: read nondeterministically, so it is imported once.
+WORKFLOW_RUNNER = SandboxedWorkflowRunner(
+    restrictions=SandboxRestrictions.default.with_passthrough_modules("actant")
+)
 
 #: How often a beat is sent: well inside any heartbeat timeout worth setting.
 HEARTBEAT_EVERY_S = 30.0

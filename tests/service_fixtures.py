@@ -13,9 +13,9 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 
-from actant.sandbox.host import Host, script_env
-from actant.sandbox.processes import host_function, on_host
-from actant.sandbox.protocol import CallRequest
+from actant.infra.sandbox.host import Host, script_env
+from actant.infra.sandbox.processes import host_function, on_host
+from actant.infra.sandbox.protocol import CallRequest
 
 
 class Box(BaseModel):

@@ -12,10 +12,11 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from actant.agents import AgentDefinition
-from actant.blocks import BLOCKS, Block, CompactionBlock
-from actant.assets import AssetContext, prepare_messages
+from actant.infra.blocks import BLOCKS, Block, CompactionBlock
+from actant.infra.assets import AssetContext
+from actant.llm.assets import prepare_messages
 from actant.core import JSONObject, new_id
-from actant.heartbeat import heartbeating
+from actant.infra.temporal import heartbeating
 from actant.llm.base import LLMClient
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall as LLMToolCall

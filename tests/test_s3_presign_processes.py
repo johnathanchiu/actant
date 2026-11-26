@@ -14,9 +14,9 @@ import sys
 CHILD = """
 import asyncio, json, sys, time
 
-from actant.assets import AssetContext, AssetReference
-from actant.storage.s3 import S3AssetResolver
-from actant.storage.sigv4 import SigningKeys
+from actant.infra.assets import AssetContext, AssetReference
+from actant.infra.storage.s3 import S3AssetResolver
+from actant.infra.storage.sigv4 import SigningKeys
 
 
 class Client:

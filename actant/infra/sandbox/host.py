@@ -1,23 +1,23 @@
 """The service host: serves named service classes over HTTP from inside a sandbox.
 
 A service is a plain class whose public methods are callable remotely (see
-:mod:`actant.sandbox.service`). Running its methods next to the sandbox's files
+:mod:`actant.infra.sandbox.service`). Running its methods next to the sandbox's files
 keeps file-heavy work and in-memory state out of the worker; only text and
 image bytes cross the boundary.
 
 ::
 
-    python -m actant.sandbox.entry \
+    python -m actant.infra.sandbox.entry \
         '{"host": {"services": {"tools": "pkg.mod:Tools", "stages": "pkg.mod:Stages"}}}'
 
-(:mod:`actant.sandbox.entry` is the command line; this module is imported, never
+(:mod:`actant.infra.sandbox.entry` is the command line; this module is imported, never
 run as ``__main__``, so :func:`script_env` sees the configuration ``main`` set.)
 
 Services are fixed at launch. Requests name a service and a method, never a module.
 Several services let a product keep the model's tools on one class and the calls
 its own code makes (setup, stages, checks) on another, without filtering.
 
-Protocol (JSON bodies, typed in :mod:`actant.sandbox.protocol`)::
+Protocol (JSON bodies, typed in :mod:`actant.infra.sandbox.protocol`)::
 
     POST /v1/call CallRequest -> CallResponse
     POST /v1/cancel CancelRequest -> stop that call (its method sees CancelledError)
@@ -43,7 +43,7 @@ variable is removed from the process environment once read.
 Storage pushes (``HostConfig.push``) never fail or stall a call. A push runs after
 calls and every ``interval_s`` while calls have completed since the last successful
 one; never two at once. Each is killed (its process group) after ``timeout_s``. A
-host that pushes adds a :class:`~actant.sandbox.protocol.StorageStatus` to every
+host that pushes adds a :class:`~actant.infra.sandbox.protocol.StorageStatus` to every
 call response (``CallResponse.storage``).
 
 Returned images go back as bytes (``InlineSource``); the worker stores them in its own
@@ -79,9 +79,9 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
-from actant.logs import log_to_stderr
-from actant.sandbox.base import Endpoint
-from actant.sandbox.protocol import (
+from actant.infra.logs import log_to_stderr
+from actant.infra.sandbox.base import Endpoint
+from actant.infra.sandbox.protocol import (
     CallRequest,
     CancelRequest,
     CallResponse,
@@ -94,7 +94,7 @@ from actant.sandbox.protocol import (
     ServiceConfig,
     StorageStatus,
 )
-from actant.sandbox.processes import Workers
+from actant.infra.sandbox.processes import Workers
 
 TOKEN_ENV = "ACTANT_HOST_TOKEN"
 #: The line the host prints to stdout once it accepts connections: ``<prefix> <port>``.
@@ -758,7 +758,7 @@ def load_services(config: HostConfig) -> dict[str, type]:
 
 def main(config: HostConfig, services: Mapping[str, type] | None = None) -> int:
     """Serve ``config`` (its ``services`` when already loaded) until stopped
-    (:mod:`actant.sandbox.entry` is the command line)."""
+    (:mod:`actant.infra.sandbox.entry` is the command line)."""
     log_to_stderr()
     scrub(config.scrub)
     services = load_services(config) if services is None else services

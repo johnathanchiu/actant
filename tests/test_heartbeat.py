@@ -7,16 +7,16 @@ import asyncio
 import pytest
 from temporalio.testing import ActivityEnvironment
 
-import actant.heartbeat
-import actant.sandbox.service as service
-from actant.heartbeat import heartbeating
-from actant.sandbox.base import Endpoint
-from actant.sandbox.protocol import CallRequest, CallResponse
+import actant.infra.temporal
+import actant.infra.sandbox.service as service
+from actant.infra.temporal import heartbeating
+from actant.infra.sandbox.base import Endpoint
+from actant.infra.sandbox.protocol import CallRequest, CallResponse
 
 
 @pytest.fixture(autouse=True)
 def _fast_beats(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(actant.heartbeat, "HEARTBEAT_EVERY_S", 0.02)
+    monkeypatch.setattr(actant.infra.temporal, "HEARTBEAT_EVERY_S", 0.02)
 
 
 async def test_outside_an_activity_the_body_just_runs() -> None:

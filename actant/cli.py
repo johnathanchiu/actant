@@ -18,7 +18,7 @@ from sqlalchemy import select, type_coerce
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from actant.blocks import BLOCKS
+from actant.infra.blocks import BLOCKS
 from actant.runtime.stores.postgres.models import ActantMessagePartModel
 
 _DEFAULT_COMPOSE_PROJECT = "actant-local"
@@ -107,7 +107,7 @@ def _parser() -> argparse.ArgumentParser:
         help="report stored content blocks that do not validate",
         description=(
             "Read every actant_message_parts.content_blocks row and print the ones "
-            "actant.blocks rejects. Exits 1 if any do. Run it before deploying a "
+            "actant.infra.blocks rejects. Exits 1 if any do. Run it before deploying a "
             "release that changes the block types."
         ),
     )

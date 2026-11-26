@@ -10,8 +10,8 @@ import urllib.error
 import pytest
 from PIL import Image
 
-from actant import assets
-from actant.assets import (
+from actant.infra import assets
+from actant.infra.assets import (
     AssetContext,
     AssetReference,
     InlineImages,

@@ -7,7 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock, UrlImageBlock
+from actant.infra.blocks import (
+    AssetBlock,
+    Base64Source,
+    InlineImageBlock,
+    TextBlock,
+    UrlImageBlock,
+)
 from actant.llm import Message, ToolCall, ToolCallFunction, provider_for_model
 from actant.llm.providers._shared import sanitize_tool_messages
 from anthropic.types import TextBlock as AnthropicText

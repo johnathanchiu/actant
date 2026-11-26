@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from actant.sandbox.access import SandboxAccess
+from actant.infra.sandbox.access import SandboxAccess
 
 
 class ThreadStatus(StrEnum):

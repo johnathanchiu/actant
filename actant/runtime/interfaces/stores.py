@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from actant.blocks import Block, CompactionBlock
+from actant.infra.blocks import Block, CompactionBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message
 from actant.runtime.types.threads import (
@@ -18,7 +18,7 @@ from actant.runtime.types.threads import (
     MessageRecord,
     RunStatus,
 )
-from actant.sandbox.store import SandboxStore
+from actant.infra.sandbox.store import SandboxStore
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 from collections.abc import Sequence
 
@@ -179,5 +179,5 @@ class RuntimeStores(Protocol):
 
     @property
     def sandboxes(self) -> SandboxStore:
-        """Keyed sandboxes (``actant.sandbox.registry``), recorded beside the projections."""
+        """Keyed sandboxes (``actant.infra.sandbox.registry``), recorded beside the projections."""
         ...

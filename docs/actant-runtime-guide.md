@@ -14,8 +14,8 @@ guide). Wire the backends and the artifact sink on the worker:
 ```python
 from pathlib import Path
 from actant.runtime import AgentRuntime
-from actant.sandbox.local import LocalSandboxProvider
-from actant.sandbox.registry import SandboxRegistry
+from actant.infra.sandbox.local import LocalSandboxProvider
+from actant.infra.sandbox.registry import SandboxRegistry
 
 runtime = AgentRuntime(
     client=client,

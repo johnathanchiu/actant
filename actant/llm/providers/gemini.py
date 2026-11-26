@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 from google import genai  # pyright: ignore[reportAttributeAccessIssue]
 from google.genai import types
 
-from actant.blocks import InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
+from actant.infra.blocks import InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers._shared import env_api_key, sanitize_tool_messages, unresolved

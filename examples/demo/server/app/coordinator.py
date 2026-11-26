@@ -25,10 +25,10 @@ from actant.runtime.stores.postgres import (
     SQLAlchemyMessageStore,
     SQLAlchemyRunStore,
     SQLAlchemyThreadStore,
-    SQLAlchemySandboxStore,
     SQLAlchemyToolCallStore,
     create_schema,
 )
+from actant.infra.sandbox.postgres import SQLAlchemySandboxStore
 from actant.runtime.types.threads import AgentThread
 from actant.tools.base import Tool
 from actant.tools.supervise import supervision_tools

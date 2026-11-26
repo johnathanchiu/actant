@@ -18,7 +18,7 @@ from actant.runtime.temporal.activities import TemporalRuntimeActivities
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import TemporalRuntimeConfig
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
-from actant.sandbox import SandboxAccess
+from actant.infra.sandbox import SandboxAccess
 from actant.tools.registry import ToolRegistry
 from runtime_fixtures import static_agents
 

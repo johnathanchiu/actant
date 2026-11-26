@@ -12,15 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from actant.sandbox import Endpoint, call_host, host
-from actant.sandbox.protocol import (
+from actant.infra.sandbox import Endpoint, call_host, host
+from actant.infra.sandbox.protocol import (
     CallRequest,
     CallResponse,
     EntryConfig,
     HostConfig,
     ServiceConfig,
 )
-from actant.sandbox.processes import on_host
+from actant.infra.sandbox.processes import on_host
 from service_fixtures import HOST, Placed, where
 
 TESTS = str(Path(__file__).parent)
@@ -134,7 +134,7 @@ async def test_a_host_function_may_await_the_worker_that_asked(served: host.Host
 async def test_a_worker_says_when_it_starts_and_how_many_calls_it_served(
     served: host.Host, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.INFO, logger="actant.sandbox.processes")
+    caplog.set_level(logging.INFO, logger="actant.infra.sandbox.processes")
     pids = {key: (await call(served, key, "pid")).text for key in "abc"}
     await call(served, "a", "bump")
     await served.close_instances()
@@ -157,7 +157,7 @@ async def test_a_signal_to_the_sandbox_shuts_host_and_workers_down_without_a_tra
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "actant.sandbox.entry",
+        "actant.infra.sandbox.entry",
         EntryConfig(host=config).model_dump_json(),
         cwd=tmp_path,
         env={"PYTHONPATH": TESTS, "PATH": "/usr/bin:/bin"},

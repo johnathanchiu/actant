@@ -4,7 +4,7 @@ The owner opens the sandbox (:meth:`SandboxRegistry.open`) and closes it
 (:meth:`~SandboxRegistry.close`); anything else that works in it attaches by its id
 (:meth:`~SandboxRegistry.attach`) and never closes it. The backend's live id
 (``provider_id``) and the spec it was opened with are recorded in a
-:class:`~actant.sandbox.store.SandboxStore`, so every worker reaches the same sandbox, and
+:class:`~actant.infra.sandbox.store.SandboxStore`, so every worker reaches the same sandbox, and
 one its backend reclaimed is reopened from that spec.
 
 Process-scoped: a live handle is cached here per sandbox id. This module is part of the
@@ -21,8 +21,8 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from actant.sandbox.base import Sandbox, SandboxProvider, SandboxSpec
-from actant.sandbox.store import SandboxStore, spec_to_json
+from actant.infra.sandbox.base import Sandbox, SandboxProvider, SandboxSpec
+from actant.infra.sandbox.store import SandboxStore, spec_to_json
 
 # How long a verified handle is served without asking the backend again. A
 # backend reclaims a sandbox after minutes idle, so one verified seconds ago

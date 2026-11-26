@@ -4,6 +4,14 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
+## Unreleased
+
+- Breaking: the infrastructure the agent runtime runs on moves under `actant.infra`, and nothing there imports the agent layer (`actant.llm`, `actant.tools`, `actant.runtime`). Imports change; behaviour, workflow and activity names, and the database schema do not.
+  - `actant.sandbox` → `actant.infra.sandbox`, `actant.storage` → `actant.infra.storage`, `actant.assets` → `actant.infra.assets`, `actant.blocks` → `actant.infra.blocks`, `actant.logs` → `actant.infra.logs`.
+  - `actant.heartbeat` → `actant.infra.temporal`, which also holds `WORKFLOW_RUNNER` (was `actant.runtime.runtime`).
+  - `prepare_messages` and `RESOLVE_CONCURRENCY` → `actant.llm.assets`.
+  - `SQLAlchemySandboxStore` and `ActantSandboxModel` → `actant.infra.sandbox.postgres`, on the sandbox layer's own `SANDBOX_METADATA`. `ACTANT_RUNTIME_METADATA` still holds every table actant's migrations own, `actant_sandboxes` included.
+
 ## 0.42.0
 
 - Breaking: `OpenAIProvider` no longer takes `azure` and no longer reads a 50-image limit off an `AsyncAzureOpenAI` client. `max_images_per_request` defaults to 1,500; a gateway that takes fewer passes its own. `InlineImages` and image dropping are unchanged.

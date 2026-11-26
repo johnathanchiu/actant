@@ -4,7 +4,7 @@ A sandbox's id is an opaque string its owner picks (a scene's own id, a thread i
 record outlives any one process, so every worker reaches the same sandbox by its id, and
 one its backend reclaimed is reopened from the spec recorded with it.
 
-This module is part of :mod:`actant.sandbox`, which the agent runtime depends on and never
+This module is part of :mod:`actant.infra.sandbox`, which the agent runtime depends on and never
 the reverse: it imports nothing from actant's runtime.
 """
 
@@ -17,8 +17,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
-from actant.sandbox.base import Location, Mount, Restore, SandboxSpec
-from actant.sandbox.protocol import ServiceConfig
+from actant.infra.sandbox.base import Location, Mount, Restore, SandboxSpec
+from actant.infra.sandbox.protocol import ServiceConfig
 
 
 @dataclass(frozen=True)

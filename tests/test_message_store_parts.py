@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from actant.blocks import AssetBlock, Block, TextBlock
+from actant.infra.blocks import AssetBlock, Block, TextBlock
 from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores.in_memory import InMemoryMessageStore

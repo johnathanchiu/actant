@@ -1,6 +1,6 @@
 """Sandboxes: where an agent's tools read, write and run code.
 
-A sandbox is owned by a key (:mod:`actant.sandbox.registry`): a thread's own
+A sandbox is owned by a key (:mod:`actant.infra.sandbox.registry`): a thread's own
 id, or a key a product opened and the thread names. A tool that needs one
 declares it (``needs_sandbox``, or a ``Sandbox`` parameter on a function tool)
 and the runtime hands it the thread's sandbox through its ``CallContext``.
@@ -23,8 +23,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from actant.sandbox.access import SandboxAccess
-from actant.sandbox.protocol import ServiceConfig
+from actant.infra.sandbox.access import SandboxAccess
+from actant.infra.sandbox.protocol import ServiceConfig
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class Sandbox(Protocol):
     ``/proc/<pid>/environ`` or call the service host.
 
     ``exec`` with ``access`` runs the command as that agent's own Unix user (see
-    :mod:`actant.sandbox.access`): it writes only its ``writable`` paths, and a write
+    :mod:`actant.infra.sandbox.access`): it writes only its ``writable`` paths, and a write
     elsewhere fails with ``Permission denied`` in stderr. Without it, as before.
 
     """
@@ -218,8 +218,8 @@ class SandboxSpec:
     #: How a cloud backend keeps files; see :class:`Storage`.
     storage: Storage = Storage.MOUNT
     #: Name to ``"pkg.mod:Class"``, served by one service host inside the sandbox (see
-    #: :mod:`actant.sandbox.service`). Fixed here, at launch; requests name a service
-    #: and a method, never a module. A :class:`~actant.sandbox.protocol.ServiceConfig` serves
+    #: :mod:`actant.infra.sandbox.service`). Fixed here, at launch; requests name a service
+    #: and a method, never a module. A :class:`~actant.infra.sandbox.protocol.ServiceConfig` serves
     #: one from worker processes beside the host.
     services: Mapping[str, str | ServiceConfig] = field(default_factory=dict)
     #: The port the host listens on inside a container. ``local`` picks a free one.
@@ -283,7 +283,7 @@ class SandboxProvider(Protocol):
     """Opens sandboxes for a backend and reattaches to ones that already exist."""
 
     async def open(self, spec: SandboxSpec, *, sandbox_id: str) -> Sandbox:
-        """A new sandbox for ``sandbox_id`` (see :mod:`actant.sandbox.registry`): its files
+        """A new sandbox for ``sandbox_id`` (see :mod:`actant.infra.sandbox.registry`): its files
         under the spec's ``mount`` by that id, unless the spec says where they are."""
         ...
 

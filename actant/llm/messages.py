@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from actant.blocks import PROMPT_BLOCKS, PromptBlock
+from actant.infra.blocks import PROMPT_BLOCKS, PromptBlock
 
 Role = Literal["system", "user", "assistant", "tool"]
 Kind = Literal["message", "compaction"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from actant.blocks import BLOCKS, Block, PromptBlock
+from actant.infra.blocks import BLOCKS, Block, PromptBlock
 from actant.core import JSONObject, JSONValue
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.types.session import MessagePart, PartKind, WaitStatus
@@ -169,7 +169,7 @@ def tool_result_blocks(result: object) -> list[Block] | None:
 
 def tool_result_content(result: object) -> str | list[PromptBlock]:
     """A persisted tool result as ``Message.content``: its blocks when it has any, which
-    :func:`~actant.assets.prepare_messages` later resolves, otherwise its JSON."""
+    :func:`~actant.llm.assets.prepare_messages` later resolves, otherwise its JSON."""
     blocks = tool_result_blocks(result)
     return list(blocks) if blocks else json.dumps(result)
 

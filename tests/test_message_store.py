@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from actant.blocks import Base64Source, Block, InlineImageBlock, TextBlock
+from actant.infra.blocks import Base64Source, Block, InlineImageBlock, TextBlock
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores import InMemoryRuntimeStores
 from actant.tools.calls import ToolCallRecord, ToolCallStatus

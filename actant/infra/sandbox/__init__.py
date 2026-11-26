@@ -4,8 +4,8 @@ A standalone layer: the agent runtime depends on it, and it imports nothing from
 runtime, threads, runs or models.
 """
 
-from actant.sandbox.access import SandboxAccess
-from actant.sandbox.base import (
+from actant.infra.sandbox.access import SandboxAccess
+from actant.infra.sandbox.base import (
     ArtifactRef,
     ArtifactSink,
     Backend,
@@ -17,15 +17,21 @@ from actant.sandbox.base import (
     SandboxSpec,
     Storage,
 )
-from actant.sandbox.processes import host_function, on_host
-from actant.sandbox.protocol import (
+from actant.infra.sandbox.processes import host_function, on_host
+from actant.infra.sandbox.protocol import (
     Image,
     InlineSource,
     ServiceConfig,
     StorageStatus,
 )
-from actant.sandbox.local import LocalSandbox, LocalSandboxProvider
-from actant.sandbox.service import LocalRunner, RemoteRunner, Runner, SandboxRunner, call_host
+from actant.infra.sandbox.local import LocalSandbox, LocalSandboxProvider
+from actant.infra.sandbox.service import (
+    LocalRunner,
+    RemoteRunner,
+    Runner,
+    SandboxRunner,
+    call_host,
+)
 
 __all__ = [
     "ArtifactRef",

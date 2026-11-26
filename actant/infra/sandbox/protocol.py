@@ -113,7 +113,7 @@ class PushConfig(_Message):
 
 
 class ServiceConfig(_Message):
-    """A service served from worker processes beside the host (:mod:`actant.sandbox.processes`):
+    """A service served from worker processes beside the host (:mod:`actant.infra.sandbox.processes`):
     its keys' calls leave the host's interpreter, so they never queue for its GIL."""
 
     #: ``"pkg.mod:Class"``.
@@ -126,7 +126,7 @@ class ServiceConfig(_Message):
 
 
 class WorkerConfig(_Message):
-    """``python -m actant.sandbox.worker '<WorkerConfig JSON>' <fd>``: one worker of a service."""
+    """``python -m actant.infra.sandbox.worker '<WorkerConfig JSON>' <fd>``: one worker of a service."""
 
     service: str
     path: str
@@ -139,7 +139,7 @@ class HostConfig(_Message):
     #: ``0`` picks a free port.
     port: int = Field(default=8080, ge=0, le=65535)
     bind: str = "0.0.0.0"
-    #: Names :func:`actant.sandbox.host.script_env` removes.
+    #: Names :func:`actant.infra.sandbox.host.script_env` removes.
     scrub: list[str] = Field(default_factory=list)
     push: PushConfig | None = None
 
@@ -190,7 +190,7 @@ class RestoreConfig(_Message):
 
 
 class EntryConfig(_Message):
-    """``python -m actant.sandbox.entry '<EntryConfig JSON>'``: restore, then serve (or idle)."""
+    """``python -m actant.infra.sandbox.entry '<EntryConfig JSON>'``: restore, then serve (or idle)."""
 
     restore: RestoreConfig | None = None
     host: HostConfig | None = None

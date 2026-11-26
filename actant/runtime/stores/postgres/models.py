@@ -8,25 +8,34 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Dialect, ForeignKey, Index, Integer, Text, func, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Dialect,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
-from actant.blocks import BLOCKS, Block
+from actant.infra.blocks import BLOCKS, Block
 from actant.core import JSONValue
+from actant.infra.sandbox.postgres import SANDBOX_METADATA
 
 
 class ActantRuntimeBase(DeclarativeBase):
     pass
 
 
-ACTANT_RUNTIME_METADATA = ActantRuntimeBase.metadata
-
-
 class BlocksJSONB(TypeDecorator[list[Block]]):
-    """JSONB holding :data:`~actant.blocks.Block` lists, validated on every write and read."""
+    """JSONB holding :data:`~actant.infra.blocks.Block` lists, validated on every write and read."""
 
     impl = JSONB
     cache_ok = True
@@ -63,22 +72,6 @@ class ActantThreadModel(ActantRuntimeBase):
     sandbox_user: Mapped[str | None] = mapped_column(Text)
     sandbox_writable: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     sandbox_scratch: Mapped[bool | None] = mapped_column(Boolean)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class ActantSandboxModel(ActantRuntimeBase):
-    """A sandbox (:mod:`actant.sandbox.store`): its backend's live id and its spec."""
-
-    __tablename__ = "actant_sandboxes"
-
-    sandbox_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    provider_id: Mapped[str] = mapped_column(Text, nullable=False)
-    spec: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -197,6 +190,14 @@ class ActantToolCallModel(ActantRuntimeBase):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+#: The whole schema actant's migrations own: the runtime's tables and the sandbox layer's
+#: (:data:`~actant.infra.sandbox.postgres.SANDBOX_METADATA`), which declares its own.
+ACTANT_RUNTIME_METADATA = MetaData()
+for _metadata in (ActantRuntimeBase.metadata, SANDBOX_METADATA):
+    for _table in _metadata.sorted_tables:
+        _table.to_metadata(ACTANT_RUNTIME_METADATA)
 
 
 __all__ = [

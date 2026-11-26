@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
-from actant.blocks import Block
+from actant.infra.blocks import Block
 from actant.core import JSONObject
 from actant.llm.messages import Message
 from actant.runtime.events.publisher import EventSource

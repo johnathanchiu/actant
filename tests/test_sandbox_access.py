@@ -14,10 +14,10 @@ from typing import Any, cast
 
 import pytest
 
-import actant.sandbox.local as local_backend
-from actant.sandbox import ExecResult, LocalSandbox, SandboxAccess
-from actant.sandbox.access import enforceable, run_argv, setup_argv
-from actant.sandbox.modal import ModalSandbox
+import actant.infra.sandbox.local as local_backend
+from actant.infra.sandbox import ExecResult, LocalSandbox, SandboxAccess
+from actant.infra.sandbox.access import enforceable, run_argv, setup_argv
+from actant.infra.sandbox.modal import ModalSandbox
 from actant.agents import AgentDefinition
 from actant.llm.providers.fake import FakeLLM
 from actant.runtime.stores import InMemoryRuntimeStores
@@ -197,7 +197,7 @@ async def test_agents_commands_run_in_parallel(caplog: pytest.LogCaptureFixture)
 
     fake = _Modal(setup_s=0.15, command=command)
     sandbox = ModalSandbox(fake, {}, root="/ws")
-    with caplog.at_level(logging.INFO, logger="actant.sandbox.access"):
+    with caplog.at_level(logging.INFO, logger="actant.infra.sandbox.access"):
         await asyncio.gather(
             sandbox.exec(["sleep"], timeout=5, access=SandboxAccess("chair")),
             sandbox.exec(["sleep"], timeout=5, access=SandboxAccess("table")),

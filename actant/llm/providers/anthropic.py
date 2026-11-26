@@ -18,7 +18,7 @@ from anthropic.types.thinking_config_param import ThinkingConfigParam
 from anthropic.types.tool_union_param import ToolUnionParam
 
 from actant.core import JSONObject
-from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, UrlImageBlock
+from actant.infra.blocks import AssetBlock, CompactionBlock, PromptBlock, UrlImageBlock
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers._shared import (

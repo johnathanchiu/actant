@@ -10,16 +10,16 @@ A product writes an ordinary class, with no actant import::
             \"\"\"Save a note.\"\"\"
 
 Its methods are the public functions (``async def`` or plain ``def``) on the class
-and its bases, minus ``open`` and ``close`` (:func:`actant.sandbox.host.service_methods`).
+and its bases, minus ``open`` and ``close`` (:func:`actant.infra.sandbox.host.service_methods`).
 A plain ``def`` runs in a worker thread; an ``async def`` runs on the host's event
 loop, so blocking or CPU-heavy work in one stalls every concurrent call until it
 awaits. Arguments are validated against the method's signature without ``self``
-(:func:`actant.sandbox.host.parameters_model`), so methods receive the annotated types.
+(:func:`actant.infra.sandbox.host.parameters_model`), so methods receive the annotated types.
 
 A method returns ``str``, an object with ``.text`` and ``.images`` (file paths or
 bytes, each optionally an ``(image, caption)`` pair; a true ``.terminal`` also ends
 the agent's run), or any JSON-encodable value; every runner encodes it as the same
-:class:`~actant.sandbox.protocol.CallResponse`.
+:class:`~actant.infra.sandbox.protocol.CallResponse`.
 
 A :class:`Runner` says where the methods run: :class:`LocalRunner` in-process,
 :class:`RemoteRunner` against a host endpoint, or :class:`SandboxRunner` against a
@@ -40,10 +40,10 @@ from pydantic import ValidationError
 if TYPE_CHECKING:
     import httpx
 
-import actant.sandbox.host as host
-from actant.heartbeat import heartbeating
-from actant.sandbox.base import Endpoint, Sandbox
-from actant.sandbox.protocol import CallRequest, CallResponse, CancelRequest, Route
+import actant.infra.sandbox.host as host
+from actant.infra.temporal import heartbeating
+from actant.infra.sandbox.base import Endpoint, Sandbox
+from actant.infra.sandbox.protocol import CallRequest, CallResponse, CancelRequest, Route
 
 DEFAULT_CALL_TIMEOUT_S = 600.0
 #: Concurrent connections one runner holds to service hosts. A call past the cap waits

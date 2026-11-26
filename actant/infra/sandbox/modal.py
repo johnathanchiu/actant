@@ -28,8 +28,8 @@ Modal secret holding ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` (plus
 cloudflared tunnel included); s5cmd uses path-style addressing for any custom
 endpoint, which MinIO needs.
 
-A spec's services are served by :mod:`actant.sandbox.host`, launched as the
-sandbox entrypoint through :mod:`actant.sandbox.entry` (which restores
+A spec's services are served by :mod:`actant.infra.sandbox.host`, launched as the
+sandbox entrypoint through :mod:`actant.infra.sandbox.entry` (which restores
 ``disk_sync`` storage first). Readiness is a TCP probe on the host's port: the
 host binds only after the restore and the service imports. The endpoint is a
 Modal connect token for that port: Modal's proxy authenticates each request and
@@ -59,11 +59,11 @@ from itertools import takewhile
 from typing import Any
 from urllib.parse import urlsplit
 
-import actant.sandbox.entry as entry
-import actant.sandbox.host as host
-from actant.sandbox.access import SETUP_TIMEOUT_S, AccessSetup, SandboxAccess, run_argv
-from actant.heartbeat import heartbeating
-from actant.sandbox.base import (
+import actant.infra.sandbox.entry as entry
+import actant.infra.sandbox.host as host
+from actant.infra.sandbox.access import SETUP_TIMEOUT_S, AccessSetup, SandboxAccess, run_argv
+from actant.infra.temporal import heartbeating
+from actant.infra.sandbox.base import (
     Endpoint,
     Entry,
     ExecResult,
@@ -75,7 +75,7 @@ from actant.sandbox.base import (
     Storage,
     inside as _inside,
 )
-from actant.sandbox.protocol import (
+from actant.infra.sandbox.protocol import (
     EntryConfig,
     Header,
     HostConfig,
@@ -136,7 +136,7 @@ class ModalSandboxProvider:
     #: ``AWS_REGION`` defaults to ``us-east-1``. Takes precedence over ``secret_name``.
     bucket_env: Mapping[str, str] | None = None
     #: The image for a spec without one: a spec reopened from its record
-    #: (``actant.sandbox.store``) has none, as an image is not data.
+    #: (``actant.infra.sandbox.store``) has none, as an image is not data.
     image: Any = None
     #: Environment every sandbox of this provider gets, sent as a Modal secret and never
     #: recorded with a spec: the place for credentials the services need.

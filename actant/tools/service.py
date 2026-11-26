@@ -1,11 +1,11 @@
-"""Expose a service (:mod:`actant.sandbox.service`) to a model as tools.
+"""Expose a service (:mod:`actant.infra.sandbox.service`) to a model as tools.
 
 Each public method becomes one tool: the schema comes from its signature without
 ``self``, the description from its docstring. :func:`tools` runs the methods
-through any :class:`~actant.sandbox.service.Runner`; every runner encodes results
+through any :class:`~actant.infra.sandbox.service.Runner`; every runner encodes results
 the same way, so switching between them changes where the code runs and nothing
 the model sees. Images arrive as bytes and are stored in the worker's own
-:class:`~actant.assets.AssetStore` before the result goes anywhere, so a result carries
+:class:`~actant.infra.assets.AssetStore` before the result goes anywhere, so a result carries
 storage keys, never bytes (:func:`to_tool_result`).
 """
 
@@ -18,12 +18,12 @@ import inspect
 
 from pydantic import ValidationError
 
-from actant.assets import AssetStore
-from actant.blocks import AssetBlock, Base64Source, Block, InlineImageBlock, TextBlock
+from actant.infra.assets import AssetStore
+from actant.infra.blocks import AssetBlock, Base64Source, Block, InlineImageBlock, TextBlock
 from actant.core import JSONObject
-import actant.sandbox.host as host
-from actant.sandbox.protocol import CallResponse
-from actant.sandbox.service import LocalRunner, Runner
+import actant.infra.sandbox.host as host
+from actant.infra.sandbox.protocol import CallResponse
+from actant.infra.sandbox.service import LocalRunner, Runner
 from actant.tools.base import BaseToolInvocation, CallContext, MetadataKey, ToolResult, ToolSchema
 
 #: The most image bytes (decoded) one service response may carry.
@@ -44,7 +44,7 @@ async def to_tool_result(
     stays inline. A response whose images total more than ``max_image_bytes`` fails.
 
     A response the method marked ``terminal`` is a terminal result: the run ends after
-    this tool group, with no further model turn. A host that pushes storage reports a :class:`~actant.sandbox.protocol.StorageStatus`;
+    this tool group, with no further model turn. A host that pushes storage reports a :class:`~actant.infra.sandbox.protocol.StorageStatus`;
     its JSON lands on ``metadata[MetadataKey.STORAGE]`` so a product can warn when
     pushes fail, without the call itself failing.
     """

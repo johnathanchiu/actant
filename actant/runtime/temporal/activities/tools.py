@@ -10,7 +10,7 @@ from typing import Any, cast
 from temporalio import activity
 
 from actant.agents import AgentDefinition
-from actant.heartbeat import heartbeating
+from actant.infra.temporal import heartbeating
 from actant.runtime.events.runtime import RuntimeEvents
 from actant.runtime.temporal.activities.context import ActivityContext
 from actant.runtime.temporal.types import (

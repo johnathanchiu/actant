@@ -14,7 +14,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from actant.blocks import BLOCKS, AssetBlock, PromptBlock, TextBlock, UrlImageBlock
+from actant.infra.blocks import BLOCKS, AssetBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.session import message_to_parts, parts_to_messages
 from actant.runtime.types.session import MessagePart, PartKind

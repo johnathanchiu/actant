@@ -2,7 +2,7 @@
 
 :data:`Block` is what history stores: a user prompt's or a tool result's content, in
 ``actant_message_parts.content_blocks``. None of its kinds carries a URL; an uploaded
-image is an :class:`AssetBlock` (a storage key), which :func:`actant.assets.prepare_messages`
+image is an :class:`AssetBlock` (a storage key), which :func:`actant.llm.assets.prepare_messages`
 resolves for each model call. :data:`PromptBlock` adds the one kind only that
 preparation produces, :class:`UrlImageBlock`, and is what the provider adapters read.
 """
@@ -50,7 +50,7 @@ class InlineImageBlock(_Block):
 
 
 class UrlImageBlock(_Block):
-    """An image the provider fetches: made by :func:`actant.assets.prepare_messages` for one
+    """An image the provider fetches: made by :func:`actant.llm.assets.prepare_messages` for one
     model call from an :class:`AssetBlock`, and never stored."""
 
     type: Literal["image_url"] = "image_url"

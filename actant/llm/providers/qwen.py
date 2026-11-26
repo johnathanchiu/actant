@@ -13,7 +13,7 @@ from openai.types.chat.completion_create_params import CompletionCreateParamsBas
 
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
-from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
+from actant.infra.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
 from actant.llm.providers._shared import (
     WireBlock,
     convert_image_source,

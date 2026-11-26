@@ -13,11 +13,11 @@ from typing import Any
 
 import pytest
 
-from actant.sandbox import Endpoint, SandboxSpec, Storage
-from actant.sandbox import host
-from actant.sandbox.entry import READY_FILE, stamp_mtimes
-import actant.sandbox.modal as modal_backend
-from actant.sandbox.protocol import (
+from actant.infra.sandbox import Endpoint, SandboxSpec, Storage
+from actant.infra.sandbox import host
+from actant.infra.sandbox.entry import READY_FILE, stamp_mtimes
+import actant.infra.sandbox.modal as modal_backend
+from actant.infra.sandbox.protocol import (
     EntryConfig,
     Header,
     HostConfig,
@@ -26,7 +26,7 @@ from actant.sandbox.protocol import (
     Route,
     StampConfig,
 )
-from actant.sandbox.modal import (
+from actant.infra.sandbox.modal import (
     DISK_PATH,
     MOUNT_PATH,
     PULL_FLAGS,
@@ -186,7 +186,7 @@ async def test_service_with_disk_sync_restores_then_serves_behind_a_connect_toke
     args, kw = fake.created
     push = [*S5, "sync", "--no-follow-symlinks", f"{DISK_PATH}/", "s3://b/sandboxes/t1/"]
     restore = [*PULL, "s3://b/sandboxes/t1/*", f"{DISK_PATH}/"]
-    assert list(args[:3]) == ["python", "-m", "actant.sandbox.entry"] and len(args) == 4
+    assert list(args[:3]) == ["python", "-m", "actant.infra.sandbox.entry"] and len(args) == 4
     assert EntryConfig.model_validate_json(args[3]) == EntryConfig(
         restore=RestoreConfig(
             argv=restore,

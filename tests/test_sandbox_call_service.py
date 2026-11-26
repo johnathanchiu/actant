@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from actant.sandbox import host
-from actant.sandbox.protocol import CallRequest
+from actant.infra.sandbox import host
+from actant.infra.sandbox.protocol import CallRequest
 
 
 class Seen:

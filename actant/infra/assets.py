@@ -10,19 +10,15 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Protocol
 
-from actant.blocks import (
+from actant.infra.blocks import (
     AssetBlock,
     Base64Source,
     InlineImageBlock,
-    PromptBlock,
-    TextBlock,
     UrlImageBlock,
 )
-from actant.llm.messages import Message
 
 logger = logging.getLogger(__name__)
 
@@ -85,58 +81,6 @@ class AssetStore(Protocol):
     these keys for the thread's life."""
 
     async def put_image(self, thread_id: str, data: bytes, mime: str) -> str: ...
-
-
-#: How many asset references one request resolves at once.
-RESOLVE_CONCURRENCY = 16
-
-
-async def prepare_messages(
-    messages: Sequence[Message],
-    resolver: AssetResolver | None,
-    context: AssetContext,
-) -> list[Message]:
-    """Resolve each image :class:`AssetBlock` for this model call, and note any other file as
-    text, without mutating the transcript or discarding message metadata. A request's references resolve concurrently, at most
-    :data:`RESOLVE_CONCURRENCY` at a time. Missing bytes are visible; resolver failures
-    propagate to execution.
-    """
-    assets = [
-        block
-        for message in messages
-        if isinstance(message.content, list)
-        for block in message.content
-        if isinstance(block, AssetBlock) and block.mime.startswith("image/")
-    ]
-    limit = asyncio.Semaphore(RESOLVE_CONCURRENCY)
-
-    async def resolve(block: AssetBlock) -> PromptBlock:
-        if resolver is None:
-            raise ValueError("asset references require an AssetResolver")
-        async with limit:
-            image = await resolver.resolve(AssetReference(block.storage_key, block.mime), context)
-        if isinstance(image, MissingAsset):
-            text = f"[Image unavailable: {image.reason}; asset_storage_key={block.storage_key}]"
-            return TextBlock(text=text)
-        return image.to_block(context.minimum_validity_s)
-
-    resolved = iter(await asyncio.gather(*(resolve(block) for block in assets)))
-    prepared: list[Message] = []
-    for message in messages:
-        if not isinstance(message.content, list):
-            prepared.append(message)
-            continue
-        blocks: list[PromptBlock] = []
-        for block in message.content:
-            if not isinstance(block, AssetBlock):
-                blocks.append(block)
-            elif block.mime.startswith("image/"):
-                blocks.append(next(resolved))
-            else:
-                text = f"[Attached file: mime={block.mime}, asset_storage_key={block.storage_key}]"
-                blocks.append(TextBlock(text=text))
-        prepared.append(replace(message, content=blocks))
-    return prepared
 
 
 #: The largest picture a whole request of pictures may hold, read before it is fitted: the
@@ -213,7 +157,7 @@ class InlineImages:
 
     Some gateways' fetchers time out on presigned URLs that OpenAI direct fetches fine
     ("Unable to download content from the provided URL before the timeout", 400). This wraps
-    a URL resolver (such as :class:`~actant.storage.s3.S3AssetResolver`): each picture is
+    a URL resolver (such as :class:`~actant.infra.storage.s3.S3AssetResolver`): each picture is
     read from its URL, `read_attempts` times at most, and resolved to bytes fitted by
     :func:`fit_image`. One the store will not give fails the turn rather than going as a URL;
     one that is no picture, or larger than `read_bytes`, is missing, said so. The choice

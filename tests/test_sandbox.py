@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from actant.sandbox import LocalSandbox, LocalSandboxProvider, Sandbox, SandboxSpec
-from actant.sandbox.registry import VERIFIED_FOR_S, SandboxRegistry
-from actant.sandbox.store import InMemorySandboxStore
+from actant.infra.sandbox import LocalSandbox, LocalSandboxProvider, Sandbox, SandboxSpec
+from actant.infra.sandbox.registry import VERIFIED_FOR_S, SandboxRegistry
+from actant.infra.sandbox.store import InMemorySandboxStore
 from actant.tools.base import CallContext
 from actant.tools.function import tool
 
@@ -251,7 +251,7 @@ async def test_a_call_context_parameter_tells_a_tool_its_thread() -> None:
 
 
 def test_local_ls_cannot_leave_the_root(tmp_path) -> None:
-    from actant.sandbox.local import LocalSandbox
+    from actant.infra.sandbox.local import LocalSandbox
 
     root = tmp_path / "root"
     root.mkdir()

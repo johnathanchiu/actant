@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from actant.blocks import Block
+from actant.infra.blocks import Block
 from actant.core import JSONObject
 
 

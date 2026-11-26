@@ -179,7 +179,7 @@ Three metadata keys mean something to the runtime:
 - `artifacts` is written by the runtime, never by a tool.
 
 Use `content_blocks` when the tool result needs multimodal provider input. Blocks are the
-typed models in `actant.blocks` (`TextBlock`, `AssetBlock`, `InlineImageBlock`), validated when
+typed models in `actant.infra.blocks` (`TextBlock`, `AssetBlock`, `InlineImageBlock`), validated when
 stored and when read back:
 
 ```python
@@ -202,7 +202,7 @@ agent definition names, and hands it in. The parameter never appears in the
 schema.
 
 ```python
-from actant.sandbox import Sandbox, SandboxSpec
+from actant.infra.sandbox import Sandbox, SandboxSpec
 from actant.tools import tool
 
 
@@ -234,7 +234,7 @@ Agents that share one sandbox can each be held to their own files. Declare what 
 agent owns on its definition and pass it to `exec`:
 
 ```python
-from actant.sandbox import SandboxAccess
+from actant.infra.sandbox import SandboxAccess
 
 agent = AgentDefinition(
     ...,
@@ -286,7 +286,7 @@ your object storage, either mounted or restored to local disk and pushed back
 with `storage="disk_sync"`). Register providers on the worker:
 
 ```python
-from actant.sandbox.registry import SandboxRegistry
+from actant.infra.sandbox.registry import SandboxRegistry
 
 runtime = AgentRuntime(
     client=client,
@@ -330,7 +330,7 @@ such a method as a plain `def` (or call `asyncio.to_thread` yourself).
 ```python
 from dataclasses import dataclass, field
 
-from actant.sandbox import LocalRunner, SandboxRunner
+from actant.infra.sandbox import LocalRunner, SandboxRunner
 from actant.tools import tools
 
 
@@ -398,14 +398,14 @@ timeout. A transport failure reports that the call may have executed and is
 never automatically retried; only a rejected sandbox credential is refreshed.
 
 A sandbox serves several named services from one host (`python -m
-actant.sandbox.entry '{"host": {"services": {"name": "pkg.mod:Class"}}}'`, an
-`actant.sandbox.protocol.EntryConfig`). Give the model its
+actant.infra.sandbox.entry '{"host": {"services": {"name": "pkg.mod:Class"}}}'`, an
+`actant.infra.sandbox.protocol.EntryConfig`). Give the model its
 tools on one class and put the product's own calls on another, instead of
 filtering methods. The host keeps one instance per service and thread and runs
 calls concurrently. Services do not share instances: two classes over the same
 state build it from the same `init` (the sandbox's files, or an object their
 `open` looks up). Inside it, tools that
-start scripts should pass `env=actant.sandbox.host.script_env()` so the
+start scripts should pass `env=actant.infra.sandbox.host.script_env()` so the
 scripts do not inherit `scrub_env`. On Modal the host is the sandbox
 entrypoint, readiness is a TCP probe on `service_port`, `disk_sync` storage is
 restored before it listens and pushed after calls and periodically, and requests go through a
@@ -422,7 +422,7 @@ Storage pushes never fail or stall a run. The host pushes after calls and every
 one push at a time; a push running longer than `sync_timeout_s` (default 300)
 is killed and the next still runs. A failure is logged and reported: every call
 through a host that pushes carries `ToolResult.metadata[MetadataKey.STORAGE]`, the
-JSON of an `actant.sandbox.StorageStatus` (read it with
+JSON of an `actant.infra.sandbox.StorageStatus` (read it with
 `StorageStatus.model_validate`):
 
 | Field | Meaning |
@@ -447,8 +447,8 @@ A disk can be made of more than the sandbox's own prefix. Set the spec's
 which a seed fills), and its push skips the other entries' paths:
 
 ```python
-from actant.sandbox import SandboxSpec, Storage
-from actant.sandbox.base import Location, Restore
+from actant.infra.sandbox import SandboxSpec, Storage
+from actant.infra.sandbox.base import Location, Restore
 
 spec = SandboxSpec(
     backend="modal",
@@ -470,7 +470,7 @@ that still holds an old copy of the input restores without it. A restore entry
 may not sit at or under a mount, and mounts may not overlap:
 
 ```python
-from actant.sandbox.base import Location, Mount
+from actant.infra.sandbox.base import Location, Mount
 
 spec = SandboxSpec(
     backend="modal",
@@ -488,14 +488,14 @@ call, under `<thread_id>/images/<sha256><ext>` (the same bytes once), and the re
 `AssetBlock(storage_key=..., mime=...)`; bytes never reach Temporal. Without a store, images stay
 inline. One response's images may total `max_image_bytes` (`tools(cls, runner,
 max_image_bytes=...)`, default 16 MiB); a larger one fails the call. Direct runner callers use
-`to_tool_result(response, thread_id=..., store=...)`. `actant.storage.s3.S3AssetStore` writes
+`to_tool_result(response, thread_id=..., store=...)`. `actant.infra.storage.s3.S3AssetStore` writes
 under the same bucket and prefix an `S3AssetResolver` reads; the prefix must not expire.
 
 The host never signs URLs. Resolve references when preparing a model request or displaying an
 image. `AgentRuntime(assets=...)` accepts an `AssetResolver`. Direct runner callers can use the
 same resolver. History never stores a URL.
 
-`actant.storage.s3.S3AssetResolver` takes a boto3-compatible client with bounded SDK timeouts,
+`actant.infra.storage.s3.S3AssetResolver` takes a boto3-compatible client with bounded SDK timeouts,
 used to check existence, plus the public endpoint and static `SigningKeys`. It restricts references to its bucket/prefix and signs each URL at the start of a fixed window,
 so every process and restart sends the byte-identical URL for an image within that window and
 the provider's prompt cache keeps matching. It reports explicit missing-object errors as
@@ -506,7 +506,7 @@ and retention must not delete a referenced object inside a window; Actant does n
 lifetime from URL expiry.
 
 For a provider that cannot fetch URLs (some gateways time out on presigned URLs), wrap the
-resolver in `actant.assets.InlineImages` (`actant[images]`): each picture is read from its URL
+resolver in `actant.infra.assets.InlineImages` (`actant[images]`): each picture is read from its URL
 and sent inline, fitted to `image_side` and `image_bytes`, and kept in a byte-bounded LRU
 (`cache_bytes`) so a thread's history is not re-read every turn. OpenAI direct keeps the URLs.
 

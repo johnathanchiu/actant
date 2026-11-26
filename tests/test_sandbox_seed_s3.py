@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from actant.sandbox import SandboxSpec, Storage
-from actant.sandbox.entry import INCOMPLETE_SEED, restore
-from actant.sandbox.modal import DISK_PATH, Location, ModalSandboxProvider, Mount, Restore
-from actant.sandbox.protocol import EntryConfig, RestoreConfig
+from actant.infra.sandbox import SandboxSpec, Storage
+from actant.infra.sandbox.entry import INCOMPLETE_SEED, restore
+from actant.infra.sandbox.modal import DISK_PATH, Location, ModalSandboxProvider, Mount, Restore
+from actant.infra.sandbox.protocol import EntryConfig, RestoreConfig
 
 if shutil.which("s5cmd") is None:
     pytest.skip("needs s5cmd", allow_module_level=True)

@@ -3,7 +3,7 @@
 Nothing is truncated and no stored message is rewritten. When the next request would
 cross a limit (a fraction of the context window, or the provider's image cap), one call
 on the same model, with no tools, summarizes the conversation, and a compaction row
-(``kind="compaction"``, one :class:`~actant.blocks.CompactionBlock`) is appended. The
+(``kind="compaction"``, one :class:`~actant.infra.blocks.CompactionBlock`) is appended. The
 model then sees:
 
     system prompt, the summary, the kept messages, the rows after the compaction row
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
-from actant.blocks import (
+from actant.infra.blocks import (
     AssetBlock,
     CompactionBlock,
     InlineImageBlock,

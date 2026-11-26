@@ -7,8 +7,8 @@ from http import HTTPStatus
 
 import pytest
 
-from actant.sandbox import Endpoint, host, service
-from actant.sandbox.protocol import CallRequest
+from actant.infra.sandbox import Endpoint, host, service
+from actant.infra.sandbox.protocol import CallRequest
 
 
 class Counter:

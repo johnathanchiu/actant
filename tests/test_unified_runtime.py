@@ -13,7 +13,7 @@ from temporalio.client import Client
 from temporalio.testing import WorkflowEnvironment
 
 from actant import AgentDefinition, tool
-from actant.blocks import Base64Source, InlineImageBlock
+from actant.infra.blocks import Base64Source, InlineImageBlock
 from actant.core import JSONObject
 from actant.llm.messages import ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse
@@ -222,7 +222,7 @@ async def test_unknown_agent_finishes_failed_and_notifies_without_running_model(
 
 @pytest.mark.asyncio
 async def test_tool_asset_is_resolved_for_model_but_stored_as_reference() -> None:
-    from actant.assets import AssetContext, AssetReference, MissingAsset, ResolvedImage
+    from actant.infra.assets import AssetContext, AssetReference, MissingAsset, ResolvedImage
 
     block = AssetReference("images/tool.png", "image/png").to_block()
 

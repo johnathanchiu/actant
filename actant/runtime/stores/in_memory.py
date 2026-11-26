@@ -13,7 +13,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 
-from actant.blocks import BLOCKS, Block, CompactionBlock
+from actant.infra.blocks import BLOCKS, Block, CompactionBlock
 from actant.core import JSONObject, new_id
 from actant.llm.messages import Message
 from actant.runtime.compaction import compaction_of
@@ -24,7 +24,7 @@ from actant.runtime.types.threads import (
     MessageRecord,
     RunStatus,
 )
-from actant.sandbox.store import InMemorySandboxStore
+from actant.infra.sandbox.store import InMemorySandboxStore
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 

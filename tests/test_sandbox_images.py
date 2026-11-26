@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from actant.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock
-from actant.sandbox import host
-from actant.sandbox.protocol import CallResponse, Image, InlineSource
-from actant.sandbox.service import LocalRunner
+from actant.infra.blocks import AssetBlock, Base64Source, InlineImageBlock, TextBlock
+from actant.infra.sandbox import host
+from actant.infra.sandbox.protocol import CallResponse, Image, InlineSource
+from actant.infra.sandbox.service import LocalRunner
 from actant.tools import tools
 from actant.tools.base import CallContext
-from actant.storage.s3 import S3AssetStore
+from actant.infra.storage.s3 import S3AssetStore
 from actant.tools.service import to_tool_result
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
@@ -27,7 +27,7 @@ DIGEST = hashlib.sha256(PNG).hexdigest()
 
 @dataclass
 class FakeStore:
-    """An :class:`~actant.assets.AssetStore` that records each ``put``."""
+    """An :class:`~actant.infra.assets.AssetStore` that records each ``put``."""
 
     prefix: str = "worker/"
     puts: list[tuple[str, bytes, str]] = field(default_factory=list)

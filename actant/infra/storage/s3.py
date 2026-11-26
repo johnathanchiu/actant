@@ -18,8 +18,8 @@ from collections.abc import Callable, Mapping
 from typing import Protocol
 from urllib.parse import urlsplit
 
-from actant.assets import AssetContext, AssetReference, MissingAsset, ResolvedImage
-from actant.storage.sigv4 import (
+from actant.infra.assets import AssetContext, AssetReference, MissingAsset, ResolvedImage
+from actant.infra.storage.sigv4 import (
     MAX_EXPIRES_S,
     AddressingStyle,
     SigningKeys,
