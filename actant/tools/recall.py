@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from actant.blocks import AssetBlock
+from actant.infra.blocks import AssetBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message
 from actant.tools.base import (

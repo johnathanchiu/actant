@@ -3,7 +3,7 @@
 Revision ID: 5b0e2f7c9a41
 Revises: 1326e6b76924
 
-A sandbox by the id its owner picked (``actant.sandbox.registry``): its backend's live id
+A sandbox by the id its owner picked (``actant.infra.sandbox.registry``): its backend's live id
 and the spec it is reopened with, so every worker reaches it by its id. New and empty.
 """
 

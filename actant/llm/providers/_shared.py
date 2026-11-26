@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Sequence
 from typing import NoReturn
 
-from actant.blocks import (
+from actant.infra.blocks import (
     AssetBlock,
     CompactionBlock,
     InlineImageBlock,

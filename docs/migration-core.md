@@ -71,8 +71,8 @@ There is no implicitly created local provider.
 
 ```python
 from pathlib import Path
-from actant.sandbox import LocalSandboxProvider
-from actant.sandbox.registry import SandboxRegistry
+from actant.infra.sandbox import LocalSandboxProvider
+from actant.infra.sandbox.registry import SandboxRegistry
 
 sandboxes = SandboxRegistry(
     {"local": LocalSandboxProvider(Path("/srv/workspaces"))},
@@ -104,8 +104,8 @@ Implement `AssetResolver.resolve(AssetReference, AssetContext)` or use the optio
 ```python
 import boto3
 from botocore.config import Config
-from actant.storage.s3 import S3AssetResolver
-from actant.storage.sigv4 import SigningKeys
+from actant.infra.storage.s3 import S3AssetResolver
+from actant.infra.storage.sigv4 import SigningKeys
 
 s3 = boto3.client(
     "s3",

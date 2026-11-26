@@ -22,24 +22,16 @@ def test_actant_module_imports_are_acyclic() -> None:
     assert _find_cycle(graph) is None
 
 
-def test_services_do_not_depend_on_the_llm_or_runtime() -> None:
+def test_infra_imports_nothing_from_the_agent_layer() -> None:
+    """``actant.infra`` (sandboxes, storage, assets, blocks, Temporal helpers) is the layer the
+    agent runtime depends on, never the reverse, so it can leave as its own package by moving
+    one folder. Every import counts, a function's own included."""
     package = Path(__file__).parents[1] / "actant"
-    for name in ("service", "host", "protocol", "base", "entry"):
-        path = package / "sandbox" / f"{name}.py"
+    for path in (package / "infra").rglob("*.py"):
         imports = _absolute_imports(ast.parse(path.read_text(), filename=str(path)))
-        banned = ("actant.llm", "actant.runtime", "actant.tools")
-        assert not [i for i in imports if i.startswith(banned)], name
-
-
-def test_the_sandbox_layer_imports_nothing_from_the_runtime() -> None:
-    """``actant.sandbox`` is a layer the agent runtime depends on, never the reverse: keys
-    are plain strings and records go through its own store, so a thread or run never
-    reaches it. Every import counts, a function's own included."""
-    package = Path(__file__).parents[1] / "actant"
-    allowed = ("actant.sandbox", "actant.heartbeat", "actant.logs")  # stdlib-only leaves
-    for path in [*(package / "sandbox").rglob("*.py"), package / "heartbeat.py"]:
-        imports = _absolute_imports(ast.parse(path.read_text(), filename=str(path)))
-        reached = [i for i in imports if i.split(".")[0] == "actant" and not i.startswith(allowed)]
+        reached = [
+            i for i in imports if i.split(".")[0] == "actant" and not i.startswith("actant.infra")
+        ]
         assert reached == [], f"{path.relative_to(package)} imports {reached}"
 
 

@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Literal
 
 from actant.llm.base import LLMClient
 from actant.llm.messages import Message
-from actant.sandbox.access import SandboxAccess
-from actant.sandbox.base import SandboxSpec
+from actant.infra.sandbox.access import SandboxAccess
+from actant.infra.sandbox.base import SandboxSpec
 from actant.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:

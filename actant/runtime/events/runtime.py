@@ -1,7 +1,7 @@
 """One activity-scoped publisher for lifecycle and provider streaming events."""
 
 from typing import cast
-from actant.blocks import BLOCKS, Block, CompactionBlock
+from actant.infra.blocks import BLOCKS, Block, CompactionBlock
 from actant.core import JSONObject, JSONValue
 from actant.llm.messages import Message
 from actant.tools.base import ToolResult

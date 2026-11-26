@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
-from actant.sandbox.access import SandboxAccess
+from actant.infra.sandbox.access import SandboxAccess
 
 
 # === Configuration ===
@@ -25,7 +25,7 @@ class ActivityTimeouts:
     needs at least the sandbox's own open budget here. A tool call that stops
     heartbeating for ``tool_heartbeat_s`` is treated as lost (its worker died), and a
     model turn for ``turn_heartbeat_s``; set each longer than the activity's own beat,
-    every ``actant.heartbeat.HEARTBEAT_EVERY_S``.
+    every ``actant.infra.temporal.HEARTBEAT_EVERY_S``.
     """
 
     turn_s: float = 600.0

@@ -20,7 +20,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
 
 from actant.agents import AgentDefinition
-from actant.blocks import AssetBlock, CompactionBlock, TextBlock
+from actant.infra.blocks import AssetBlock, CompactionBlock, TextBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.llm.providers.fake import FakeLLM, FakeResponse

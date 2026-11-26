@@ -21,7 +21,7 @@ from openai.types.responses.response_input_param import ResponseInputParam
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params.reasoning import Reasoning
 
-from actant.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
+from actant.infra.blocks import AssetBlock, CompactionBlock, PromptBlock, TextBlock
 from actant.core import JSONObject
 from actant.llm.errors import StreamCancelled
 from actant.llm.messages import Message, ToolCall, ToolCallFunction

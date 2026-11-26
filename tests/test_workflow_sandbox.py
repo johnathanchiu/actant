@@ -31,8 +31,8 @@ from actant.runtime.temporal.types import (
     ThreadInput,
 )
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
-from actant.sandbox import ArtifactRef, LocalSandboxProvider, Sandbox, SandboxSpec
-from actant.sandbox.registry import SandboxRegistry
+from actant.infra.sandbox import ArtifactRef, LocalSandboxProvider, Sandbox, SandboxSpec
+from actant.infra.sandbox.registry import SandboxRegistry
 from actant.tools import FinishTool, ToolRegistry, tool
 from actant.tools.base import Tool
 from actant.tools.calls import ToolCallStatus

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from actant.blocks import PromptBlock
+from actant.infra.blocks import PromptBlock
 from actant.core import JSONObject
 from actant.llm.messages import Message, Role
 from actant.runtime.session import parts_to_messages, tool_result_blocks
@@ -18,7 +18,7 @@ from actant.runtime.stores.postgres.models import (
 )
 from actant.runtime.types.session import MessagePart, PartKind, WaitStatus
 from actant.runtime.types.threads import AgentRun, AgentThread, RunStatus, ThreadStatus
-from actant.sandbox.access import SandboxAccess
+from actant.infra.sandbox.access import SandboxAccess
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 

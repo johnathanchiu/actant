@@ -20,11 +20,11 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from actant.blocks import InlineImageBlock
-from actant.sandbox import Endpoint, LocalSandbox, LocalSandboxProvider, SandboxSpec
-from actant.sandbox import LocalRunner, RemoteRunner, SandboxRunner, call_host
-from actant.sandbox import StorageStatus, host
-from actant.sandbox.protocol import (
+from actant.infra.blocks import InlineImageBlock
+from actant.infra.sandbox import Endpoint, LocalSandbox, LocalSandboxProvider, SandboxSpec
+from actant.infra.sandbox import LocalRunner, RemoteRunner, SandboxRunner, call_host
+from actant.infra.sandbox import StorageStatus, host
+from actant.infra.sandbox.protocol import (
     CallResponse,
     EntryConfig,
     Header,
@@ -45,7 +45,7 @@ from service_fixtures import Counter, Stages
 if TYPE_CHECKING:
     from some_module_that_only_type_checkers_see import Thing  # noqa: F401
 
-TESTS = str(Path(__file__).parent)
+TESTS = str(Path(__file__).parent / "infra")  # service_fixtures lives with the infra tests
 SERVICES = {"counter": "service_fixtures:Counter", "stages": "service_fixtures:Stages"}
 
 
@@ -459,7 +459,7 @@ async def pushing_host(
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "actant.sandbox.entry",
+        "actant.infra.sandbox.entry",
         EntryConfig(
             restore=RestoreConfig(argv=restore),
             host=HostConfig(
@@ -526,7 +526,7 @@ def test_entry_exits_when_restore_fails(tmp_path: Path) -> None:
         [
             sys.executable,
             "-m",
-            "actant.sandbox.entry",
+            "actant.infra.sandbox.entry",
             EntryConfig(restore=RestoreConfig(argv=restore)).model_dump_json(),
         ],
         cwd=tmp_path,
@@ -551,7 +551,7 @@ async def _start_host(tmp_path: Path) -> tuple[Endpoint, asyncio.subprocess.Proc
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "actant.sandbox.entry",
+        "actant.infra.sandbox.entry",
         EntryConfig(
             host=HostConfig(
                 services={"counter": "service_fixtures:Counter"},
@@ -646,7 +646,7 @@ def test_entry_fails_when_restore_times_out(tmp_path: Path) -> None:
     restore = [sys.executable, "-c", "import time; time.sleep(60)"]
     started = time.monotonic()
     done = subprocess.run(
-        [sys.executable, "-m", "actant.sandbox.entry",
+        [sys.executable, "-m", "actant.infra.sandbox.entry",
          EntryConfig(restore=RestoreConfig(argv=restore, timeout_s=0.5)).model_dump_json()],
         cwd=tmp_path, capture_output=True, text=True, timeout=30,
     )  # fmt: skip
@@ -658,7 +658,7 @@ def test_a_slow_pull_runs_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Nothing kills or restarts a slow pull, and progress and the stamp still apply."""
-    from actant.sandbox import entry
+    from actant.infra.sandbox import entry
 
     monkeypatch.setattr(entry, "PROGRESS_INTERVAL_S", 0.1)
     runs = tmp_path / "runs"
@@ -693,7 +693,7 @@ def test_a_slow_pull_runs_once(
 def test_a_stalled_pull_fails_at_the_overall_budget_without_restarting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from actant.sandbox.entry import restore
+    from actant.infra.sandbox.entry import restore
 
     runs = tmp_path / "runs"
     stall = f"import time; open({str(runs)!r}, 'a').write('.'); time.sleep(60)"
@@ -707,8 +707,8 @@ def test_a_stalled_pull_fails_at_the_overall_budget_without_restarting(
 def test_s5cmd_retries_a_failed_part_without_refetching_the_others(tmp_path: Path) -> None:
     """The pull's flags against a stub bucket whose first read of one part fails: s5cmd
     retries that part alone, and the object lands whole."""
-    from actant.sandbox.entry import restore
-    from actant.sandbox.modal import PULL_FLAGS
+    from actant.infra.sandbox.entry import restore
+    from actant.infra.sandbox.modal import PULL_FLAGS
 
     mib = 1 << 20
     body = bytes(range(256)) * (3 * mib // 256)
@@ -771,7 +771,7 @@ def test_s5cmd_retries_a_failed_part_without_refetching_the_others(tmp_path: Pat
 def test_restore_pulls_its_other_inputs_alongside_and_fails_if_one_fails(
     tmp_path: Path,
 ) -> None:
-    from actant.sandbox.entry import restore
+    from actant.infra.sandbox.entry import restore
 
     capture = tmp_path / "capture"
     pull_capture = _script(
@@ -787,7 +787,7 @@ def test_restore_pulls_its_other_inputs_alongside_and_fails_if_one_fails(
 
 
 def test_stamp_gives_restored_files_their_object_mtimes(tmp_path: Path) -> None:
-    from actant.sandbox.entry import stamp_mtimes
+    from actant.infra.sandbox.entry import stamp_mtimes
 
     (tmp_path / "dir").mkdir()
     (tmp_path / "dir" / "a.json").write_text("{}")
@@ -841,7 +841,7 @@ def test_entry_imports_services_and_lists_the_stamp_while_the_restore_runs(
         host=HostConfig(services={"svc": "slow_service:Svc"}, port=0, bind="127.0.0.1"),
     )
     process = subprocess.Popen(
-        [sys.executable, "-m", "actant.sandbox.entry", config.model_dump_json()],
+        [sys.executable, "-m", "actant.infra.sandbox.entry", config.model_dump_json()],
         cwd=tmp_path, env={"PYTHONPATH": str(tmp_path), "PATH": "/usr/bin:/bin"},
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )  # fmt: skip
@@ -885,7 +885,7 @@ def _seed(
 
 
 def test_a_new_run_pulls_its_seed_and_waits_for_the_copy(tmp_path: Path) -> None:
-    from actant.sandbox.entry import restore
+    from actant.infra.sandbox.entry import restore
 
     assert restore(RestoreConfig(argv=_EMPTY, seed=_seed(tmp_path)))
     # The copy finished before startup continues, so no push can race it.
@@ -896,7 +896,7 @@ def test_a_new_run_pulls_its_seed_and_waits_for_the_copy(tmp_path: Path) -> None
 
 
 def test_a_run_with_files_ignores_its_seed(tmp_path: Path) -> None:
-    from actant.sandbox.entry import restore
+    from actant.infra.sandbox.entry import restore
 
     own = _script(f"open({str(tmp_path / 'own.txt')!r}, 'w').close()")
     (tmp_path.parent / f"{tmp_path.name}.marker").touch()
@@ -907,7 +907,7 @@ def test_a_run_with_files_ignores_its_seed(tmp_path: Path) -> None:
 def test_a_run_with_files_and_no_seed_marker_fails_startup(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from actant.sandbox.entry import INCOMPLETE_SEED, restore
+    from actant.infra.sandbox.entry import INCOMPLETE_SEED, restore
 
     own = _script(f"open({str(tmp_path / 'own.txt')!r}, 'w').close()")
     assert not restore(RestoreConfig(argv=own, seed=_seed(tmp_path)))
@@ -916,7 +916,7 @@ def test_a_run_with_files_and_no_seed_marker_fails_startup(
 
 
 def test_a_failed_run_pull_does_not_fall_back_to_the_seed(tmp_path: Path) -> None:
-    from actant.sandbox.entry import restore
+    from actant.infra.sandbox.entry import restore
 
     assert not restore(
         RestoreConfig(argv=_script("import sys; sys.exit('denied')"), seed=_seed(tmp_path))
@@ -928,7 +928,7 @@ def test_a_failed_run_pull_does_not_fall_back_to_the_seed(tmp_path: Path) -> Non
 def test_a_failed_seed_copy_or_pull_fails_startup_after_both_end(
     tmp_path: Path, broken: str
 ) -> None:
-    from actant.sandbox.entry import restore
+    from actant.infra.sandbox.entry import restore
 
     fail = "import sys; sys.exit('denied')"
     seed = _seed(tmp_path, copy=fail) if broken == "copy" else _seed(tmp_path, pull=fail)
@@ -940,7 +940,7 @@ def test_a_failed_seed_copy_or_pull_fails_startup_after_both_end(
 
 
 def test_a_hung_seed_copy_fails_startup_within_the_timeout(tmp_path: Path) -> None:
-    from actant.sandbox.entry import restore
+    from actant.infra.sandbox.entry import restore
 
     seed = _seed(tmp_path, copy="import time; time.sleep(60)")
     started = time.monotonic()

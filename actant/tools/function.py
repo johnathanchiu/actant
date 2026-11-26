@@ -18,7 +18,7 @@ from actant.tools.admission import (
     ToolWaitRequest,
     TurnContextView,
 )
-from actant.sandbox.base import Sandbox
+from actant.infra.sandbox.base import Sandbox
 from actant.tools.base import (
     BaseToolInvocation,
     CallContext,

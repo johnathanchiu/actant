@@ -6,19 +6,18 @@ import time
 from dataclasses import replace
 from collections.abc import Callable, Mapping
 import pytest
-from actant.assets import (
-    RESOLVE_CONCURRENCY,
+from actant.infra.assets import (
     AssetContext,
     AssetReference,
     MissingAsset,
     ResolvedImage,
-    prepare_messages,
 )
-from actant.blocks import AssetBlock, InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
+from actant.llm.assets import RESOLVE_CONCURRENCY, prepare_messages
+from actant.infra.blocks import AssetBlock, InlineImageBlock, PromptBlock, TextBlock, UrlImageBlock
 from actant.llm.messages import Message
 from actant.runtime.session import message_to_parts, parts_to_messages
-from actant.storage.s3 import S3AssetResolver, S3Client
-from actant.storage.sigv4 import SigningKeys, check_endpoint, presign_get
+from actant.infra.storage.s3 import S3AssetResolver, S3Client
+from actant.infra.storage.sigv4 import SigningKeys, check_endpoint, presign_get
 from datetime import datetime, timezone
 from typing import Literal, cast
 from urllib.parse import parse_qs, quote, urlsplit

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from temporalio.exceptions import ApplicationError
 
 from actant.agents import AgentDefinition
-from actant.assets import AssetResolver, AssetStore
+from actant.infra.assets import AssetResolver, AssetStore
 from actant.runtime.events.publisher import EventSink
 from actant.runtime.events.publisher import ScopedEventSink
 from actant.runtime.events.runtime import RuntimeEvents
@@ -17,8 +17,8 @@ from actant.runtime.completion import RunCompletionHandler
 from actant.runtime.gate import TurnGate
 from actant.runtime.interfaces.stores import RuntimeStores
 from actant.runtime.types.threads import AgentThread
-from actant.sandbox.base import ArtifactSink, Sandbox
-from actant.sandbox.registry import SandboxRegistry
+from actant.infra.sandbox.base import ArtifactSink, Sandbox
+from actant.infra.sandbox.registry import SandboxRegistry
 
 AgentResolver = Callable[[str, str], Awaitable[AgentDefinition]]
 

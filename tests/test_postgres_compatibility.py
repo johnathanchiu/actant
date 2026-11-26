@@ -20,9 +20,9 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from actant.assets import AssetReference
+from actant.infra.assets import AssetReference
 from actant.cli import invalid_block_rows
-from actant.blocks import (
+from actant.infra.blocks import (
     AssetBlock,
     Base64Source,
     CompactionBlock,
@@ -34,7 +34,7 @@ from actant.tools.base import ToolResult
 from actant.llm.messages import Message, ToolCall, ToolCallFunction
 from actant.runtime.stores.postgres import ACTANT_RUNTIME_METADATA, SQLAlchemyRuntimeStores
 from actant.runtime.types.threads import RunStatus
-from actant.sandbox import SandboxSpec
+from actant.infra.sandbox import SandboxSpec
 from actant.tools.calls import ToolCallRecord, ToolCallStatus
 
 

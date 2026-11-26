@@ -29,8 +29,8 @@ from actant.runtime.events.streaming import StreamListener
 from actant.runtime.temporal.types import ExecuteInput, ExecuteOutcome, RunTurnInput, TurnResult
 from actant.runtime.temporal.workflow import AgentThreadWorkflow
 from actant.runtime.types.threads import RunStatus
-from actant.sandbox import Endpoint, RemoteRunner, host
-from actant.sandbox.protocol import CallRequest, Route
+from actant.infra.sandbox import Endpoint, RemoteRunner, host
+from actant.infra.sandbox.protocol import CallRequest, Route
 from actant.tools import ToolRegistry, tools
 from actant.tools.calls import ToolCallStatus
 from runtime_fixtures import static_agents
