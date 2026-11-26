@@ -45,7 +45,7 @@ from service_fixtures import Counter, Stages
 if TYPE_CHECKING:
     from some_module_that_only_type_checkers_see import Thing  # noqa: F401
 
-TESTS = str(Path(__file__).parent)
+TESTS = str(Path(__file__).parent / "infra")  # service_fixtures lives with the infra tests
 SERVICES = {"counter": "service_fixtures:Counter", "stages": "service_fixtures:Stages"}
 
 
