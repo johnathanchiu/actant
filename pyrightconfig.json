@@ -1,8 +1,14 @@
 {
-  "include": ["actant", "tests"],
+  "include": [
+    "actant",
+    "tests"
+  ],
   "venvPath": ".",
   "venv": ".venv",
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",
-  "reportMissingImports": "warning"
+  "reportMissingImports": "warning",
+  "extraPaths": [
+    "tests/infra"
+  ]
 }
