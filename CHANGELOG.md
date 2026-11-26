@@ -4,7 +4,7 @@ Notable user-facing changes to Actant are recorded here. Internal refactors,
 tests, and documentation-only edits may be omitted unless they materially
 affect users.
 
-## Unreleased
+## 0.43.0
 
 - Breaking: the infrastructure the agent runtime runs on moves under `actant.infra`, and nothing there imports the agent layer (`actant.llm`, `actant.tools`, `actant.runtime`). Imports change; behaviour, workflow and activity names, and the database schema do not.
   - `actant.sandbox` → `actant.infra.sandbox`, `actant.storage` → `actant.infra.storage`, `actant.assets` → `actant.infra.assets`, `actant.blocks` → `actant.infra.blocks`, `actant.logs` → `actant.infra.logs`.
